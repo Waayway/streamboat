@@ -301,27 +301,41 @@ unofficial API (ref:python-tidal/tidalapi/user.py, ref:python-tidal/tidalapi/ses
 
 ### 3. Audio quality model
 
-**UI names → internal enums** [verified-source + verified-web]:
+**Corrected table — the first draft of this table contradicted its own prose warning below it and
+must not be copied as it originally stood.** The source of truth is the ladder in
+`ref:TidaLuna/plugins/lib/src/classes/Quality.ts`: seven ordered rungs (`idx` 0–6), each with a
+name and a badge colour, and *two separate* lookup tables (`lookups.audioQuality` and
+`lookups.metadataTags`) that map the wire enums onto that ladder — **the two lookups disagree with
+each other for the bottom two rungs, which is the trap**:
 
-| UI name (2026) | `audioQuality` enum | `mediaMetadata.tags` | Codec / format | Ceiling |
-| --- | --- | --- | --- | --- |
-| Low | `LOW` | — | HE-AAC v1 (`HEAACV1`) | ~96 kbps |
-| (Low, higher rung) | `HIGH` | — | AAC-LC (`AACLC`) | ~320 kbps |
-| High | `LOSSLESS` | `LOSSLESS` | FLAC | 16-bit / 44.1 kHz |
-| Max | `HI_RES_LOSSLESS` | `HIRES_LOSSLESS` | FLAC (`FLAC_HIRES`) | 24-bit / up to 192 kHz |
-| (legacy) | `HI_RES` | `MQA` | MQA | removed 24 Jul 2024 |
-| Atmos | — | `DOLBY_ATMOS` | EAC3-JOC / AC-4 | audioMode `DOLBY_ATMOS` |
-| (legacy) | — | `SONY_360RA` | Sony 360RA | removed 24 Jul 2024 |
+| Ladder rung (`idx`) | Badge colour | `audioQuality` enum → rung | `mediaMetadata.tags` → rung | Codec / format | Ceiling |
+| --- | --- | --- | --- | --- | --- |
+| 6 HiRes (UI "Max") | `#ffd432` | `HI_RES_LOSSLESS` | `HIRES_LOSSLESS` | FLAC (`FLAC_HIRES`) | 24-bit / up to 192 kHz |
+| 5 MQA | `#F9BA7A` | `HI_RES` | `MQA` | MQA | removed 24 Jul 2024 |
+| 4 Atmos | `#6ab5ff` | — | `DOLBY_ATMOS` | EAC3-JOC / AC-4 | audioMode `DOLBY_ATMOS` |
+| 3 Sony630 | `#6ab5ff` | — | `SONY_360RA` | Sony 360RA | removed 24 Jul 2024 |
+| 2 High (UI "High") | `#33FFEE` | `LOSSLESS` | `LOSSLESS` | FLAC | 16-bit / 44.1 kHz |
+| 1 Low (UI "Low") | `#b9b9b9` | **`HIGH`** | — | AAC-LC (`AACLC`) | ~320 kbps |
+| 0 Lowest (no 2026 UI label) | `#b9b9b9` | **`LOW`** | — | HE-AAC v1 (`HEAACV1`) | ~96 kbps |
 
-Sources: enum list in ref:TidaLuna/plugins/lib/src/redux/types/store/content/Track.ts; quality
-ladder mapping in ref:TidaLuna/plugins/lib/src/classes/Quality.ts; format mapping in
-ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts
+Read the bottom two rows carefully: the wire enum value `audioQuality: "HIGH"` maps to the rung
+named **"Low"**, and `audioQuality: "LOW"` maps to the rung named **"Lowest"**, which has no
+current UI label at all. The 2026 UI string "Low" is therefore backed by enum `HIGH`, not enum
+`LOW`. `Quality.max`/`Quality.min` operate on the numeric `idx`, so when an item carries several
+`mediaMetadata.tags` (e.g. both `DOLBY_ATMOS` and `LOSSLESS`), the client takes the max `idx` as
+the item's displayed quality — that is the precedence rule for badge display.
+
+Sources: enum list in ref:TidaLuna/plugins/lib/src/redux/types/store/content/Track.ts; ladder,
+colours and both lookup tables in ref:TidaLuna/plugins/lib/src/classes/Quality.ts; format mapping
+in ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts
 (`audioQualityToFormats`: `HI_RES`/`HI_RES_LOSSLESS` → `['HEAACV1','AACLC','FLAC','FLAC_HIRES']`;
 `LOSSLESS` → `['HEAACV1','AACLC','FLAC']`; `HIGH` → `['HEAACV1','AACLC']`; `LOW` → `['HEAACV1']`).
 
 Note the awkward historical naming that streamboat must not get wrong: the enum value `HIGH` is the
 *lossy* 320 kbps tier, while the UI label "High" is the *lossless* tier (`LOSSLESS`). Anything that
-maps UI strings to enums directly will produce silent quality regressions. [verified-source]
+maps UI strings to enums directly will produce silent quality regressions — encode the ladder table
+above once, in one place, and never branch on the enum name looking like an English word.
+[verified-source]
 
 **Where quality is chosen.** `settings.quality.streaming: AudioQuality` with action
 `settings/SET_STREAMING_QUALITY`, plus a `SELECT_SOUND_QUALITY` context menu on the player, plus
@@ -337,11 +351,16 @@ exactly this as its `/current/audio-quality` API:
 The UI shows a quality badge (`*[data-test^="quality-badge-"]`). [verified-source]
 
 **Normalization.** `settings.audioNormalization: "NONE" | "ALBUM" | "TRACK"` with
-`settings/TOGGLE_NORMALIZATION`. TIDAL's album normalization targets −14 LUFS on the loudest track
-of an album and preserves intra-album relative levels. ReplayGain data arrives with the playback
-info as `trackReplayGain`/`albumReplayGain` + `trackPeakAmplitude`/`albumPeakAmplitude`. Sone's
-implementation of the gain formula is `0.8 * min(10^((rg+4)/20), 1/peak)` with album/track context
-switching. [verified-source + verified-web]
+`settings/TOGGLE_NORMALIZATION` (the only normalization action in the dump — there is no
+`SET_NORMALIZATION`, so the UI's state-cycling logic is not shown). **The "-14 LUFS, on by default
+on mobile" figure is [uncertain, source predates 2021]**: it comes only from 2019–2020 rollout
+coverage (productionadvice.co.uk, audioxpress.com) of the *original* album-normalization launch,
+was not re-fetched for 2026, and support.tidal.com is blocked from this environment — do not treat
+it as current without re-checking. What *is* solid: ReplayGain data arrives with the playback info
+as `trackReplayGain`/`albumReplayGain` + `trackPeakAmplitude`/`albumPeakAmplitude`, independently of
+the LUFS target, and that is all streamboat actually needs to implement the three-state toggle.
+Sone's implementation of the gain formula is `0.8 * min(10^((rg+4)/20), 1/peak)` with album/track
+context switching. [verified-source; LUFS target **[uncertain]**]
 
 **Audio spectrum visualiser.** `settings.audioSpectrumEnabled` /
 `settings/SET_AUDIO_SPECTRUM_ENABLED` — a visualiser toggle in the desktop app. [verified-source]
@@ -350,11 +369,16 @@ switching. [verified-source + verified-web]
 
 #### 4.1 Sidebar / top-level nav
 
-From live DOM selectors (ref:tidal-hifi/src/TidalControllers/DomController/constants.ts) and the
-default hotkeys tidal-hifi mirrors from TIDAL's own shortcut list
-(ref:tidal-hifi/src/features/hotkeys/hotkeyConfig.ts): [verified-source]
+From live DOM selectors (ref:tidal-hifi/src/TidalControllers/DomController/constants.ts,
+[verified-source]) and tidal-hifi's *own* default hotkey config
+(ref:tidal-hifi/src/features/hotkeys/hotkeyConfig.ts), whose header comment says it is
+"Based on the hotkeys from https://defkey.com/tidal-desktop-shortcuts" — a third-party wrapper's
+default config, derived from a third-party crowd-sourced shortcut list that was unreachable to
+verify directly. **Downgrade the shortcut column from "TIDAL's own bindings" to "tidal-hifi's
+default config, sourced from one unverifiable aggregator page" — [verified-web, single
+unverifiable aggregator]**, not [verified-source]:
 
-| Nav item | Selector | TIDAL shortcut mirrored by tidal-hifi |
+| Nav item | Selector | tidal-hifi's default hotkey (attributed to TIDAL by defkey.com) |
 | --- | --- | --- |
 | Music (Home) | `sidebar-music` | `alt+m` |
 | Explore | `sidebar-explore` | `alt+e` |
@@ -372,6 +396,14 @@ Sidebar extras: `SIDEBAR_ADD_NEW` context menu (create playlist / create folder)
 `SIDEBAR_PLAYLISTS_SORT_ORDER` context menu, `selection/SET_OPEN_SIDEBAR_FOLDERS` and
 `selection/SET_LOADED_SIDEBAR_FOLDERS` (expandable playlist folders in the sidebar), and drag &
 drop (`selection/START_DRAG`, `selection/END_DRAG`, `view.isDragging`). [verified-source]
+
+**The sidebar is not the full screen inventory.** The client's route loaders name **28 distinct
+`route/LOADER_DATA__*` screens** (each with `--SUCCESS`/`--FAIL` variants), four of which are not
+reachable from the sidebar at all: a standalone **TRACK** page, a standalone **VIDEO** page, a
+**FOLDER** page (playlist folders are a navigable route, not just a sidebar disclosure triangle),
+and **USER** (another person's public profile). The full list, and the generic `VIEW` route that
+serves Explore/genre/mood/editorial pages, is in `references/screen-inventory.md`.
+[verified-source]
 
 #### 4.2 Home / For You
 
