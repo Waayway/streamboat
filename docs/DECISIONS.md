@@ -455,3 +455,35 @@ requires none of the above.
 
 Alternatives: say never and ask TIDAL privately about licensing; a time-boxed spike; listing
 discovered Connect devices in diagnostics.
+
+## 2026-09-08 — Round 10: surfaces beyond the core player
+
+### D-036 Extras in the first release: signal-path panel and floating mini-player (q11.1) — decided
+
+The signal-path panel shows the real decode and output path (source format, device format,
+exclusive or shared, ReplayGain bypassed or not, and "lossy source, bit-perfect not applicable"
+on AAC tracks). On the libmpv side (Windows/macOS) it must report only what libmpv exposes and
+say so. The mini-player is a second iced window over the same application state. Theming presets
+and Discord/OBS/MCP integrations are not v1.
+
+Alternatives: theming and presets; Discord Rich Presence, OBS overlay and a local MCP server.
+
+### D-037 Scrobbling: Last.fm and ListenBrainz behind one abstraction (q11.2) — decided
+
+Alternatives: Last.fm only; none in v1; Last.fm, Libre.fm and ListenBrainz.
+
+### D-038 Video: later, desktop only (q11.3) — decided
+
+Out of v1. Added afterwards as a separate HLS path in the desktop shell sharing one queue with
+audio; video search results and Videos collections show as unplayable until then. Widevine-
+protected video stays out of reach regardless. libmpv already decodes HLS on Windows/macOS;
+GStreamer's HLS path for TIDAL video on Linux is unproven and needs its own spike.
+
+Alternatives: v1 alongside audio (Sone); never.
+
+### D-039 Social: follow artists only (q11.4) — decided
+
+Following artists is a library feature; no Feed, no profiles, no Picks. Shared playlist links
+still open and play.
+
+Alternatives: read-only profiles and playlists; Feed and following users; no follows at all.
