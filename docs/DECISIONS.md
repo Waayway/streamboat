@@ -487,3 +487,52 @@ Following artists is a library feature; no Feed, no profiles, no Picks. Shared p
 still open and play.
 
 Alternatives: read-only profiles and playlists; Feed and following users; no follows at all.
+
+## 2026-09-08 — Round 11: distribution, signing, updates
+
+### D-040 AI-assisted development: disclose, and keep commits and submission PRs human-authored (q12.1) — decided
+
+CONTRIBUTING carries a disclosure statement naming which parts are AI-assisted and to what
+extent. Every commit message and any store/Flathub submission PR is human-authored. Applies to
+every contributor regardless of channel.
+
+Alternatives: use AI with no disclosure; prohibit AI-generated material.
+
+### D-041 Distribution channels for the first release (q12.2) — decided
+
+- GitHub Releases with checksums (all platforms), an AUR source and `-bin` pair, and a hosted
+  apt/dnf repository; plus the AppImage and the daemon's Docker image that carry the pinned
+  GStreamer (D-020).
+- Windows: MSI plus a winget manifest.
+- macOS: a DMG now; a Homebrew cask only once notarization exists and the age/notability
+  thresholds are met. Universal versus Apple-Silicon-only is decided when the first macOS CI job
+  is written; a universal build requires the bundled libmpv tree to be universal too.
+- Flathub: not planned for the first release. Revisit after a tagged release history exists; the
+  disclosure posture (D-040) keeps it reachable.
+
+Consequence for D-020: with no Flatpak runtime in the first release, "bundle pinned on Linux"
+means the AppImage and Docker image carry the pinned GStreamer, deb/rpm packages vendor a private
+pinned GStreamer tree (under `/opt/streamboat`, Chrome-style) rather than linking the distro's,
+and the AUR build links Arch's system GStreamer, which is always above the 1.26.10 floor. Confirm
+the deb/rpm vendoring approach when the first packaging job is written.
+
+### D-042 Code signing: none for v1 (q12.3) — decided
+
+Windows and macOS builds ship unsigned in the first release, knowingly departing from what
+platform parity (D-002) would otherwise imply. Consequences: SmartScreen warns on every Windows
+install; macOS Gatekeeper blocks the app until the user removes the quarantine attribute or uses
+right-click Open; no Homebrew cask is possible; the README documents both workarounds plainly.
+Revisit before a 1.0 release; Azure Trusted Signing eligibility and the Apple Developer Program
+are the two costs to budget then.
+
+Alternatives: both platforms budgeted before the first binary release (the research
+recommendation); macOS notarization only.
+
+### D-043 Updates: GitHub Releases only, no in-app mechanism for now (q12.4) — decided
+
+No update check and no updater in the binaries. Managed packages (AUR, apt/dnf, winget) update
+through their package managers; direct downloads are announced on GitHub Releases. Revisit once
+the API-drift canary exists, since a client of an unofficial API goes stale in a way users need
+to hear about.
+
+Alternatives: check-and-notify (the research recommendation); a signed updater for bundles.
