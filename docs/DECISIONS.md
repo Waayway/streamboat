@@ -86,3 +86,49 @@ HI_RES_LOSSLESS requires the PKCE flow and a client id with a secret (q7.1, q7.2
 - **R-2 Crash reporting.** The research default is local crash dumps plus a debug-bundle command,
   nothing leaving the machine. The owner wants opt-in hosted crash reporting considered. To be
   settled in the account-data and privacy round.
+
+## 2026-09-08 — Round 2: licence, identity and contribution
+
+### D-004 Mobile: a someday target; the core stays UI-free (q1.3) — decided
+
+No mobile work now. The only commitment is that `streamboat-core` carries no UI, windowing or
+desktop-OS dependency, proven by a CI build with `--no-default-features`, so a binding layer can be
+added later. iOS is treated as closed by App Store guideline 5.2.2 regardless of licence; Android
+is the realistic first mobile target when the time comes.
+
+Alternatives: plan Android for 2027 and budget for it in the crate layout now; pick a
+mobile-capable stack now (Flutter over a Rust core, or UniFFI plus native apps).
+
+### D-005 Licence: GPL-3.0-only apps over an Apache-2.0 core (q2.1) — decided
+
+`streamboat-core` (API client, auth, manifest parsing, models) is Apache-2.0 so other clients can
+reuse it; the desktop app and daemon are GPL-3.0-only so they may adapt Sone/High Tide/Strawberry
+code and link GPL GStreamer plugins.
+
+Alternatives: GPL apps over an LGPL core (python-tidal's shape); GPL-3.0-only everywhere (Sone,
+High Tide, Strawberry); MIT/Apache-2.0 everywhere (tidalrs, tidalt, TIDAL's SDKs).
+
+Consequences: relicensing later needs every contributor's consent, so the split is a one-way door;
+the crate that holds the audio engine and per-OS output backends must be chosen deliberately
+(q2.2), because ALSA/WASAPI negotiation and gapless concat are the parts most likely to be adapted
+from GPL-3.0 Sone and must not land in the Apache-2.0 crate.
+
+### D-006 Contribution agreement: none; provenance rests on GitHub commit metadata (q2.3) — decided
+
+Alternatives: DCO sign-off checked in CI (the research recommendation); a CLA with relicensing
+rights.
+
+Consequences: lowest friction for contributors; relicensing later is impossible in practice, which
+makes D-005 final. Conventional Commits on trunk with tags remains the assumed workflow.
+
+### D-007 App ID and owner: `io.github.waayway.streamboat` under the existing personal account (q2.4) — decided
+
+The string is baked into the Flatpak ID and metainfo `<id>`, the Flathub repo name, the D-Bus/MPRIS
+bus name, the macOS bundle identifier, config and cache directory names and the Windows
+AppUserModelID; moving later costs a Flathub end-of-life rebase plus a user-data migration.
+
+Alternatives: a new GitHub organisation; a registered domain with a reverse-DNS ID.
+
+Consequences: check that `streamboat` is free on crates.io, npm, PyPI, AUR, Flathub, the Snap
+Store and winget before the first code commit; Flathub verification is by repo-owner
+authentication.
