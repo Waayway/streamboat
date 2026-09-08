@@ -177,3 +177,50 @@ Windows and macOS get background playback through the GUI's tray mode (q3.4), no
 one-hour spike on WASAPI from session 0 is still worth running but does not block v1.
 
 Alternatives: real services on all three; Linux plus a macOS LaunchAgent.
+
+## 2026-09-08 — Round 4: UI toolkit and visual direction
+
+### D-012 Look: one streamboat identity on all three platforms (q4.1) — decided
+
+A single distinctive look, themeable from a small set of design tokens, rather than per-OS
+conventions or a GNOME-first design. Accessibility (keyboard navigation, screen-reader exposure,
+contrast) has to be built into the toolkit layer rather than inherited from a native toolkit.
+
+Alternatives: GNOME citizen first (libadwaita, High Tide's look); native per-OS conventions.
+
+### D-013 Toolkit: iced (q4.2) — decided
+
+Pure-Rust, MIT-licensed, retained-mode toolkit used by System76's COSMIC desktop; 0.14 added
+reactive rendering, hot reloading and headless testing. Chosen by the owner over the research's
+non-webview recommendation (Slint) and over Flutter and GTK4.
+
+Alternatives: Slint (research's non-webview pick, third on the matrix); Flutter over a Rust core
+(second on the matrix, best mobile path); GTK4/libadwaita via relm4 (best Linux integration, weak
+elsewhere); egui (kept as a candidate for an internal debug/signal-path window only); GPUI
+(pre-1.0, thin docs).
+
+Known costs to design around: the Elm architecture routes every interaction through one `Message`
+enum, which gets verbose for a media app with many concurrent async loads, so split messages per
+screen/module from the start; the API has churned hard across 0.9 to 0.14, so pin the version,
+keep the iced docs for the pinned version in the repo's agent context, and review agent-written
+iced code against the pinned API; custom widgets (virtualised lists for large collections, a
+lyrics view, a seek bar) are the project's own work; theming from tokens maps naturally onto
+iced's `Theme`/`Style` types.
+
+### D-014 Window lifecycle: tray icon, closing the window keeps playing, quitting is explicit (q3.4) — decided
+
+The desktop shell keeps the single-instance lock and the audio device while hidden. This is the
+mechanism that gives Windows and macOS always-on playback without a background service (D-011).
+
+Alternatives: close quits and releases the device; no tray at all with the daemon mandatory for
+background playback.
+
+### D-015 Browse screens: hybrid renderer (q4.4) — decided
+
+Home and Explore render TIDAL's server-driven `home/feed` sections (enumerate the tab bar from the
+header, page on the top-level cursor, expand sections via their `apiPath`) with a graceful fallback
+for unknown section types; Collection and entity pages (album, artist, playlist, track, mix) are
+hand-coded from typed endpoints. Whether to also parse the still-live v1 `pages/home` shape as a
+fallback is a later implementation call; there is no automatic degradation between the two.
+
+Alternatives: render page modules everywhere; hand-code every screen.
