@@ -224,3 +224,54 @@ hand-coded from typed endpoints. Whether to also parse the still-live v1 `pages/
 fallback is a later implementation call; there is no automatic degradation between the two.
 
 Alternatives: render page modules everywhere; hand-code every screen.
+
+## 2026-09-08 — Round 5: audio engine and output
+
+### D-016 Audio engine: GStreamer on Linux, libmpv on Windows and macOS, both behind one engine trait (q5.1) — decided
+
+Linux uses GStreamer for demux and decode with the project's own ALSA writer for exclusive output
+(Sone's shape). Windows and macOS use libmpv, which brings DASH, HLS, gapless, seek, buffering and
+exclusive output (WASAPI exclusive, `coreaudio_exclusive`) in one dependency and removes the
+GStreamer macOS packaging problem no reference client has solved.
+
+Alternatives: GStreamer everywhere with libmpv as a secondary backend (the research
+recommendation); libmpv everywhere; Symphonia with hand-written output (no HE-AAC, so
+incompatible with D-003).
+
+Consequences: two engine implementations and two test matrices from the first release; the engine
+trait is the contract both must satisfy (load manifest, play/pause/seek, gapless preload, format
+change notification, signal-path report, device enumeration and exclusive open); libmpv is
+GPLv2+ unless built with `-Dgpl=false`, which is compatible with the GPL-3.0-only apps
+(D-005) but rules out App Store distribution, already closed for other reasons; libmpv must be
+bundled on Windows and macOS (no reference client does this, so the packaging is the project's
+own work); signal-path introspection is weaker on the libmpv side and the UI must say so rather
+than guess; HLS video (D-023 later) is proven in mpv and unproven in GStreamer, which favours the
+split.
+
+### D-017 Bit-perfect scope: exclusive output on all three OSes in the first release (q5.3) — decided
+
+ALSA `hw:` on Linux, WASAPI exclusive on Windows, CoreAudio hog mode on macOS via libmpv's
+`coreaudio_exclusive`. Off by default behind an advanced setting until proven on hardware per
+platform. macOS remains the least verified path: mpv documents the behaviour, no source in the
+research verified it on hardware, and one field report describes DAC/HDMI misrouting, so a Mac
+plus a DAC is a v1 test requirement. Whether exclusive ALSA works under Flatpak is resolved with a
+single test run before the toggle is greyed out under confinement.
+
+Alternatives: Linux and Windows first (the research recommendation); shared mode only in v1.
+
+### D-018 Format change at a track boundary: keep the device open across same-format tracks, reopen on change, accept the gap (q5.4) — decided
+
+True gapless where it matters (albums), never resample. Budget a short silence pre-roll after each
+reopen so the first note is not truncated. No reference client combines gapless with an exclusive
+writer, so this is proven by a spike before it enters the engine design; the fallback if it fails
+is the badged `plughw:` route.
+
+Alternatives: fixed output rate, always gapless (not bit-perfect); `plughw:` fallback with a badge;
+a per-device user setting.
+
+### D-019 Loudness and crossfade: ReplayGain on by default (album mode, +4 dB pre-amp, TIDAL's formula), exposed as off / album / track, no crossfade (q6.1) — decided
+
+Bypassed in bit-perfect mode along with the volume slider, stated in the UI. Crossfade is not
+built: it is structurally incompatible with exclusive device access.
+
+Alternatives: normalization off by default; crossfade in shared mode only.
