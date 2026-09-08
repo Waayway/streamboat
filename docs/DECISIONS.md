@@ -408,3 +408,50 @@ no field ever repurposed, so older clients keep working. The GUI can start hosti
 protocol change.
 
 Alternatives: the GUI hosts a listener too; exact-match versions per release.
+
+## 2026-09-08 — Round 9: stream ownership, multiroom, Connect
+
+### D-032 MPD-compatible listener: later, as a documented subset (q9.3) — decided
+
+Deferred past v1, then implemented as status, currentsong, transport, queue, idle and albumart
+plus lsinfo/search over a virtual tree, bound to a Unix socket or loopback with local permissions
+(no shared password). Never on the critical path to v1.
+
+Alternatives: subset in v1; fuller emulation with browsing (Mopidy-MPD's model); never.
+
+### D-033 Streaming privileges ("Pushkin") websocket: connect, claim on user intent (q10.1) — decided
+
+Open the socket, register a hostname-derived display name, and send the claim only on genuine
+user intent, never on autoplay or resume-after-network-hiccup. On a takeover notification, pause
+and surface "playback started on <device>" on every control surface; never auto-retry the claim.
+Reconnect with capped exponential backoff and jitter, and explicitly on token refresh; do not copy
+the browser SDK's unbounded reconnect loop. This is what makes one daemon fanning out to many
+rooms the only workable multiroom shape.
+
+Alternatives: observe only, never claim; do not connect at all.
+
+### D-034 LAN audio: Snapcast plugin output only (q10.2) — decided
+
+A raw PCM output backend at a fixed format feeding Snapcast, plus a `streamboat snapcast-plugin`
+subcommand implementing Snapcast's JSON-RPC stream-plugin protocol so Snapcast clients show
+metadata and transport controls; discover snapserver via mDNS. An explicit output mode: it
+resamples to one fixed format and is mutually exclusive with bit-perfect variable-rate output
+(D-018). Same user, same host, no service impersonation. No Cast or AirPlay senders, no HTTP
+stream endpoint.
+
+Alternatives: local devices only; Cast/AirPlay senders; an HTTP stream endpoint.
+
+### D-035 TIDAL Connect: never a target, never a controller, stated publicly (R-1, closed; q10.3) — decided
+
+The reopened item closes on the research default. README and in-app text state that streamboat is
+neither a Connect target nor a controller and why (obfuscated binary and vendor device
+certificate on the target side; an undocumented wire protocol with zero precedent and
+anti-circumvention exposure on the controller side). Do not advertise `_tidalconnect._tcp`, do
+not point users at containers that reuse iFi's certificate, and handle the takeover notification
+gracefully when the user hands off from the official app. The streamboat-native remote (daemon
+plus control API, D-030) is the multi-device story; hand-off between the user's own streamboat
+instances and the official app goes through TIDAL's official, documented play-queue API, which
+requires none of the above.
+
+Alternatives: say never and ask TIDAL privately about licensing; a time-boxed spike; listing
+discovered Connect devices in diagnostics.
