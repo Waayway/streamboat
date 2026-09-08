@@ -275,3 +275,55 @@ Bypassed in bit-perfect mode along with the volume slider, stated in the UI. Cro
 built: it is structurally incompatible with exclusive device access.
 
 Alternatives: normalization off by default; crossfade in shared mode only.
+
+## 2026-09-08 — Round 6: packaging the engine, DSP, caching, credentials
+
+### D-020 GStreamer on Linux is bundled and pinned (q5.2) — decided
+
+Flatpak (pinned runtime plus GStreamer module), AppImage and the daemon's Docker image all carry a
+pinned GStreamer at or above 1.26.10 (FLAC-in-DASH floor) with a deliberately chosen plugin set
+that includes an LGPL AAC decoder (`avdec_aac` or `faad`, never `fdk-aac`). Uniform behaviour and
+both version floors met on Debian stable and Raspberry Pi OS, at the cost of roughly 20 MB and
+owning security updates for a media stack. Windows and macOS bundle libmpv (D-016), so every
+platform ships its own pinned engine.
+
+Alternatives: system GStreamer with the `dashdemux2` rank-demotion workaround; a mixed
+bundle-for-Flatpak, system-for-distros scheme; system only with a hard 1.26.10 requirement.
+
+### D-021 No DSP, ever (q6.2) — decided
+
+No EQ, crossfeed, upsampling or room correction. Stated as a product position in the README and
+FAQ, with CamillaDSP named as the external route. Any DSP breaks the bit-perfect claim, and the
+native TIDAL client has no equalizer either.
+
+Alternatives: a shared-mode-only EQ; a full DSP chain with bit-perfect as one mode.
+
+### D-022 On-disk audio: a pinned, encrypted offline cache for the logged-in subscriber (q6.3) — decided
+
+Alternatives: no audio cache (Sone's shape, the research recommendation); a session-only opaque
+buffer; deciding after v1.
+
+Guardrails that make this a subscriber feature rather than a download feature, all mandatory:
+
+- Explicit user pin per album/playlist/track, never automatic; artwork and metadata caching stay
+  separate, capped and evicted.
+- Encrypted at rest with a per-install key held in the OS keyring (encrypted-file fallback as in
+  D-024), device-bound; no export, share or "open folder" path; files are opaque chunks, not
+  playable media.
+- Revalidated against the account on a validity window mirroring TIDAL's own offline model, and
+  wiped on logout, on subscription lapse (`subStatus`), and when the pin is removed.
+- Obtained as a transparent cache of the same cleartext stream the player would fetch anyway;
+  never request `playbackmode=OFFLINE` or `usage=DOWNLOAD`, which are licensed, DRM-bound flows.
+- Never cache PREVIEW assets or encrypted manifests; the encrypted-manifest refusal still applies.
+- Per-track DASH manifests still go to a unique temp file per streaming session and are deleted on
+  teardown.
+- Documented plainly in the README's legal section next to the subscription requirement.
+
+### D-023 Client credentials: embedded default with a user override (q7.1) — decided
+
+No credential in the repository. An optional build-time input supplies a default client ID and
+secret; settings expose a user-supplied pair. Docs state that any shipped credential is
+extractable and that a secret-less ID filters the hi-res tiers out of the cascade. Packagers can
+build with no credential at all.
+
+Alternatives: user must supply their own; embedded and obfuscated (Sone, python-tidal).
