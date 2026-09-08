@@ -132,3 +132,48 @@ Alternatives: a new GitHub organisation; a registered domain with a reverse-DNS 
 Consequences: check that `streamboat` is free on crates.io, npm, PyPI, AUR, Flathub, the Snap
 Store and winget before the first code commit; Flathub verification is by repo-owner
 authentication.
+
+## 2026-09-08 — Round 3: architecture shape and core language
+
+### D-008 Core language: Rust, and no Tauri / webview shell (q3.1) — decided
+
+One Cargo workspace produces the daemon, the CLI and the desktop shell, with hand-written
+ALSA/WASAPI/CoreAudio writers where needed. The owner explicitly rules out Tauri: the desktop UI
+is not a webview.
+
+Alternatives: Go + Wails v3; Python via python-tidal; C++/Qt.
+
+Consequences: the research's top-scoring UI shell (Tauri 2 + React) is off the table; the toolkit
+choice (q4.2) is among Rust-native toolkits (Slint, iced, egui, GPUI, GTK4/libadwaita via gtk-rs
+or relm4) or a non-Rust native UI over the Rust core (Flutter via flutter_rust_bridge); the
+webview frontend question (q4.3) is moot; `tidalrs` (MIT) is a candidate starting point for the
+API crate; Sone remains the closest precedent for the audio engine even though its UI shell is
+not reused.
+
+### D-009 Licence boundary: a GPL-3.0-only `streamboat-player` crate holds the engine (q2.2) — decided
+
+`streamboat-core` stays narrow and Apache-2.0 (API client, auth, manifest parsing, models). The
+audio engine, the per-OS output writers and the queue live in a GPL-3.0-only player crate that the
+apps link, so adapting Sone's ALSA `hw_params` negotiation or High Tide's GStreamer graph is
+licence-clean.
+
+Alternatives: engine inside the Apache core under a clean-room commitment; the whole core under GPL.
+
+### D-010 Process model: two artifacts over one core, single-instance lock, GUI falls back to remote client (q3.2) — decided
+
+The desktop shell and the daemon are two Cargo artifacts over one library with one Command/Event
+surface. On startup the GUI tries to take the single-instance lock: the MPRIS bus name where a
+D-Bus session bus exists, a lock file or abstract Unix socket otherwise. If another instance holds
+it, the GUI becomes a remote client speaking only the control API's Command/Event types. The lock,
+not the audio device, is claimed; the device is opened when playback starts.
+
+Alternatives: GUI always a client of a supervised daemon (MPD/Roon model); separate binaries with
+no handoff (librespot/ncspot model).
+
+### D-011 Headless platforms: a real daemon on Linux; Windows and macOS get always-on playback via tray mode (q3.3) — decided
+
+Linux ships systemd user and system units (lingering for headless boxes) plus a Docker recipe.
+Windows and macOS get background playback through the GUI's tray mode (q3.4), not a service. A
+one-hour spike on WASAPI from session 0 is still worth running but does not block v1.
+
+Alternatives: real services on all three; Linux plus a macOS LaunchAgent.
