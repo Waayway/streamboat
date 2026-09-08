@@ -37,8 +37,17 @@ See `references/scoring-and-candidates.md` §2 (4.8) for the full tradeoff.
 ## The invariant that protects all three paths
 
 **`streamboat-core` must not depend on any UI toolkit, any windowing library, or any desktop-only OS
-API.** Enforce it with a CI job that builds `streamboat-core` for `wasm32-unknown-unknown` or a bare
-`--no-default-features` profile — a compile-time check, not a design-review reminder.
+API.** **Correction (fact-checked): a `wasm32-unknown-unknown` CI gate is the wrong enforcement
+mechanism.** `references/architecture-shapes.md` §1's Shape 1 puts the catalog cache in SQLite
+(`rusqlite`/`sqlx`), and neither builds for `wasm32-unknown-unknown` (`rusqlite` bundles a C SQLite;
+`sqlx`'s SQLite driver needs a real filesystem), while `tokio` on that target supports only a
+stripped-down subset (no `net`, `fs`, or multi-threaded runtime) — the gate would fail for reasons
+unrelated to UI-toolkit leakage and would either get disabled or force an artificial crate split. Use
+the actual future targets and the actual invariant instead: build `streamboat-core` for
+`aarch64-linux-android` and `aarch64-apple-ios` in CI, and add a `cargo-deny`/`cargo tree -i` gate
+that fails if `tauri`, `gtk`, `winit`, `wry`, or any windowing crate appears in `streamboat-core`'s
+dependency graph. Pair with the daemon-in-a-minimal-container job from
+`references/tauri-engineering-facts.md` §7 as the second gate.
 
 ## Comparanda this research did not reach
 

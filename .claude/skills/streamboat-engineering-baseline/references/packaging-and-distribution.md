@@ -8,7 +8,8 @@ points at a shallow clone — see `sources.md`.
 1. Flathub (Linux desktop — the primary channel)
 2. Flathub: metainfo requirements, submission mechanics, maintenance and verification
 3. Snap
-4. deb / rpm / AUR (and the missing portable-binary step)
+4. deb / rpm / AUR (portable-binary step, Nix as a channel, package smoke tests, FUNDING.yml)
+4a. Bundling the media runtime — Windows and macOS have no system GStreamer/FFmpeg
 5. Windows
 6. macOS
 7. Auto-update strategy overall
@@ -53,13 +54,16 @@ from this environment):
   generate their commit messages, descriptions, review comments, or replies. Submitters must not
   request AI-agent reviews. Undisclosed or materially misrepresented AI-generated material ... may
   result in rejection. Repeated violations may result in a permanent ban from future submissions."
-  **This policy has already flipped once in 2026 and must be re-read before submission, not
-  treated as settled**: commit `992f57b` (2026-05-29, "Reword LLM policy to make it clear it's not
-  allowed") briefly replaced this text with an outright ban — "Applications containing
-  AI-generated or AI-assisted code, documentation, or other content are not allowed ... Exceptions
-  may be granted for mature, well-maintained projects" — which was widely reported as a ban before
-  the text reverted to the disclosure-plus-reviewer-discretion regime quoted above. Treat the
-  quoted text as a dated snapshot (read 2026-09-07 at commit HEAD of
+  **Treat this policy as unsettled and re-read it before submission, regardless of the history
+  below.** The currently quoted text was re-read directly against `flathub-infra/documentation` and
+  matches verbatim. A separate claim — that commit `992f57b` (2026-05-29) briefly replaced this
+  text with an outright ban ("Applications containing AI-generated or AI-assisted code,
+  documentation, or other content are not allowed ... Exceptions may be granted for mature,
+  well-maintained projects"), widely reported as a ban, before reverting — **could not be
+  independently re-verified in this pass**: GitHub API access to that repo's commit history is not
+  enabled for this environment. Do not repeat the specific commit/date as settled fact without
+  checking it directly; the safer framing is "this policy has changed before and may change again".
+  Treat the quoted text as a dated snapshot (read 2026-09-07 at commit HEAD of
   `flathub-infra/documentation`), add a standing task to re-read it immediately before any Flathub
   submission, and note the adjacent linter rule: sandbox-escape exceptions (`home`, `host`,
   `flatpak-spawn`, arbitrary bus names) are reported as "not... granted if there are signs of LLM
@@ -85,8 +89,14 @@ Add for streamboat, if the features exist:
 - `--talk-name=org.freedesktop.secrets` (lowercase!) for the host keyring, **or** rely on the
   Secret portal, which needs no permission (see `secrets-and-tokens.md` §2).
 - `--own-name=org.mpris.MediaPlayer2.<something>` — allowed by default only when it exactly
-  matches the Flatpak ID, is an exact subname of it, or is an MPRIS subname
-  (linter rule `finish-args-own-name-cpt`). The default sandbox policy already lets an app own
+  matches the Flatpak ID, is an exact subname of it, or is an MPRIS subname. **Correction**: there
+  is no linter rule literally named `finish-args-own-name-cpt` — that string is not in
+  `flatpak_builder_lint/checks/finish_args.py` (fetched from `flathub-infra/flatpak-builder-lint`
+  HEAD, read directly; `cpt` there is an unrelated local variable used for a *different* rule id,
+  `finish-args-portal-impl-{cpt}-talk-name`). The real rule ids are
+  **`finish-args-unnecessary-appid-own-name`** and **`finish-args-unnecessary-appid-mpris-own-name`**
+  (info text: "This is granted by default"); any other own-name gets a dynamic id
+  `finish-args-own-name-<bus.name>`. The default sandbox policy already lets an app own
   `org.mpris.MediaPlayer2.$FLATPAK_ID` with no extra finish-arg at all (confirmed by direct fetch
   of `flatpak/flatpak-docs`' sandbox-permissions doc: an app may "own its own namespace named by
   $FLATPAK_ID, subnames of it and org.mpris.MediaPlayer2.$FLATPAK_ID"). **Unverified**: whether the
@@ -168,6 +178,16 @@ to write the file from. Concrete fields, all from `flathub-infra/documentation` 
   for the automerge options above. Domain-based alternatives exist (HTTPS token at
   `https://<domain>/.well-known/org.flathub.VerifiedApps.txt`, DNS TXT record, GitLab variants) but
   are unnecessary here.
+- **The app-ID / GitHub-owner choice is permanent — decide it as an explicit ADR before the first
+  commit.** `io.github.<owner>.streamboat` is baked into: the Flatpak ID and metainfo `<id>`, the
+  Flathub repo name, the D-Bus/MPRIS bus name, the macOS bundle identifier
+  (`config-cache-logs-telemetry.md` §1 uses it as the directory name), and — once §5 introduces one
+  — the Windows AppUserModelID. Settle two things now: (a) personal account or a new GitHub org —
+  moving later costs a Flathub `end-of-life-rebase` plus a user-data migration; (b) check the name
+  is free on crates.io/npm/PyPI/AUR/Flathub/Snap Store/winget and as a domain before locking it in.
+  Precedent: sone is `io.github.lullabyX.sone` (personal), High Tide is
+  `io.github.nokse22.high-tide` (personal), Strawberry is `org.strawberrymusicplayer.strawberry`
+  (owns its own domain) — an org gives a bus-factor-safe path to keeping the verification badge.
 
 Sources:
 https://raw.githubusercontent.com/flathub-infra/documentation/master/docs/02-for-app-authors/03-metainfo-guidelines/index.md
@@ -242,6 +262,65 @@ references already hit: an AppImage has no stable app identity for the keyring �
 different D-Bus session)" — which is exactly why the encrypted-file fallback in
 `secrets-and-tokens.md` §3 is mandatory, not optional, for this channel.
 
+**Nix is a fourth, zero-review, day-one channel for exactly the NixOS user above has nothing to
+install — and it doubles as a from-source CI build gate.** Three checkouts expose *package*
+outputs, not just a dev shell (contrast `repo-layout-and-docs.md` §4, which covers the dev-shell
+use only): sone's `flake.nix` exposes `packages.${system}.sone` / `apps.${system}.default`, and —
+worth copying regardless of whether Nix ships as a channel — `checks.${system}.build =
+self.packages.${system}.sone`, so `nix flake check` in CI is a full from-source build gate for free
+(ref:sone/flake.nix:13-24,47). High Tide's flake exposes `packages.high-tide =
+pkgs.python313Packages.buildPythonApplication {...}` (ref:high-tide/flake.nix:87-102). mopidy-tidal
+exposes `packages.default` (ref:mopidy-tidal/flake.nix:66). Ship a flake with a package output from
+the first release and add `nix flake check` to `ci-and-repo-governance.md` §1's matrix.
+
+**Add a package-install smoke test to CI — a build-only job does not catch a missing runtime
+dependency.** sone's `build-scripts/test/{all,common,deb,rpm,pacman}.sh` install the built package
+in Docker per-distro (Ubuntu 22.04/24.04, Debian 12 via `apt-get install -f` — that step validates
+declared dependencies are correct and sufficient; archlinux:latest for pacman), start a D-Bus
+session and Xvfb, launch the app, and assert: package registered installed, `ldd` reports no "not
+found", a window appears within 15 s (`xdotool`), the MPRIS name appears on the bus, GStreamer
+device enumeration succeeds, config dir created — plus an AppImage code path (`cd
+/tmp/squashfs-root && ./AppRun`). Add this as a CI job on release-candidate tags; the headless-mode
+equivalent check is "the control socket/D-Bus name appears", not a window.
+
+**Ship `.github/FUNDING.yml` from day one.** Seven of the 21 checkouts ship one: sone/sone-windows
+(`patreon: lullabyX`), High Tide (`github: Nokse22` + `ko_fi: nokse22`), TidaLuna
+(`github: [inrixia]`), tidal-hifi (`github: [Mastermindzh]` + a PayPal.me custom link), tidalswift
+(`github: [melgu]`). sone additionally declares the donation link to Flathub itself via
+`<url type="donation">` alongside `<url type="bugtracker">`/`<url type="vcs-browser">`
+(ref:sone/data/io.github.lullabyX.sone.metainfo.xml).
+
+## 4a. Bundling the media runtime — Windows and macOS have no system GStreamer/FFmpeg
+
+§5-6 below cover installer format, signing and notarization on the assumption the binary is
+self-contained. It is not, for any GStreamer/FFmpeg-based stack: Windows and macOS ship neither
+runtime, so the installer must carry the entire media runtime plus a bundled-vs-system code path
+for plugin/module discovery. This is the single most consequential Windows-specific fact in the
+reference set, from the one checkout the main report otherwise declined to inspect in depth
+(`sone-windows`).
+
+- **Windows (sone-windows).** `scripts/prepare-gstreamer.js` generates two packaging artifacts:
+  (a) `src-tauri/gstreamer-hooks.nsi`, an NSIS `!macro NSIS_HOOK_POSTINSTALL` copying
+  `gstreamer-runtime/*.dll`, `lib/gstreamer-1.0/*.dll` and `lib/gio/modules/*.dll` into `$INSTDIR`
+  with a matching uninstall hook; (b) `src-tauri/gstreamer-fragment.wxs`, a WiX fragment with one
+  `<Component>`/`<File>` pair per DLL (ref:sone-windows/src-tauri/gstreamer-hooks.nsi,
+  ref:sone-windows/src-tauri/gstreamer-fragment.wxs,
+  ref:sone-windows/scripts/prepare-gstreamer.js). **Both generated files embed the developer's own
+  absolute local path** — a reproducible-build break (`ci-and-repo-governance.md` §4) and an
+  incidental username leak; generate these files from a CI-relative path, not a developer machine.
+- **macOS (Strawberry).** Deploys with a purpose-built tool: `cmake/Dmg.cmake` does
+  `find_program(MACDEPLOYTOOL_EXECUTABLE NAMES ntool)` ("get it from
+  https://github.com/jonaski/ntool"), and `src/engine/gststartup.cpp` sets `gst_plugin_scanner` and
+  the GIO module search paths to bundle-relative directories at runtime — the app must detect "I am
+  running from an app bundle" and repoint GStreamer's plugin/module discovery away from the (absent)
+  system locations.
+- **Three consequences to design for from the start**: (1) shipping LGPL-2.1 GStreamer DLLs/dylibs
+  carries the same relinking obligation `licensing-and-legal.md` §3 already identifies for static
+  FFmpeg — publish the exact bundled-runtime build/version list; (2) the app needs a
+  bundled-vs-system code path for plugin/module discovery on both Windows and macOS; (3) generate
+  packaging fragments (`.wxs`, `.nsi`) from CI-relative paths only, mark them `linguist-generated`
+  in `.gitattributes` (`testing-strategy.md` §11).
+
 ## 5. Windows
 
 - **Installer format**: tidal-hifi produces an MSI via electron-builder (`win: target: msi`);
@@ -273,7 +352,25 @@ different D-Bus session)" — which is exactly why the encrypted-file fallback i
   player, but it changes the install path and therefore the `%LOCALAPPDATA%` layout assumptions in
   `config-cache-logs-telemetry.md` §1. Decide both before cutting the first Windows installer.
   Generate the manifest with `wingetcreate`; automate updates from the release workflow once the
-  release assets have stable names.
+  release assets have stable names. **Two more requirements from the primary validation doc, both
+  likely first-submission failures if ignored**: `InstallerUrl` must be HTTPS and its domain must
+  be an approved official source for the publisher, discoverable by navigating from the publisher's
+  own site (`doc/Validation.md`, "Manifest URLs" / step 06; include `PackageUrl` to help a moderator
+  confirm this); and a package flagged as a Potentially Unwanted Application "cannot be accepted,
+  regardless of the application's legitimacy" (step 07) — worth knowing given streamboat talks to
+  an unofficial API and embeds a client credential, either of which a naive heuristic scanner could
+  flag. Comment `@wingetbot run` to re-trigger validation after fixing a hash/URL issue.
+  (https://raw.githubusercontent.com/microsoft/winget-pkgs/master/doc/Validation.md, read directly.)
+- **AppUserModelID (AUMID) and install scope, together, are what make SMTC (Windows media transport
+  controls) work — decide both alongside the app ID (§2), not as an afterthought.** The process
+  must call the AUMID-setting API at startup (Win32
+  `SetCurrentProcessExplicitAppUserModelID` or the stack's equivalent), and the installer must stamp
+  the *identical* AUMID onto the Start Menu shortcut — a mismatch is why a media app's transport
+  controls silently fail to appear in the Windows media flyout. No reference project sets an
+  AppUserModelID at all (grep across all 21 checkouts: zero hits, even `sone-windows`), so this is a
+  no-precedent item to specify. Tie it to the `Scope` decision above, since the two install modes
+  place the Start Menu shortcut in different roots. Add "SMTC transport controls appear and respond"
+  to `i18n-a11y-observability.md` §2's per-OS manual test matrix.
 - No reference project auto-updates on Windows; electron-builder's `publish`/`autoUpdater` is not
   configured in tidal-hifi's build configs.
 
@@ -358,7 +455,9 @@ Recommended: **no silent in-app updater on any platform initially.**
 - **Every release ships checksums.** tidalt generates `sha256sum * > checksums.txt` and pastes it
   into the release body with verification instructions (ref:tidalt/.github/workflows/release.yml).
   **No reference project verifies its own release artifacts beyond that.** A grep for
-  `cosign|sbom|cyclonedx|spdx` across all 21 checkouts returns no hits, and only tidal-cli
+  `cosign|sbom|cyclonedx|attest-build-provenance` across all 21 checkouts returns no hits (drop
+  `spdx` from that expression — it matches license-header comments, not provenance tooling, in 38
+  files across the set), and only tidal-cli
   (`npm publish --access public --provenance`) and tidal-sdk-web (OIDC) use any provenance
   mechanism at all, and only for npm packages — nobody attests a Linux binary. Treat provenance and
   signing as a **no-precedent line item to budget for**, not a copyable pattern: recommend

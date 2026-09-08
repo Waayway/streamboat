@@ -9,6 +9,10 @@ big Raspberry Pi / headless section) and the souvlaki MSRV finding in §6's rewr
 2. Idle inhibit
 3. Hot-plug and device enumeration
 4. Headless / Raspberry Pi: the client/server architecture question, answered
+5. SMTC needs a real HWND — no headless Windows now-playing integration
+6. Idle inhibition on Windows and macOS has no reference implementation
+7. Artwork for OS media integration must be local — never a remote URL
+8. Headless/Pi CPU and memory feasibility is unmeasured
 
 ---
 
@@ -125,3 +129,65 @@ session bus at all, which silently disables both `ReserveDevice1` (tidalt's own 
 skips itself when there is no session bus — `output-backends.md` §2) and MPRIS. **A headless build
 should not depend on either and should simply own `hw:` outright**, not degrade silently into a
 half-working state.
+
+## 5. SMTC needs a real HWND — no headless Windows now-playing integration
+
+§1 found the macOS event-loop constraint on souvlaki but not the Windows analogue, even though the
+brief requires headless mode on every platform. souvlaki's `PlatformConfig` on Windows carries an
+`hwnd: Option<*mut c_void>` that SMTC needs populated with a real window handle. sone-windows spawns
+a task that polls `app_handle.get_webview_window("main")` every 100 ms for up to 5 seconds before it
+can build the config — *"We need to wait for the main window to be created to get HWND"*
+(`ref:sone-windows/src-tauri/src/media_controls.rs:14-46`). **Consequences:** (1) a
+`streamboat-server` Windows service or CLI daemon with no window gets **no SMTC integration at all**
+— the Windows analogue of §4's "no session bus on headless" rule, and needs the same
+do-not-depend-on-it treatment; (2) media-control init must be sequenced behind window creation on
+Windows, never done at app start unconditionally; (3) sone-windows's own handler wires only
+Play/Pause/Toggle/Next/Previous/Stop, leaving `Seek`/`SetPosition`/`SetVolume` unimplemented — its
+SMTC seek bar and volume are inert, a completeness bar streamboat should clear rather than copy.
+
+## 6. Idle inhibition on Windows and macOS has no reference implementation
+
+§2 gives Linux a complete four-layer answer; no reference client fills in Windows or macOS.
+sone-windows's `idle_inhibit.rs` contains only the Linux D-Bus/portal interfaces and is dead code on
+the other two platforms; Strawberry has no `SetThreadExecutionState`/`IOPMAssertion` calls anywhere.
+Write from platform APIs directly: **Windows** —
+`SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` while playing,
+`SetThreadExecutionState(ES_CONTINUOUS)` on stop — deliberately **without** `ES_DISPLAY_REQUIRED`
+(an audio player shouldn't keep the screen on); per-thread, so call from a thread alive for the whole
+playback session. **macOS** — `IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep,
+kIOPMAssertionLevelOn, CFSTR("streamboat playback"), &assertionID)` (IOKit), `IOPMAssertionRelease`
+on stop. For the headless/daemon Linux case, add `org.freedesktop.login1.Manager.Inhibit` with
+`what="sleep"`, `mode="block"` (equivalent to `systemd-inhibit`) as a fifth layer — the only one of
+§2's mechanisms that works with no session/display server at all.
+
+## 7. Artwork for OS media integration must be local — never a remote URL
+
+§1's table covers transport and enumeration but not artwork, often the first thing visibly broken —
+most desktop shells will not fetch a remote `mpris:artUrl` over the network, leaving the now-playing
+popup blank. High Tide caches the 320px cover to disk and hands MPRIS a local path:
+`f"file://{utils.IMG_DIR}/{track.album.id}_320.jpg"` (`ref:high-tide/src/mpris.py:447-449`); Sone
+carries `art_url` through its MPRIS command enum, only setting it when non-empty
+(`ref:sone/src-tauri/src/mpris.rs:234,252-253`). **Consequence: the image cache is on the critical
+path of OS media integration, not only the UI** — the cover file must exist on disk *before* the
+metadata update is emitted, so cover fetch belongs in the track-transition sequence, prefetched
+alongside the manifest for the next track. Windows/macOS need different shapes for the same
+requirement: SMTC takes a thumbnail via `RandomAccessStreamReference` (a file or in-memory stream,
+never a bare URL string); `MPNowPlayingInfoCenter` takes an `MPMediaItemArtwork` built from an
+in-memory image. Rest of the MPRIS metadata contract while implementing this: `mpris:trackid` must be
+a valid D-Bus object path (High Tide uses `/Track/{id}`); `mpris:length` is microseconds
+(`track.duration * 1_000_000`).
+
+## 8. Headless/Pi CPU and memory feasibility is unmeasured
+
+§4 answers the *architecture* question well but never asks whether Pi-class hardware can actually
+decode 24/192 FLAC plus run a second gapless decode branch — and **no reference project publishes
+benchmarks**. This decides whether a GStreamer-based engine (two decode branches) or a pure-Rust
+engine (smallest footprint) is the right headless build, and whether the ~23 MB-per-branch gapless
+figure (`playback-behavior.md` §5) is affordable on a Pi Zero 2 W or Pi 3. **Treat this as a required
+measurement, not an assumption:** decode 24/192 stereo FLAC to `/dev/null` with each engine candidate
+(`gst-launch-1.0 filesrc ! flacparse ! flacdec ! fakesink`, `mpv --ao=null --untimed`, a Symphonia
+decode loop) on a Pi 3B+, Pi 4, and Pi 5, reporting single-core utilization and peak RSS, with the
+second decode branch running concurrently to model gapless. One bounding fact partly moots the
+question for the most common headless setup: Pi HDMI output was limited to 16-bit/44.1kHz for
+hi-res content to work at all (§4 above) — on a Pi's own HDMI output, decode feasibility is secondary
+to the narrowing-conversion-with-dither path (`output-backends.md` §1) actually being exercised.

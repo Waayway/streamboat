@@ -12,6 +12,8 @@ against the fact-check pass. Full sourcing: `docs/research/oss-landscape.md` §4
 3. tidal-hifi — the Electron/Widevine wrapper
 4. TidaLuna — a mod of the official client (intelligence, not a model)
 5. mopidy-tidal — the headless/server precedent
+5a. Music Assistant — a second, actively-maintained headless precedent
+5b. lms-plugin-tidal (Lyrion/LMS) — a third server-side precedent
 6. tidal-connect (Docker) — the "be a Connect target" precedent
 7. Official TIDAL SDKs (web, Android, iOS)
 8. python-tidal (tidalapi) — the de-facto unofficial API library
@@ -243,9 +245,33 @@ into the render process).
   tracklist dug out of `rows[].modules[]` where `type === "ALBUM_ITEMS"` — TIDAL's "pages" API
   returns a CMS-style module tree, which is also what Sone's `commands/pages.rs` deals with (see
   the fuller catalogue/browse-UI treatment in the main report §18-I).
+- **Quality/spatial-format handling for Atmos/360 Reality Audio is real here** — this is the thing
+  to copy, correcting an earlier claim in this skill that Atmos handling was "undefined
+  everywhere." `ref:TidaLuna/plugins/lib/src/classes/Quality.ts` defines a seven-level ladder
+  including `Quality.Atmos` (tag `DOLBY_ATMOS`) and `Quality.Sony630` (tag `SONY_360RA`) alongside
+  MQA, with tag↔`audioQuality` lookup tables. `MediaItem.ts:348-375` filters Atmos/Sony630 out of
+  displayable tags, and — because a spatial track's metadata tags do not reveal its *real*
+  delivered quality — issues a live `playbackInfo()` call for a spatial-only track and reads
+  `cache.actualAudioQuality` back before labelling it. Add `SONY_360RA` to any tag set streamboat
+  builds (python-tidal's three-value enum is incomplete); the operational rule is: for a
+  spatial-only track, query `playbackinfo` and read `audioQuality` back rather than trusting tags
+  alone. See `api-auth-streaming.md` §9 for the full Atmos policy discussion.
+- **The Redux action-namespace dump is worth mining directly for streamboat's own transport and
+  queue design.** `ref:TidaLuna/plugins/lib/src/redux/types/actions/actionTypes.ts` is a ~700-line
+  sorted export of the official client's entire action set. Highlights: `playbackControls/*` is a
+  full transport contract (`PLAY`, `PAUSE`, `SEEK`, `SEEK_FORWARDS`/`BACKWARDS`,
+  `SET_DESIRED_PAUSE_STATE` modelled separately from actual playback state,
+  `MEDIA_PRODUCT_TRANSITION`/`PREFILL_MEDIA_PRODUCT_TRANSITION`); `playQueue/*` shows real queue
+  semantics (`ADD_NOW`/`ADD_NEXT`/`ADD_LAST`/`ADD_AT_INDEX`, `ENABLE_SHUFFLE_MODE` vs.
+  `ENABLE_SHUFFLE_MODE_AND_SHUFFLE_ITEMS` as two distinct actions,
+  `FETCH_FIRST_PAGE_AND_ADD_TO_QUEUE` + `FETCH_REST_OF_THE_TRACKS_AND_ADD_TO_QUEUE` for paginated
+  queue fill); `player/*` has `PRELOAD_ITEM`/`PRELOAD_NEXT_ITEM`/`PRELOAD_SUCCESS` (the official
+  client prefetches too, corroborating Sone's gapless-arming design, `sone-deep-dive.md` §3b) and
+  `SET_ACTIVE_DEVICE`/`SET_AVAILABLE_DEVICES`/`SET_DEVICE_MODE` (Connect device switching is
+  store-level state) plus a `chromeCast/*` namespace. Read for product design, never for code.
 
 **The hard boundary**: `ref:TidaLuna/plugins/lib.native/src/request/decrypt.ts` ships a hardcoded
-master key and uses it to AES-256-CBC-then-AES-128-CTR-decrypt streams whose manifest reports
+master key and uses it to decrypt streams whose manifest reports
 `encryptionType: "OLD_AES"` (passes `"NONE"` through, throws on anything else). **The key and
 procedure are deliberately not reproduced anywhere in streamboat's docs or code.** This is
 circumvention of a technological protection measure — it is what separates "a player for
@@ -302,6 +328,36 @@ methods; the config schema shape; the Range-capable caching proxy; the pre-fligh
 **Avoid**: coupling to Mopidy's provider API if streamboat wants its own daemon protocol; the
 hardcoded `lgf.audio.tidal.com` host (CDN hostnames change); sending login URLs to a third-party
 QR service.
+
+## 5a. Music Assistant — a second, actively-maintained headless precedent
+
+`music-assistant/server` — its TIDAL provider source (not its docs site, which is
+egress-blocked like the rest of `tidal.com`) was fetched directly from GitHub. Two things it adds
+beyond mopidy-tidal: **a fourth DASH-delivery strategy** — base64-decode the manifest and serve it
+from an ephemeral local HTTP route kept alive for `track.duration + 300s`, explicitly because
+ffmpeg cannot re-fetch a `data:` URI mid-playback (see `api-auth-streaming.md` §5); and **TIDAL
+track-ID churn handling** — track lookups are cached for days, so a churned ID passes the cached
+lookup and the 404 first appears on the `playbackinfo` call itself; the rule is that 404 must
+trigger `resolve_live_track_id(item_id)` and exactly one retry with the healed ID, not a hard
+failure. Any client that caches catalog IDs long-term (Sone's `StaticMeta` tier at 7d TTL/30d SWR
+is exactly this shape) needs this retry path. It also has real provider-level tests with a mocked
+API client — more automated coverage of the streaming path than any other project in this set.
+Source: `music_assistant/providers/tidal/streaming.py`, `tests/providers/tidal/
+test_streaming.py`, fetched 2026-09-08.
+
+## 5b. lms-plugin-tidal (Lyrion/Logitech Media Server) — a third server-side precedent
+
+`michaelherger/lms-plugin-tidal`, Perl. Fetched directly from GitHub (raw), 2026-09-08. Two
+transferable points: (1) a **per-request cache-TTL flag** — its generic `_get()` helper takes
+`$params->{_ttl}`, and the playback call opts out with `$params->{_nocache} = 1` — the same "never
+cache manifests/stream URLs" rule this skill already gives (`api-auth-streaming.md` §4), expressed
+as an explicit per-request parameter rather than a convention developers must remember; copy the
+mechanism, not just the rule. (2) an **anti-pattern to avoid**: its error path collapses rate
+limiting into an auth failure — `$error = 'NO_ACCESS_TOKEN' if $error !~ /429/` — treating a `429`
+as "your credentials are bad" with no backoff. Pair with Sone's `subStatus` taxonomy (a 4xxx
+sub-status must not trigger a token refresh, `api-auth-streaming.md` §6) as the opposite failure
+mode done right: **classify TIDAL's failure modes (auth vs. rate-limit vs. content-unavailable)
+before acting on them; never infer a category from a substring match on an error message.**
 
 ## 6. tidal-connect (Docker) — the "be a Connect target" precedent
 
@@ -491,18 +547,33 @@ mopidy-tidal's login-hack should have used, §5 above). FFmpeg (libavformat/liba
 libswresample) via cgo for decode, `staticav` build tag for distro packages bundling a static
 FFmpeg; ALSA via cgo (`-lasound`).
 
-**Architecturally the most interesting thing in the whole set**: the daemon/client split.
-`tidalt daemon` holds the exclusive device lock and registers both `org.mpris.MediaPlayer2` and a
-private `io.tidalt.App` D-Bus interface; `tidalt` in client mode is a TUI forwarding commands over
-D-Bus. This is *exactly* the desktop-plus-headless shape streamboat needs, generalized — and it's
-the only implementation of it in the set. (It has no GUI and is Linux-only via D-Bus, which is
-why streamboat needs a portable transport, not D-Bus itself — see `docs/research/
-headless-connect.md` for the control-protocol decision.)
+**Architecturally the most interesting thing in the whole set**: the daemon/client split. There is
+no separate always-running daemon by default — **whichever process claims the D-Bus name
+`org.mpris.MediaPlayer2.tidalt` first becomes the server**; a later invocation gets
+`ErrAlreadyRunning` and switches to client mode. Name-claiming is simultaneously the mutex and the
+discovery mechanism, because exactly one process may own an ALSA `hw:` device. Modes: `tidalt`
+(TUI, server-or-client depending on who's first), `tidalt daemon` (headless server only),
+`tidalt play <url>` (a one-shot client forwarding a `tidal://` URL over D-Bus in milliseconds and
+exiting — what a registered browser URL handler actually invokes), `tidalt setup`/`tidalt setup
+--daemon` (XDG handler / systemd `--user` service registration). Control surfaces: MPRIS2
+(`org.mpris.MediaPlayer2.tidalt`, `SupportedUriSchemes: ["tidal"]`) plus a private `io.tidalt.App`
+interface for everything MPRIS can't express. This is *exactly* the desktop-plus-headless shape
+streamboat needs, generalized — and it's the only implementation of it in the set. **Portability
+caveat**: the D-Bus name-claim trick is Linux-only; Windows/macOS need an equivalent single-
+instance mutex plus a local transport (lock file + named pipe/Unix socket — similar to Sone's
+`tauri-plugin-single-instance`). `ref:tidalt/docs/phone-control.md` also notes KDE Connect/
+GSConnect already bridge MPRIS2 to an existing phone companion app with zero app-specific code —
+a free partial answer to remote control while mobile is out of scope. Source:
+`ref:tidalt/docs/client-server.md`, `ref:tidalt/docs/mpris2.md`, `ref:tidalt/docs/
+phone-control.md`.
 
 **Two more transferable ALSA findings — see `audio-engineering.md` §7 for the full detail**:
 PipeWire device reservation (`org.freedesktop.ReserveDevice1.Audio<N>`) before opening `hw:`
-exclusively; and distinguishing a format-negotiation refusal (fall back to `plughw:`, mark
-not-bit-perfect) from a device-busy error (keep retrying `hw:`), memoized per device.
+exclusively, **released on pause, not only on stop** (`ref:tidalt/README.md:12` — "holds exclusive
+access to the audio device only while a track is actually playing"; an earlier draft of this
+skill said "release on stop," which is the less cooperative and incorrect version); and
+distinguishing a format-negotiation refusal (fall back to `plughw:`, mark not-bit-perfect) from a
+device-busy error (keep retrying `hw:`), memoized per device.
 
 Packaging: `docker-bake.hcl` producing `.deb`/`.pkg.tar.zst`/`.rpm` for amd64+arm64 plus a Docker
 image; a systemd user service; a `tidal://` URL handler.
@@ -528,9 +599,9 @@ compliance with Tidal's Terms of Service."*
 **The single most reusable dependency for a Rust streamboat**: MIT (no copyleft), async, typed,
 actively released, deliberately stops at "return a manifest/URL" — no decrypt, no download, no
 play. Main gaps: lyrics, mixes/radio, videos, DASH parsing (left to the consumer). **Risk**: 19★,
-one author, v0.5.0 — treat as a fork candidate, not a load-bearing dependency, and re-check its
-contributor/release health before committing (see `verification-notes.md` §J on why contributor
-counts couldn't be obtained here).
+**4 contributors, `phayes` 60 of 67 commits — bus factor 1** (confirmed via the GitHub
+contributors API, `sone-deep-dive.md` §10), v0.5.0 — treat as a fork candidate, not a load-bearing
+dependency, and re-check its release health periodically.
 
 ## 12. TidalSwift — Apple-platform precedent (read-only, do not copy)
 
@@ -566,5 +637,5 @@ bug class worth testing deliberately.
 Also encountered but not in the reference set, all *(unverified, not read)*: `pauljhdrake/
 low-tide` (a terminal UI TIDAL client), `yaronzz/Tidal-Media-Downloader` (a downloader —
 explicitly out of scope, cited only for its 2026-03-21 API-key breakage report, see
-`verification-notes.md`), `michaelherger/lms-plugin-tidal`, `GioF71/upmpdcli-docker` TIDAL plugin,
-Music Assistant's TIDAL provider.
+`verification-notes.md`), `GioF71/upmpdcli-docker` TIDAL plugin. `michaelherger/lms-plugin-tidal`
+and Music Assistant's TIDAL provider were subsequently fetched and read — see §5a/§5b above.

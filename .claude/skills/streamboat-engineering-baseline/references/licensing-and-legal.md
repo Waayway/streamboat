@@ -16,7 +16,7 @@ points at a shallow clone — see `sources.md`.
 | Project | License | Notes |
 |---|---|---|
 | sone / sone-windows | GPL-3.0-only | Declared in `package.json`, `Cargo.toml`, PKGBUILD, snapcraft.yaml and metainfo `<project_license>` |
-| High Tide | GPL-3.0 (COPYING); individual files LGPL-3.0-or-later headers | CONTRIBUTING: "Contributions should be licensed under the **GPL-3**" |
+| High Tide | GPL-3.0 (COPYING); one file (`secret_storage.py`) carries an LGPL-3.0-or-later SPDX header, the rest GPL-3.0-or-later | CONTRIBUTING: "Contributions should be licensed under the **GPL-3**" |
 | Strawberry | GPL-3.0 | Qt + GStreamer app |
 | tidal-hifi | MIT | wraps the web player; ships castlabs Electron with Widevine |
 | python-tidal | LGPL-3.0-or-later | library, so weak copyleft |
@@ -46,6 +46,19 @@ in its Disclaimer (ref:sone/README.md:540-544).
   Note the one-way door: relicensing later requires every contributor's agreement unless you
   collect a CLA/DCO with relicensing rights, which most contributors dislike. Also decide whether
   `core` is versioned/released independently of the apps — see `ci-and-repo-governance.md`.
+- **GPL-3.0-only on the app forecloses the future mobile target — this is a mobile-strategy
+  decision, not just a copyleft preference.** Mobile is a future target that the architecture must
+  not preclude. GPL-3.0-only is incompatible in practice with Apple App Store distribution for a
+  statically-linked iOS binary (the well-known VLC/GNU Go removals over this exact conflict); iOS
+  has no other distribution channel. This makes the `core`/apps split above load-bearing for
+  mobile: keep `streamboat-core` **Apache-2.0**, not LGPL-3.0 (LGPL's relinking requirement is
+  itself contested for a statically-linked iOS binary under App Store terms), so a future iOS app
+  has a clean permissive core to build on. If a first-party iOS app ships later, either it is a
+  separate permissively-licensed codebase over the Apache-2.0 core, or the whole project goes
+  Apache-2.0 — there is no in-between once the desktop apps have shipped GPL-3.0-only with outside
+  contributions. No reference project faces this: TidalSwift is macOS-only, and the official TIDAL
+  SDKs are Apache-2.0 precisely because they must be embeddable in App Store apps
+  (ref:tidal-sdk-ios/LICENSE). Record this as its own line in the licensing ADR.
 - **AGPL-3.0 is a poor fit.** Its network clause only bites when users interact with the software
   over a network. streamboat's headless mode does expose a local control surface, so AGPL is not
   meaningless — but it would deter packagers and integrators (Music Assistant, Mopidy, HA-style
@@ -57,16 +70,24 @@ in its Disclaimer (ref:sone/README.md:540-544).
 
 ## 3. Dependency compatibility notes
 
-- **GStreamer**: core, base, good are LGPL-2.1. "We require that all code going into our core
-  packages is LGPL", and plugins with patent issues "would need to go into our gst-plugins-ugly
-  module" — both from GStreamer's own licensing FAQ, verified by direct download and grep of
+- **GStreamer**: core and `gst-plugins-base` are LGPL-2.1 (verified by direct fetch of both
+  `COPYING` files at `github.com/GStreamer/gstreamer`). "We require that all code going into our
+  core packages is LGPL", and plugins with patent issues "would need to go into our
+  gst-plugins-ugly module" — both from GStreamer's own licensing FAQ, verified by direct download
+  and grep of
   `raw.githubusercontent.com/GStreamer/gst-docs/master/markdown/frequently-asked-questions/licensing.md`:
   it contains neither the "practical reasons under the GPL" line nor any FFmpeg guidance, despite
-  those often being attributed to it. "When using GPL linked plugins, GStreamer is for all
-  practical reasons under the GPL itself" is from `gst-plugins-base`'s `LICENSE_readme` instead;
-  the FFmpeg build-mode caveat ("you have to make sure not to build FFmpeg with GPL code enabled")
-  is from `GStreamer/gst-libav`'s `README.md`. A GPL-3.0 streamboat has no problem here. A
-  permissive streamboat would have to restrict itself to LGPL plugins and an LGPL FFmpeg build.
+  those often being attributed to it. **Both remaining quotes are from one file, not two, and not
+  `gst-plugins-base`'s `LICENSE_readme` (no such file exists at HEAD in the GStreamer monorepo)**:
+  `gst-libav`'s own `README.md` states, adjacently, "if you are distributing an application which
+  has a non-GPL compatible license … you have to make sure not to build FFmpeg with GPL code
+  enabled" and "Overall, when using plugins that link to GPL libraries, GStreamer is for all
+  practical reasons under the GPL itself"
+  (https://raw.githubusercontent.com/GStreamer/gstreamer/main/subprojects/gst-libav/README.md,
+  lines 15-20 — note "plugins that link to GPL libraries", not "GPL linked plugins"). A GPL-3.0
+  streamboat has no problem here. A permissive streamboat would have to restrict itself to LGPL
+  plugins and an LGPL FFmpeg build (avoid any plugin that itself links a GPL library, i.e.
+  `gst-libav`/FFmpeg built with `--enable-gpl`).
 - **FFmpeg**: LGPL-2.1+ by default; `--enable-gpl` and `--enable-nonfree` change that. tidalt
   builds FFmpeg 7.1.5 with `--disable-everything --disable-programs --disable-doc
   --disable-network --disable-autodetect --disable-shared --enable-static --enable-pic
@@ -79,11 +100,13 @@ in its Disclaimer (ref:sone/README.md:540-544).
   source and build instructions). If streamboat statically links FFmpeg, publish the exact build
   script and the object archives, or dynamically link.
 - **fdk-aac**: GPL-incompatible and "therefore nondistributable with GPL parts" per FFmpeg's own
-  position; Debian ships it as non-free. `fedoraproject.org` is blocked from this environment —
-  this is read via a search index of the Fedora Licensing/FDK-AAC wiki, corroborated by
-  tookmund.com "AAC and Debian" and the Hydrogenaudio knowledge base, not a primary fetch.
-  streamboat needs AAC *decoding* only, which `avdec_aac` (LGPL FFmpeg) or `faad` covers; never
-  link fdk-aac.
+  position; Debian ships it as non-free (the license forbids charging a fee for distribution, DFSG
+  "No Discrimination Against Fields of Endeavor"). `fedoraproject.org` is blocked from this
+  environment — this is read via a search index of the Fedora Licensing/FDK-AAC wiki, corroborated
+  by tookmund.com "AAC and Debian" and the Hydrogenaudio knowledge base, not a primary fetch.
+  Fedora's own posture has shifted over time: the license was reviewed as free but the package is
+  no longer "allowed" because of patent concerns, and Fraunhofer grants no patent license. streamboat
+  needs AAC *decoding* only, which `avdec_aac` (LGPL FFmpeg) or `faad` covers; never link fdk-aac.
 - **Qt 6** open source is mainly LGPLv3 with some modules GPL-only; some modules are GPL-2.0-only
   and others GPL-3.0-only, and mixing those two is itself a violation — Qt's own FAQ gives the
   concrete example that mixing GPL-3.0-only Spatial Audio with GPL-2.0-only TextToSpeech "violates
@@ -122,6 +145,14 @@ requires a valid paid subscription. SONE is a streaming client only — it does 
 downloads, and does not redistribute or circumvent protection of any content. As with any
 third-party client, please be aware of TIDAL's terms of use." (ref:sone/README.md:540-544)
 
+**Copy this disclaimer paragraph, but do not copy reference-project *feature* copy verbatim —
+some of it is stale.** TIDAL discontinued MQA and Sony 360 Reality Audio on 2024-07-24
+(ref:python-tidal/HISTORY.rst:88, corroborated by a skipped test at
+ref:python-tidal/tests/test_media.py:236); the current quality ladder is LOW/HIGH/LOSSLESS/
+HI_RES_LOSSLESS. sone's own README still advertises "**Lossless FLAC and MQA streaming** up to
+Hi-Res (24-bit/192kHz)" (ref:sone/README.md:58). Check each format claim against the current API
+before adapting a reference project's feature list into streamboat's own README/metainfo.
+
 One unverified but material data point: a search result attributes to TIDAL's Developer Terms 2.0
 the statement that "The Player module in the SDK constitutes the only allowed way for third-party
 applications to incorporate playback of TIDAL content", corroborated at second hand by an
@@ -152,6 +183,16 @@ write down, not assume. "Open-source stewards" — legal persons systematically 
 intended for commercial activity — carry lighter Article 24 duties (cybersecurity policy,
 cooperation on vulnerability handling, reporting) and are explicitly exempt from administrative
 fines under Article 64(10); an individual maintainer distributing a free client is neither
-manufacturer nor steward. Record the determination in `docs/legal.md`, and align `SECURITY.md`'s
-disclosure process and timelines with the steward pattern anyway — it costs nothing and is the
-answer if the project's status ever changes (e.g. a paid/hosted build appears).
+manufacturer nor steward. Record the determination in `docs/legal.md`.
+
+**Keep this separate from `SECURITY.md`'s coordinated-disclosure policy — two different clocks.**
+The 24h/72h/14-day figures above are for reporting *actively exploited* vulnerabilities to
+ENISA/CSIRTs, not for how quickly a maintainer acknowledges or fixes a privately reported bug.
+Write two things separately: (1) a coordinated-disclosure policy in `SECURITY.md` — acknowledge
+within N business days, a target fix window (90 days is the common default), a credit policy, and
+an explicit scope note (token handling and the local control API are in scope; TIDAL's own service
+is not; **reports about circumventing TIDAL's DRM are out of scope and will not be accepted**);
+(2) the CRA scope determination, and — only if it ever changes (e.g. a paid/hosted build appears) —
+the ENISA/CSIRT reporting timeline, in `docs/legal.md`, not `SECURITY.md`. Only tidal-hifi ships a
+`SECURITY.md` in the reference set, and it is minimal (ref:tidal-hifi/SECURITY.md). Enable GitHub
+private vulnerability reporting as the intake channel.

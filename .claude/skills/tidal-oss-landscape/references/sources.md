@@ -2,12 +2,13 @@
 
 `ref:<project>/<path>` throughout this skill and the main report
 (`/home/user/streamboat/docs/research/oss-landscape.md`) points at a shallow (`--depth 1`) git
-clone of the named GitHub project, held read-only under
-the reference checkouts (shallow clones of the cited GitHub projects; see references/sources.md)<project>`
-in the research environment — not part of the streamboat repo itself. Clones were taken
-2026-09-07. Because they are shallow, `git log` on any of them shows exactly one author — that is
-an artifact of clone depth, not evidence about the project's real contributor count (see
-`verification-notes.md` §J).
+clone of the named GitHub project, held read-only under `ref:<project>` in the research
+environment — not part of the streamboat repo itself. Clones were taken 2026-09-07. Because they
+are shallow, `git log` on any of them shows exactly one author — that is an artifact of clone
+depth, not evidence about the project's real contributor count. **Real contributor counts were
+obtained separately, via the GitHub contributors API (not from these clones), during the second
+fact-check pass (2026-09-08) — see `sone-deep-dive.md` §10 and `verification-notes.md` §2b, not
+the shallow-clone caveat above, for actual numbers.**
 
 A few citations in the main report and this skill point at repositories with **no** local
 checkout — cited by URL only, fetched live during the fact-check pass. Those are listed at the
@@ -53,6 +54,8 @@ verbatim here):
 | Sone's Flathub manifest | https://raw.githubusercontent.com/flathub/io.github.lullabyX.sone/master/io.github.lullabyX.sone.yml | The actual shipped Flatpak manifest (not in the `ref:sone` checkout — Flathub manifests live in a separate `flathub/<app-id>` repo). See `packaging-distribution.md` §2. |
 | RustAudio/cpal issue #459 | https://github.com/RustAudio/cpal/issues/459 | Confirms `cpal` has no WASAPI exclusive-mode support. |
 | wasapi-rs | https://github.com/HEnquist/wasapi-rs | Standalone Rust crate that does support WASAPI exclusive mode (what CamillaDSP uses). |
+| Music Assistant (`music-assistant/server`) | https://raw.githubusercontent.com/music-assistant/server/dev/music_assistant/providers/tidal/streaming.py, https://github.com/music-assistant/server/blob/dev/tests/providers/tidal/test_streaming.py | Second fact-check pass (2026-09-08): a second headless-server TIDAL precedent — a fourth DASH-delivery strategy (ephemeral local HTTP route) and track-ID-churn recovery. See `project-profiles.md` §5a. Its own docs site (`music-assistant.io`) is unreachable from this environment like the rest of `tidal.com`, but its GitHub source is not. |
+| lms-plugin-tidal (`michaelherger/lms-plugin-tidal`) | https://raw.githubusercontent.com/michaelherger/lms-plugin-tidal/main/API/Async.pm | Second fact-check pass (2026-09-08): a third server-side TIDAL precedent (Lyrion/Logitech Media Server) — a per-request cache-TTL flag and a rate-limit-vs-auth-failure anti-pattern. See `project-profiles.md` §5b. |
 
 ## Domains blocked from this research environment
 

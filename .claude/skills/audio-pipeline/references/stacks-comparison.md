@@ -27,7 +27,7 @@ Full narrative: `docs/research/audio-pipeline.md` §7-§9, plus fact-check gap-f
 | **python-tidal** | Python | none — library only | none | n/a | n/a | `tidalapi/media.py` (`Stream`, `StreamManifest`, `DashInfo`) |
 | **tidal-cli** | TypeScript/Node | none — downloads segments, shells to `mpv`/`afplay` | external player | n/a | n/a | `src/playback.ts` |
 | **TidaLuna** | TypeScript | mod inside the official Electron client | official client's | official client's | no | `plugins/lib.native/src/request/{decrypt,fetchMediaItemStream,fetchStream}.ts` |
-| **tidal-connect** | Bash + Docker around a proprietary binary | proprietary | ALSA via PortAudio | proprietary | LOSSLESS only since July 2024 | `bin/{entrypoint.sh,common.sh}`, `userconfig/*.asound.conf`, `samples/*.env` |
+| **tidal-connect** | Bash + Docker around a proprietary binary | proprietary | ALSA via PortAudio | proprietary | up to 24/48 hi-res; MQA self-unfolding lost July 2024 — **correction, was wrongly stated as "LOSSLESS only"** | `bin/{entrypoint.sh,common.sh}`, `userconfig/*.asound.conf`, `samples/*.env` |
 
 ## 2. Candidate audio stacks compared (including stacks the first pass missed)
 
@@ -140,13 +140,22 @@ The Sone design generalised to three platforms.
   (`org.mpris.MediaPlayer2` + a private interface, as tidalt does) and let the TUI/CLI be a client —
   see `os-integration.md` §4 for the full client/server architecture this implies.
 - **Version floors this design must respect:** GStreamer >= 1.26.10 before switching off the legacy
-  `dashdemux`/`uridecodebin` for DASH (`decoding-and-codecs.md` §1); GStreamer >= 1.28 before
-  relying on `wasapi2sink exclusive` (`output-backends.md` §4).
+  `dashdemux` for DASH (`decoding-and-codecs.md` §1) — **and note this needs an explicit
+  `dashdemux2`-rank-demotion startup step even below that floor, since plain `uridecodebin` does not
+  autoplug the legacy demuxer on its own** (`output-backends.md` §12); GStreamer >= 1.28 before
+  relying on `wasapi2sink exclusive` (`output-backends.md` §4). Current GStreamer is **1.28.6**, not
+  1.28.2/1.28.3 (`decoding-and-codecs.md` §1).
 - **Mobile later:** replace the writer with `oboe`/`AAudio` (Android) or `AVAudioEngine` (iOS);
   either keep GStreamer (builds for both) or swap the decode half for the platform decoder.
 
-**Cost:** three output backends to write and maintain, plus GStreamer as a shipped runtime
-dependency on Windows and macOS.
+**Cost:** three output backends to write and maintain (though see `output-backends.md` §13 — plain
+`alsasink device=hw:` covers most of Linux and a custom writer is only strictly needed for a smaller
+set of reasons than "bit-perfect at all"), plus GStreamer as a shipped runtime dependency on Windows
+and macOS. **Windows has one fully documented bundling recipe** (sone-windows, ~20 MB, NSIS+WiX
+hooks) **but it ships no AAC decoder** — `LOW`/`HIGH` need one added deliberately — **and macOS has
+no reference recipe at all**, cost that as unproven, not solved (`output-backends.md` §14). Whether
+to bundle GStreamer on Linux too, rather than link the system one, is itself an open decision with
+real consequences for the FLAC-in-DASH version-floor problem — see `output-backends.md` §18.
 
 ### Design B — Rust core, libmpv engine
 

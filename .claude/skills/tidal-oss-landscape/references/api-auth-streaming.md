@@ -48,6 +48,11 @@ Corroborating, directly-verified evidence:
   on 2025-06-03 ("over 6 months" before that date already spent trying); as of an April 2026 reply,
   *"nothing has moved. I even tried reaching them via e-mail a few months ago, but got no
   reply."* Another participant confirms playback is preview-only.
+- **First-party, not second-hand**: the official SDK's own manifest resolver defaults
+  `assetPresentation` to `'PREVIEW'` when the response omits the field —
+  `response.data?.data.attributes?.trackPresentation ?? 'PREVIEW'`
+  (`ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts:395-405`).
+  TIDAL's own client library's fallback assumption for "what did we just get" is "a preview."
 
 **Conclusion, now doubly confirmed:** the owner's stance (do what High Tide and Sone do) is not a
 convenience choice — building against the unofficial API is currently the *only* way to build a
@@ -80,6 +85,15 @@ POST https://auth.tidal.com/v1/oauth2/token
 Source: `ref:sone/src-tauri/src/tidal_api.rs:1550-1642` (the exact 400+`authorization_pending`||
 `slow_down` → `Ok(None)` branch is at :1624-1628), `ref:python-tidal/tidalapi/session.py:616-618,
 694-699`, `ref:tidalt/internal/tidal/client.go` (`AuthURL` const).
+
+**Do not copy python-tidal's poll loop as "the" implementation of this contract.** The
+pending/slow_down handling above is Sone's. python-tidal's `_check_link_login`
+(`session.py:679-716`) returns on the first `.ok` response, breaks only on
+`result['error'] == 'expired_token'`, and otherwise just sleeps the fixed `interval` — it **never
+inspects `authorization_pending` or `slow_down`**, so porting it verbatim busy-polls and treats
+every other non-ok response as a generic failure. Also note the asymmetry both implementations
+share and worth copying deliberately: `device_authorization` sends only `client_id + scope` (no
+secret); the token-poll call always sends `client_secret`.
 
 ### PKCE authorization code (needed for Hi-Res in the reference clients)
 
@@ -202,19 +216,30 @@ Cache *metadata* aggressively instead (see Sone's tier/TTL/SWR table in `sone-de
   Source: `ref:python-tidal/tidalapi/media.py:662-676`, `ref:sone/src-tauri/src/tidal_api.rs:
   3706-3730` (note: Sone's own `BtsManifest` struct reads `urls`/`codecs`/`mimeType`/
   `encryptionType` but not `keyId` — only python-tidal reads all five fields).
-- **DASH** (`application/dash+xml`): base64 → MPD XML. Two consumption strategies, both proven:
-  - **Data URI**: wrap as `data:application/dash+xml;base64,<b64>` and hand to GStreamer's
-    `dashdemux` directly. Works everywhere, no filesystem write. Used by Sone
-    (`ref:sone/src-tauri/src/commands/playback.rs:117-125`), Strawberry
-    (`ref:strawberry/src/tidal/tidalstreamurlrequest.cpp:224-233`), High Tide on GStreamer < 1.26.
-  - **File URI**: write the MPD to a file and pass `file://`. Used by mopidy-tidal always
-    (`ref:mopidy-tidal/mopidy_tidal/playback.py:38-46`), High Tide on GStreamer ≥ 1.26
-    (`ref:high-tide/src/lib/player_object.py:487-513` — the exact `Gst.version() >= (1, 26)`
-    branch). **Prefer the data-URI path as the default; keep the file-URI path as a fallback.**
-  - **Manual segment reconstruction**: regex-extract `initialization="…"`, `media="…$Number$…"`
-    and `<S d= r=>` repeat counts, then download and concatenate segments sequentially. Used by
-    tidal-cli (`ref:tidal-cli/src/playback.ts:118-167,121-126`) — a real fallback if you have no
-    DASH demuxer available at all, but heavier than either strategy above.
+- **DASH** (`application/dash+xml`): base64 → MPD XML. **Four consumption strategies observed**
+  (a fourth was found in Music Assistant after this file's first draft — do not describe this as
+  "two", the original three-bullet list was mislabeled):
+  1. **Data URI**: wrap as `data:application/dash+xml;base64,<b64>` and hand to GStreamer's
+     `dashdemux` directly. Works everywhere, no filesystem write. Used by Sone
+     (`ref:sone/src-tauri/src/commands/playback.rs:117-125`), Strawberry
+     (`ref:strawberry/src/tidal/tidalstreamurlrequest.cpp:224-233`), High Tide on GStreamer < 1.26.
+  2. **File URI**: write the MPD to a file and pass `file://`. Used by mopidy-tidal always
+     (`ref:mopidy-tidal/mopidy_tidal/playback.py:38-46`), High Tide on GStreamer ≥ 1.26
+     (`ref:high-tide/src/lib/player_object.py:487-513` — the exact `Gst.version() >= (1, 26)`
+     branch).
+  3. **Ephemeral local HTTP route**: base64-decode and serve the manifest from a local route kept
+     alive for `track.duration + 300s`. Music Assistant's TIDAL provider
+     (`music_assistant/providers/tidal/streaming.py`, fetched 2026-09-08), chosen explicitly
+     because ffmpeg cannot re-fetch a `data:` URI mid-playback — see `project-profiles.md` §8a.
+  4. **Manual segment reconstruction**: regex-extract `initialization="…"`, `media="…$Number$…"`
+     and `<S d= r=>` repeat counts, then download and concatenate segments sequentially. Used by
+     tidal-cli (`ref:tidal-cli/src/playback.ts:118-167,121-126`) and python-tidal's `DashInfo` — a
+     real fallback if you have no DASH demuxer available at all, but heavier than the others.
+
+  **Selection rule**: if the media layer may re-open or range-request the manifest source
+  (seeking, a restart, an external decoder like ffmpeg), strategy 1 is unsafe — use 2 or 3.
+  Strategy 4 is needed only with no DASH-capable demuxer at all. **Default recommendation for
+  streamboat: strategy 1, with 2 as the fallback** (unchanged from the original guidance).
 - **EMU** (`application/vnd.tidal.emu`) and **HLS** (`application/vnd.apple.mpegurl`) appear only
   in the official SDKs. Canonical enum:
   `ref:tidal-sdk-android/player/streaming-api/.../ManifestMimeType.kt` — `EMU =
@@ -242,6 +267,19 @@ reference set and is worth copying exactly, not approximating:
   `11002`/`11003` (token), `6001` (session), `1002` (pending / *"not a Limited Input Device
   client"* — this is what a web-player client ID returns to the device-code endpoint,
   `ref:sone/src-tauri/src/tidal_api.rs:1576-1588,1575-1588`).
+
+**How the official client actually learns about `4006` (streaming privileges revoked).** Every
+subscriber will hit this: start playback on the phone and another active stream must stop.
+TidaLuna's dump of the official Redux action namespace names
+`player/STREAMING_PRIVILEGES_REVOKED` and `player/ENSURE_PLAYBACK_PRIVILEGES` — the official
+client pre-checks privileges and receives a real-time revocation event, it does not merely
+discover the loss from a failed request. **No project in this reference set implements a
+real-time channel for this** — grepping for `wss://`, `websocket`, `pushkin`, `"privileges"`
+across every checkout returns nothing beyond Sone's `4006` comment and TidaLuna's action names.
+streamboat's two options: (a) treat `subStatus 4006` as pause-and-explain, discovered on the next
+request (Sone's approach — and correctly non-terminal, per above); (b) reverse-engineer the
+real-time channel, which nobody in this set has done. Full mechanics of that channel (where
+identified) belong in the `headless-and-tidal-connect` skill, not here.
 
 ## 7. Quality cascade and stopping rules
 
@@ -301,11 +339,25 @@ python-tidal models `AudioMode = STEREO | DOLBY_ATMOS` and `MediaMetadataTags` i
 `DOLBY_ATMOS`; Sone models the same fields (`tidal_api.rs:582-584`, `:156,:287`) but its quality
 cascade selects on `audioquality` only and never passes an audio-mode preference — whatever the
 API returns is fed straight to GStreamer with no verification the decode actually succeeds. High
-Tide has no Atmos handling at all. **Nothing in the reference set demonstrates correct end-to-end
-handling of an Atmos-tagged track.** Two things are unverified and worth testing before writing
-code: whether `playbackinfopostpaywall` accepts an audio-mode/immersive parameter, and what codec
-an Atmos track's BTS manifest actually reports (likely AC-4 or E-AC-3, which plain GStreamer
-`base`/`good`/`bad` will not decode — see `packaging-distribution.md` on the `libav` bundling
-question). **Policy recommendation**: prefer/request stereo by default; if an Atmos-only manifest
-arrives anyway, fail with a specific, honest user-facing message rather than GStreamer's generic
-"Internal data stream error."
+Tide has no Atmos handling at all. **Nothing in the reference set *decodes* an Atmos-tagged track
+end to end — that much stands. But metadata/quality handling for spatial content is not
+"undefined everywhere"; TidaLuna implements it, and this is the thing to copy for the metadata
+half of the problem.** `ref:TidaLuna/plugins/lib/src/classes/Quality.ts` defines a seven-level
+ladder including `Quality.Atmos` (tag `DOLBY_ATMOS`) and `Quality.Sony630` (tag `SONY_360RA`)
+alongside MQA, with lookup tables mapping tags ↔ `audioQuality`.
+`ref:TidaLuna/plugins/lib/src/classes/MediaItem/MediaItem.ts:348-375` filters Atmos/Sony630 out
+of displayable quality tags, and — because a spatial track's `mediaMetadata` tags do not reveal
+its *real* delivered quality — issues a live `playbackInfo()` call for a spatial-only track and
+reads `cache.actualAudioQuality` back before labelling it in the UI. `SONY_360RA` also appears in
+the official SDK (`ref:tidal-sdk-web/packages/player/src/internal/types.ts`). **Add
+`SONY_360RA` to any tag set streamboat builds** — python-tidal's three-value
+`MediaMetadataTags` enum is an incomplete subset, not authoritative — **and add the operational
+rule: for a spatial-only track, the tags alone cannot tell you the real quality; issue a
+`playbackinfo` call and read `audioQuality` back.** Two things remain genuinely unverified and
+worth testing before writing decode code: whether `playbackinfopostpaywall` accepts an
+audio-mode/immersive parameter, and what codec an Atmos track's BTS manifest actually reports
+(likely AC-4 or E-AC-3, which plain GStreamer `base`/`good`/`bad` will not decode — see
+`packaging-distribution.md` on the `libav` bundling question). **Policy recommendation**:
+prefer/request stereo by default; if an Atmos-only manifest arrives and cannot be decoded, fail
+with a specific, honest user-facing message rather than GStreamer's generic "Internal data stream
+error."

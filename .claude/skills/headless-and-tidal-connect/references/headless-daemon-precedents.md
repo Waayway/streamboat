@@ -235,6 +235,15 @@ setters are `PUT`, reads are `GET`, and there is a `/health` endpoint. **Copy th
 verbatim** — it is the closest thing to a de-facto convention in this niche, and matching it means
 existing user scripts and Stream Deck integrations port over.
 
+**Copy the naming; explicitly reject the security posture.** `ref:tidal-hifi/src/scripts/
+settingsStore.ts:44-47` sets `api: true` — this API is **enabled by default** — with
+`apiSettings: { port: 47836, hostname: "127.0.0.1" }`, and `ref:tidal-hifi/src/features/api/index.ts`
+(49 lines) has **no authentication of any kind** (grep for `auth`/`token`/`bearer`/`password`: no
+matches). streamboat's own control API (`daemon-architecture.md` §2-3) must ship disabled by
+default, or token-required from first boot — never open-and-unauthenticated the way tidal-hifi
+ships. [verified-source `ref:tidal-hifi/src/scripts/settingsStore.ts:44-47`,
+`ref:tidal-hifi/src/features/api/index.ts`]
+
 ---
 
 ## 5. upmpdcli — TIDAL over UPnP, and the renderer-whitelist mechanism
@@ -245,8 +254,12 @@ contributed a rewritten TIDAL plugin. **Treat any specific plugin version as a d
 fact to build against** — the version table read `release|tidal|0.8.12` and
 `master|tidal|0.8.16`/`edge|tidal|0.8.16` as of 2026-09, already superseding an earlier
 `0.8.3`/2025-04-07 pairing found during research. Configuration is by environment variables
-including `TIDAL_AUDIO_QUALITY` (`LOW|HIGH|HI_RES|HI_RES_LOSSLESS`) and pre-generated tokens
-(`TIDAL_TOKEN_TYPE`, `TIDAL_ACCESS_TOKEN`, `TIDAL_REFRESH_TOKEN`, `TIDAL_EXPIRY_TIME`).
+including `TIDAL_AUDIO_QUALITY` and pre-generated tokens (`TIDAL_TOKEN_TYPE`, `TIDAL_ACCESS_TOKEN`,
+`TIDAL_REFRESH_TOKEN`, `TIDAL_EXPIRY_TIME`). **The quality enum is `LOW|HIGH|LOSSLESS|HI_RES_LOSSLESS`**
+(default `LOSSLESS`) — not `LOW|HIGH|HI_RES|HI_RES_LOSSLESS`, a mistake worth flagging explicitly
+since streamboat's own quality-tier names are modelled on ones exactly like these and `HI_RES` is a
+real but *different* TIDAL tier name elsewhere. [verified-source:
+https://raw.githubusercontent.com/GioF71/upmpdcli-docker/main/README.md:282]
 
 The interesting failure mode: in `HI_RES_LOSSLESS` mode the plugin serves DASH manifests, and **most
 UPnP renderers cannot play a manifest**. GioF71's answer is a *whitelist* — MPD+upmpdcli,
@@ -327,11 +340,18 @@ avoid; stream through `streamboat-core`'s player engine instead.
 
 **A fact missed elsewhere in this project's research**: this CLI takes playback data from the
 *official* `developer.tidal.com` API v2 — `GET /trackManifests/{id}` with `{adaptive:false,
-formats:[HEAACV1,AACLC,FLAC,FLAC_HIRES], manifestType:'MPEG_DASH', uriScheme:'DATA',
-usage:'PLAYBACK'}` returning a base64 data-URI manifest plus `trackAudioNormalizationData
-{replayGain,peakAmplitude}` and `albumAudioNormalizationData` in one call — a second, officially
-sanctioned manifest path worth comparing against the unofficial-API approach documented in the
-`tidal-api` skill.
+formats:[…], manifestType:'MPEG_DASH', uriScheme:'DATA', usage:'PLAYBACK'}` returning a base64
+data-URI manifest plus `trackAudioNormalizationData {replayGain,peakAmplitude}` and
+`albumAudioNormalizationData` in one call — a second, officially sanctioned manifest path worth
+comparing against the unofficial-API approach documented in the `tidal-api` skill. **`formats` is a
+quality-dependent cascade, not the fixed 4-element array `[HEAACV1,AACLC,FLAC,FLAC_HIRES]`** — that
+array is only the `HI_RES` branch. `ref:tidal-cli/src/playback.ts:44-58` builds
+`formats: qualityToFormats[quality] ?? qualityToFormats.HIGH` from `src/playback.ts:12-15`:
+`LOW: ['HEAACV1']`, `HIGH: ['HEAACV1','AACLC']`, `LOSSLESS: ['HEAACV1','AACLC','FLAC']`,
+`HI_RES: ['HEAACV1','AACLC','FLAC','FLAC_HIRES']` — one to four values depending on requested
+quality. Model streamboat's own quality→format mapping as an explicit per-tier list, not a single
+constant array, if this endpoint is ever used as a reference. [refuted-and-corrected, verified-source
+`ref:tidal-cli/src/playback.ts:12-15,44-58`]
 
 **A time-sync tell worth knowing about independent of the CLI itself**: `ref:tidal-cli/src/index.ts`
 opens by monkey-patching `console.warn` solely to "Suppress 'TrueTime is not yet synchronized'
@@ -348,7 +368,7 @@ complains until it syncs. This is corroborating evidence for the time-sync requi
 | **librespot** | Rust | Library **and** binary; the binary registers as a Spotify Connect receiver | Zeroconf (Spotify Connect) | Reused as a linked **crate** by ncspot and spotifyd; consumed as a **subprocess** by Snapcast ("launches librespot and reads audio from stdout" — a spawned process reading a pipe, the same integration shape this project recommends for streamboat at stage 0, not the library-linking pattern). |
 | **spotifyd** | Rust (on librespot) | `rs.spotifyd.Controls` D-Bus interface on the `rs.spotifyd.instance$PID` bus name — **always present**, exposing `TransferPlayback`/`VolumeUp`/`VolumeDown` even when not the active device; MPRIS (`org.mpris.MediaPlayer2.spotifyd.instance$PID`) — **only once spotifyd becomes the active playback device**; `--onevent` hook; `--dbus-type system` for headless boxes with no session bus; optional Secret Service keyring | Spotify Connect | Docs reachable at `raw.githubusercontent.com/Spotifyd/spotifyd/master/docs/src/advanced/{dbus,mpris,hooks}.md` even though `docs.spotifyd.rs` itself is blocked. |
 | **go-librespot** | Go | REST API + WebSocket **`/events`** with a closed vocabulary: `active`, `inactive`, `metadata`, `will_play`, `playing`, `not_playing`, `paused`, `stopped`, `seek{position}`, `volume{value,max}`, `shuffle_context`, `repeat_context`, `repeat_track`; REST half published as `api-spec.yml`; MPRIS; `GET /auth/code` during device-auth, served "for as long as the daemon is waiting, so a frontend can show them instead of asking the user to read the logs" | `zeroconf_backend` = `builtin` or `avahi`, `zeroconf_enabled`, `zeroconf_port` | `audio_backend` (alsa, pipe, pulseaudio, audio-toolbox, wasapi), `bitrate`, `volume_steps`, normalisation, `crossfade_duration`, `server.{address,port,allow_origin,cert_file,key_file}` (**no `tls` key** — TLS is `cert_file`+`key_file`), `cache.{enabled,dir,size_limit}` (only the still-encrypted file is cached, §1). librespot-java development retired in its favour. |
-| **ncspot** | Rust | TUI; embeds librespot as a library; **also** a Unix-domain socket (Windows: named pipe) at the platform runtime directory — plain command words in (`play`, `playpause`), newline-delimited JSON status out after every state change, e.g. `{"mode":{"Playing":{...}},"playable":{"type":"Track","id":…,"title":…,"duration":184132,"artists":[…],"cover_url":…}}`. `ncspot info` prints the socket location. | — | Proof a TUI/GUI and a daemon share one engine crate, **and** proof a same-host control surface doesn't need HTTP at all — documented uses include controlling a detached tmux session, status bars, and startup scripts. **Recommend this as streamboat's own v0 control surface** for the CLI and same-host GUI (Rust's `interprocess` crate covers Unix sockets and Windows named pipes). |
+| **ncspot** | Rust | TUI; embeds librespot as a library; **also** a Unix-domain socket at the platform runtime directory — **Linux/macOS/\*BSD only, no Windows equivalent** (correction below) — plain command words in (`play`, `playpause`), newline-delimited JSON status out after every state change, e.g. `{"mode":{"Playing":{...}},"playable":{"type":"Track","id":…,"title":…,"duration":184132,"artists":[…],"cover_url":…}}`. `ncspot info` prints the socket location. | — | Proof a TUI/GUI and a daemon share one engine crate, **and** proof a same-host control surface doesn't need HTTP at all — documented uses include controlling a detached tmux session, status bars, and startup scripts. **Recommend this as streamboat's own v0 control surface** for the CLI and same-host GUI on Linux/macOS. **Correction (second fact-check pass)**: an earlier draft said "Windows: named pipe" — false. ncspot's own docs state the socket exists "on UNIX platforms (Linux, macOS, \*BSD)" only, and `src/ipc.rs` imports only `tokio::net::{UnixListener, UnixStream}` with no Windows named-pipe dependency in `Cargo.toml`. Rust's `interprocess` crate genuinely covers both Unix sockets and Windows named pipes, but there is **no reference implementation for the Windows half anywhere in this project's source set** — test it explicitly, don't assume parity. |
 | **psst** | Rust | `psst-core` ("Spotify TCP session, audio file retrieval, decoding, audio output, playback queue") + `psst-gui`, a design *inspired by* librespot rather than depending on it | — | A second real-world answer to "how do you split the core", alongside ncspot's "just link the crate". |
 | **Roon** | proprietary | Core/Remote/Bridge three-tier; endpoints implement RAAT ("Roon Advanced Audio Transport"), up to 32-bit/768 kHz PCM and DSD512; DAC vendors must implement Roon's Endpoint Code + RAAT to be "Roon Ready" | proprietary | The commercial version of the same idea; strictly closed — RAAT is unavailable to open-source implementers (confirmed via a Music Assistant maintainer discussion; `help.roonlabs.com` itself is blocked from this environment). |
 
@@ -409,7 +429,8 @@ pairing-token design, and the owner decisions this still needs).
 | Softvol creation with `Master`/`SoftMaster` detection | `ref:tidal-connect/bin/common.sh` | volume on hardware without a mixer |
 | Pre-flight test tone before opening the device (opt-out via `ENABLE_GENERATED_TONE=no`) | `ref:tidal-connect/bin/entrypoint.sh` | catch locked/misconfigured devices without forcing a click on every open |
 | 26 per-DAC `asound.conf` presets + tested-device table | `ref:tidal-connect/userconfig/`, `assets/known-devices.md` | a device compatibility database |
-| `systemd --user` unit template + installer, plus `After=time-sync.target` | `ref:tidalt/cmd/tidalt/daemon.go` | `streamboat service install`; avoid the clock-skew failure mode (`raspberry-pi-deployment.md` §3) |
+| `systemd --user` unit template + installer, plus `After=time-sync.target` | `ref:tidalt/cmd/tidalt/daemon.go` | Starting point only for a **desktop** `systemd --user` install — the template is `graphical-session.target`-bound with no `RuntimeDirectory`/`StateDirectory`/hardening; for a true headless system unit, build from `daemon-architecture.md` §1's specification instead |
+| Token-refresh callback hook (`on_authz_refresh_callback`) in a maintained Rust TIDAL client crate | `ref:tidalrs/src/lib.rs:271-281,321,401` | evaluate as a reference implementation for `streamboat-core`'s refresh loop and the multi-process token-refresh problem (`daemon-architecture.md` §5) before writing one from scratch |
 | Single-instance + client-mode fallback via D-Bus name ownership | `ref:tidalt/internal/mpris/server.go`, `cmd/tidalt/main.go` | one binary, two roles |
 | Deep-link forwarding with terminal fallback | `ref:tidalt/cmd/tidalt/play.go` | `streamboat play <url>` |
 | Unix-domain-socket NDJSON control surface | `hrkfdn/ncspot` `doc/users.md` (no local checkout — see `sources.md`) | `streamboat status`/CLI/same-host GUI, v0 |

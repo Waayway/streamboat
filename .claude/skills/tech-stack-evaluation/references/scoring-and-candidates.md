@@ -53,9 +53,31 @@ disagrees: "Beauty" for Slint/Avalonia/Flutter (custom-drawn UIs can be gorgeous
 reflects iteration cost, not achievable quality), and "Agents" for Slint/iced (this penalises DSL
 scarcity, which will improve over time).
 
+**Two structural gaps in this matrix, identified during fact-checking:**
+
+1. **Binary size / RAM / startup — a criterion the brief named explicitly — is dropped entirely.** No
+   row above scores it. See `references/tauri-engineering-facts.md` §12 for the release-profile levers
+   to use in its place, and either add it as a scored criterion (even 3-5 points, redistributed from
+   Effort or Cross-platform) or say plainly it was dropped and why.
+2. **No sensitivity analysis exists, so the ranking's stability is unknown.** Three Open decisions
+   (mobile timing, macOS bit-perfect as v1, Linux-first vs. three-OS v1) are effectively weight
+   changes to this matrix, answered narratively rather than by re-scoring. The gap between 90.2, 82.3,
+   and 78.4 is small enough that one weight change could reorder the ranking. Before treating the
+   ranking as final, re-score under at least two alternative weightings — e.g. Mobile 5→20 (taken from
+   Effort/Beauty) to test whether Flutter overtakes Tauri+React if mobile becomes a 2026 priority, and
+   Beauty 18→10 / Audio 22→30 to test whether a Rust-native toolkit overtakes it if audio purity
+   matters more than visual polish. Not computed here — mechanical next step, not new research.
+
 ---
 
 ## §2 Candidate stacks one by one (corrected)
+
+**Gap identified during fact-checking: only 4.1 fully answers "how would the headless daemon be
+built, and what does it share with the GUI" — a question "headless now" makes non-optional.** 4.2 is
+identical to 4.1 by construction (same `crates/`, only `desktop/` changes); the rest below give at
+most a sentence (4.9: "a JVM headless daemon is a heavier server artefact"; 4.12: "adding a .NET
+runtime dependency…is a regression"). Read each subsection with that gap in mind — where the daemon
+shape is not spelled out, treat it as unresearched, not as "same as Tauri's."
 
 ### 4.1 Rust core + Tauri 2 + web frontend — recommended
 
@@ -72,12 +94,19 @@ React/Tailwind MIT; nothing blocks a GPL-3.0 project.
 
 `slint` 1.17.1 (2026-07-07). Tri-licensed `GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR
 LicenseRef-Slint-Software-3.0`; royalty-free arm is free as long as you disclose Slint use (e.g. the
-`AboutSlint` widget or the Slint badge) — moot for an open-source project under the GPL-3.0 arm. MSRV
-1.92, Rust 2024 edition, renderers femtovg/software/Skia/WGPU, ~1.63M downloads. Draws its own
-widgets — high design ceiling, zero native-look anywhere, on every platform equally (which is fine for
-a music player). Same audio/headless/packaging as 4.1. Loses to Tauri because `.slint`'s DSL has a
-tiny training corpus vs. CSS/React — agents produce plausible-but-wrong layouts more often, and the
-compiler catches structure, not layout intent.
+`AboutSlint` widget or the Slint badge). **Correction (fact-checked): this is NOT automatically moot
+for an open-source project** — it is conditional on Open decision #1 (project licence), not settled
+by "open source" alone. The GPL-3.0 arm applies, and the disclosure obligation disappears, only if the
+owner picks GPL-3.0(-compatible) for streamboat; if the owner instead picks a permissive licence
+(Apache-2.0/MIT, matching tidalt/mopidy-tidal/TIDAL's own SDKs), the royalty-free arm applies and its
+visible-attribution requirement becomes a live product requirement. Treat this recommendation as
+depending on Open decision #1, not assuming it. MSRV 1.92, Rust 2024 edition, renderers
+femtovg/software/Skia/WGPU, ~1.63M downloads. Draws its own widgets — high design ceiling, zero
+native-look anywhere, on every platform equally (which is fine for a music player). **Daemon shape**
+(gap identified during fact-checking): identical to 4.1 — `crates/streamboat-daemon` is the same
+binary either way, since only `desktop/` (the Slint shell replacing Tauri+React) changes. Loses to
+Tauri because `.slint`'s DSL has a tiny training corpus vs. CSS/React — agents produce
+plausible-but-wrong layouts more often, and the compiler catches structure, not layout intent.
 
 ### 4.3 Rust + iced — not recommended
 
@@ -125,9 +154,12 @@ mobile path, no static headless binary, no type-checking backstop.
 Flutter draws every pixel with Skia/Impeller — identical design ceiling on all six targets.
 `flutter_rust_bridge` is the mainstream Dart↔Rust binding generator; `simple_audio` is an existing
 Flutter audio package built on it. `streamboat-core`/`streamboat-player` stay Rust; Flutter is the
-view layer everywhere. Against: three toolchains, thinner desktop plugin ecosystem than mobile,
-Flutter desktop apps rarely feel native, and `flutter_rust_bridge` codegen conventions are not
-well-represented in training data — agents get the FFI boundary wrong more often than either side.
+view layer everywhere. **Daemon shape** (gap identified during fact-checking): `streamboat-daemon` is
+the same headless Rust binary as Recommendation 1 — Flutter only replaces the desktop/mobile *view*
+layer; the daemon links `streamboat-core`/`streamboat-player` directly with no Dart runtime in it at
+all. Against: three toolchains, thinner desktop plugin ecosystem than mobile, Flutter desktop apps
+rarely feel native, and `flutter_rust_bridge` codegen conventions are not well-represented in training
+data — agents get the FFI boundary wrong more often than either side.
 
 ### 4.9 Kotlin Multiplatform + Compose Multiplatform — not recommended
 
@@ -160,13 +192,19 @@ Strawberry: C++17 + Qt 6 (`QT_MIN_VERSION` 6.8.0 on Windows/macOS, 6.4.0 elsewhe
 exclusive, GPL-3.0. **Its `src/` is ~166,100 lines of C++/headers, not the 14,708 an earlier count
 gave** (491 `.cpp` = 121,981 lines + 568 `.h` = 44,141 lines across 40 subdirectories; `src/core`
 alone is 21,510 lines) — the **largest** codebase in this entire survey, ~3.5x SONE's Rust+TS
-combined. It is the strongest three-OS proof point in the survey, at a scale far beyond a solo MVP.
-Its own Windows GStreamer sink ranking is a direct caution against the SONE-Windows `wasapi2sink`
-recommendation — see `references/audio-engine-comparison.md` §"The wasapi2sink controversy". Against
-for streamboat: C++ + QML + CMake + Qt deployment is the largest total surface of any candidate;
-Qt's LGPL-3.0 requires dynamic linking (or a commercial licence); `cxx-qt` 0.10.0 (2026-08-24,
-MIT/Apache, KDAB) makes Rust↔Qt interop nice but adds a fourth moving part. Agents write competent Qt
-Widgets, mediocre QML.
+combined. **Correction (fact-checked): it is the strongest proof point for Linux+Windows only, NOT
+three-OS bit-perfect.** `GstEngine::ExclusiveModeSupport()` returns `true` only for
+`wasapisink`/`wasapi2sink` (`ref:strawberry/src/engine/gstengine.cpp:523-525`); its `osxaudiosink` use
+and CoreAudio calls are device *enumeration* only
+(`ref:strawberry/src/engine/macosdevicefinder.cpp:27,73`) — no hog-mode or physical-format code
+anywhere in `src/`. This makes Strawberry *additional* evidence for "macOS bit-perfect is unproven
+everywhere" (`references/audio-engine-comparison.md` §8), not a counterexample to it. Its own Windows
+GStreamer sink ranking demotes **both** `wasapisink` and `wasapi2sink` (not `wasapi2sink` alone — a
+correction against an earlier draft), a direct caution against the SONE-Windows `wasapi2sink`
+recommendation — see `references/audio-engine-comparison.md` §4. Against for streamboat: C++ + QML +
+CMake + Qt deployment is the largest total surface of any candidate; Qt's LGPL-3.0 requires dynamic
+linking (or a commercial licence); `cxx-qt` 0.10.0 (2026-08-24, MIT/Apache, KDAB) makes Rust↔Qt
+interop nice but adds a fourth moving part. Agents write competent Qt Widgets, mediocre QML.
 
 ### 4.12 .NET + Avalonia — not recommended
 
@@ -205,7 +243,7 @@ primary shell.
 
 | Decision | Choice | Rationale |
 | --- | --- | --- |
-| Language | Rust 2021/2024, one Cargo workspace | Bit-perfect needs direct device access; compiler is the agent's reviewer; static daemon binary is the best server artefact |
+| Language | Rust 2021/2024, one Cargo workspace | Bit-perfect needs direct device access; compiler is the agent's reviewer. **Correction (fact-checked): "static daemon binary" overstates it** — true only for the `symphonia`+per-OS-sink engine (no DASH/HLS fetch, no EAC3/AC4); the recommended GStreamer engine links `libgstreamer`/`libglib` and loads codec plugins from a runtime registry (SONE's deb `depends`: `libgstreamer1.0-0`, `gstreamer1.0-plugins-{base,good,bad}`, `gstreamer1.0-libav`, `gstreamer1.0-alsa`) — nothing about that artefact is static. Decide this trade explicitly, see `references/audio-engine-comparison.md` |
 | Desktop shell | Tauri 2, pinned exactly (`=2.11.2` style) | Avoids surprise webview behaviour changes mid-project |
 | Frontend | React 19 + TypeScript 5.8 strict | Largest agent corpus; Svelte 5 is a defensible smaller-code alternative, Solid not worth the corpus penalty |
 | State | Jotai (SONE) or Zustand (Feishin) — pick one, never mix | Atom-per-concern maps well to a push-event model; SONE's 12-module `src/atoms/` split is a good template |
@@ -232,8 +270,9 @@ hand-written duplicates).
 ### Recommendation 2 (alternative): Rust workspace + Slint desktop shell — score 78/100
 
 Choose if the priority is one language, one toolchain, no webview, no CSS. `crates/` identical to
-Recommendation 1; everything below `desktop/` changes. Slint 1.17+ GPL-3.0 arm; Skia or femtovg
-renderer; `.slint` component library hand-built; theming via Slint global properties. Effort to MVP:
+Recommendation 1; everything below `desktop/` changes. Slint 1.17+ under the GPL-3.0 arm **if and only
+if** Open decision #1 resolves to GPL-3.0 (see §2's correction above); Skia or femtovg renderer;
+`.slint` component library hand-built; theming via Slint global properties. Effort to MVP:
 8–14 weeks (delta over Recommendation 1 is almost entirely UI iteration speed). Risks: agent output
 quality in `.slint`; slower design iteration without CSS; weaker mobile story than Tauri's or
 Flutter's.
@@ -257,9 +296,11 @@ desktop Flutter apps are recognisable as such.
   ourselves" and wraps TIDAL web (which then needs castLabs Widevine again).
 - **GTK4 (Rust or Python)** — nicest Linux app in the survey, foreign everywhere else, against an
   explicit three-OS requirement. Revisit only if scope narrows to Linux.
-- **Qt/QML** — technically capable of everything including three-OS bit-perfect (Strawberry proves
-  it, at 166k lines). Rejected on total surface area for a solo developer, and agent reliability in
-  QML.
+- **Qt/QML** — technically capable of a great deal, and Strawberry proves bit-perfect on **Linux and
+  Windows** (166k lines). **Correction (fact-checked): not macOS** — Strawberry's
+  `ExclusiveModeSupport()` covers only `wasapisink`/`wasapi2sink`; its CoreAudio use is device
+  enumeration only, no hog-mode code anywhere in `src/`. Rejected on total surface area for a solo
+  developer, and agent reliability in QML.
 - **egui** — cannot clear the "beautiful" bar; good for a debug window.
 - **iced** — good engineering, wrong ergonomics for a many-async-loads media app, API churn targets
   dead versions in agent output.
@@ -292,7 +333,7 @@ This number is calibrated unevenly — treat each part separately, not as one un
 | `streamboat-core` (API client) | `ref:tidalrs/src/` — 3,545 lines for manifest/URL resolution only | Sourced, few-thousand-line order of magnitude |
 | `streamboat-player` (audio engine) | SONE's `audio.rs` — 3,309 lines for the full GStreamer/ALSA bit-perfect path | Sourced |
 | Combined API+audio Rust core | SONE's `tidal_api.rs`+`audio.rs` — 10,509 lines at v0.21.0 (mature, not MVP) | Sourced but represents a *mature* app, not an MVP slice |
-| UI (React/TS) | SONE — 47,609 lines, 199 files, 85 components at v0.21.0 | **Not independently calibrated for an MVP slice** — the only data point is a mature app |
+| UI (React/TS) | SONE — 47,609 lines, 199 files, **102 component files** (correction, fact-checked: not 85 — 83 top-level `.tsx` + 17 in `settings/` + 2 in `signal-path/`, 19 are `.test.tsx`) at v0.21.0 | **Not independently calibrated for an MVP slice** — the only data point is a mature app |
 | Packaging tail | See below | **Most commonly underestimated** |
 
 The estimate explicitly **excludes**: design iteration; icon/branding; Apple Developer Program

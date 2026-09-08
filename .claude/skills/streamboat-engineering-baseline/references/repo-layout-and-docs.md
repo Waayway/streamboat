@@ -22,6 +22,7 @@ Target shape (names **[STACK]**-adjusted, structure is not):
 ├── CONTRIBUTING.md
 ├── CODE_OF_CONDUCT.md
 ├── SECURITY.md
+├── .gitattributes             # line-ending normalisation + LFS decision (testing-strategy.md §11)
 ├── crates|packages|src/
 │   ├── core/                  # API client, auth, models, manifest parsing — permissive license
 │   ├── audio/                 # pipeline, sinks, gapless, ReplayGain — platform-conditional
@@ -53,6 +54,7 @@ Target shape (names **[STACK]**-adjusted, structure is not):
 │   ├── workflows/
 │   ├── ISSUE_TEMPLATE/
 │   ├── PULL_REQUEST_TEMPLATE.md
+│   ├── FUNDING.yml            # 7 of 21 reference projects ship one — set up before packaging costs land
 │   ├── dependabot.yml
 │   └── renovate.json
 └── .githooks/pre-commit
@@ -89,15 +91,19 @@ targets, mobile CI, or mobile packaging yet.
   `changelog-check.yml`). tidal-sdk-android ships `.agents/{README.md,checks,do.md}` — one file per
   review rule with severity frontmatter, explicitly "additive" to existing linters and formatters
   ("Coexist, don't replace ... Don't re-litigate formatting."). tidal-cli ships a plain
-  `skills/tidal-cli/SKILL.md`. No checkout in the 21-project set contains a `.claude/skills/`
-  directory — an earlier draft of this document claimed otherwise. Adopt both real patterns:
-  skills that wrap real scripts CI also runs, and review rules that never re-litigate what the
-  formatter owns. Whichever directory streamboat itself uses for its own agent-facing skills, be
-  aware that a vendor-branded directory name (`.claude/`) is exactly the kind of detail a Flathub
-  reviewer reads as an AI-tooling signal under the Generative AI policy
-  (`packaging-and-distribution.md` §1) — a neutral `.agents/` name carries less of that risk if
-  the project ever wants to minimize it, independent of which coding-agent tool actually produced
-  the files.
+  `skills/tidal-cli/SKILL.md`. **Precisely**: no checkout uses `.claude/skills/` specifically, but
+  `.claude/` itself is not absent — tidal-sdk-ios, an *official* TIDAL SDK, ships
+  `.claude/commands/create-release-pr.md` alongside its `.agents/`, and five of the 21 checkouts
+  ship a root `CLAUDE.md` (strawberry, tidalt, tidalswift, tidal-cli, tidal-sdk-ios — two of them
+  official SDKs); tidalswift also ships `AGENTS.md`. So the finding is narrower than "nobody uses
+  `.claude/`": `.claude/skills/` specifically is unused, `.agents/skills/` is the pattern with
+  working CI-invocation precedent, and a root `CLAUDE.md` is common enough (5/21, including
+  official SDKs) not to read as unusual on its own. Adopt both real patterns regardless: skills
+  that wrap real scripts CI also runs, and review rules that never re-litigate what the formatter
+  owns. Whichever directory streamboat itself uses for its own agent-facing skills, a
+  vendor-branded directory name is still the kind of detail a Flathub reviewer could read as an
+  AI-tooling signal under the Generative AI policy (`packaging-and-distribution.md` §1) — a neutral
+  `.agents/` name carries less of that risk if the project ever wants to minimize it.
 - tidal-cli ships `skills/tidal-cli/SKILL.md` and publishes it as a distributable artifact in its
   release workflow — evidence that a skill can be a shipped deliverable, not just repo furniture.
 
@@ -132,10 +138,11 @@ sample rate/bit depth, exclusive-mode on/off, affected tracks, log path)
 (ref:sone/.github/ISSUE_TEMPLATE/playback_issue.md).
 
 **SECURITY.md**: state supported versions, a private reporting channel (GitHub private
-vulnerability reporting), and an explicit scope note that token handling and the local control API
-are in scope while "TIDAL's own service" is not. Align its disclosure timelines with the EU CRA
-open-source-steward pattern regardless of the project's own CRA status
-(`licensing-and-legal.md` §5).
+vulnerability reporting), a target acknowledge/fix timeline (90 days is the common default — **this
+is a separate clock from the EU CRA's 24h/72h/14-day incident-reporting timeline**, do not reuse
+those numbers here, see `licensing-and-legal.md` §5), and an explicit scope note that token
+handling and the local control API are in scope, "TIDAL's own service" is not, and reports about
+circumventing TIDAL's DRM are out of scope and will not be accepted.
 
 **Branch strategy**: `main` protected, feature branches, squash merge, release tags on `main`. A
 `develop` branch (tidal-hifi) only pays off with several contributors and a slow release train;

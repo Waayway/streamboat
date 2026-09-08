@@ -17,6 +17,9 @@ Full narrative: `docs/research/audio-pipeline.md` §4, plus fact-check gap-fill 
 10. CDN URL expiry and mid-track resume
 11. Sample-rate-change audible artifacts and DAC settling
 12. Device-hold policy across pause/idle
+13. Fade-out on stop/pause, and why it can't be a gain ramp in bit-perfect mode
+14. CDN segment fetches carry no authentication
+15. Play reporting to TIDAL, in full
 
 ---
 
@@ -63,7 +66,18 @@ uridecodebin(track B) -> queue(B) -+
   gapless are mutually exclusive **in Sone**. **streamboat should not give up here** — gapless in
   exclusive mode is achievable by keeping the PCM device open across same-format tracks and only
   reopening on a format change (what mpv calls `--gapless-audio=weak`, and what tidalt does) — see
-  §12 below for the device-hold policy this needs.
+  §12 below for the device-hold policy this needs. **Reframing: this is a smaller gap than it looks.**
+  The DirectAlsa writer's `WriterCommand::EndOfTrack` handler does **not** call `snd_pcm_drain()` —
+  it writes a silence period and enters an "idle silence loop — keep DAC clock alive between tracks"
+  (`ref:sone/src-tauri/src/audio.rs:1169-1200`), i.e. it already keeps the PCM open across the track
+  boundary, the mechanically hard part. What's actually missing is only a second, prerolled decode
+  branch feeding that already-open writer. **A real bug this surfaces, worth fixing regardless of
+  whether gapless is ever added to DirectAlsa:** because there's no drain, `track-finished` fires the
+  moment the last decoded chunk is *handed to* the writer, not when the listener actually hears the
+  end — up to one full ALSA buffer early (~500 ms at Sone's own settings, §5). That corrupts any
+  scrobble/play-report timestamp (§7) or gapless-timing arithmetic derived from `track-finished` in
+  the exclusive-mode path — the same class of bug as `output-backends.md` §8's write-vs-audible
+  position error.
 
 **(c) Dual media elements / dual Shaka instances — TIDAL's own web SDK.**
 `#GAPLESS_CROSSFADE_MS = 250`, `#GAPLESS_START_BEFORE_END_S = 0.25`
@@ -113,6 +127,20 @@ track", not an arbitrary concurrency number.**
 without it nothing is actually fetched ahead of time despite the queue looking populated. mpv's own
 docs warn this "can occasionally make wrong prefetching decisions" if the queue is reordered —
 disable it (or rebuild the playlist) around a user reorder.
+
+**When to actually fire the prefetch — a concrete trigger point, previously missing entirely.**
+"Preroll the next branch during the current track" doesn't say *when*. Fire too late and gapless
+fails on a slow connection; too early and manifests (1 h TTL, §7) and `streamingSessionId`s
+(`tidal-manifest-api.md` §8) go to waste. Strawberry's formula
+(`ref:strawberry/src/engine/gstengine.cpp:88-89,595-620`): a 1 Hz timer computes
+`remaining = length - position` and fires `AboutToFinish` when `remaining < gap + fudge`, where
+`gap = buffer_duration_nanosec + (autocrossfade ? fadeout_duration : kPreloadGapNanosec)`,
+`kPreloadGapNanosec = 8 s`, `fudge = timer_interval + 100 ms`. **Translated: preload lead =
+compressed-network-buffer depth (§5) + 8 s, polled at ~1 Hz, latched so it fires once per track.**
+Re-run resolution if the queue's next item changes after the latch — mpv's own
+`--prefetch-playlist` docs warn about exactly this on reorder (above). **Discard the prefetched
+`streamingSessionId` explicitly if the prefetch is abandoned by a skip/reorder** — do not let it
+silently orphan.
 
 ## 4. Loudness normalization / ReplayGain — and its bit-perfect interaction
 
@@ -177,29 +205,53 @@ an optional quadratic mapping (`volume^2`, read back as `volume^(1/2)`).
 
 ## 5. Buffering strategy
 
-| Implementation | Setting |
-|---|---|
-| Sone, GStreamer source | `uridecodebin buffer-duration` = 15 s (DASH) / 5 s (BTS), `use-buffering=true` |
-| Sone, branch queue | `queue max-size-time = 15 s`, buffers/bytes unlimited |
-| Sone, ALSA | `buffer_time ~500 ms`, `period_time ~50 ms`, `start_threshold` = full buffer, `avail_min` = period |
-| Sone, appsink | `max-buffers = 20`, `sync = false` |
-| Sone, writer channel | `crossbeam bounded(256)` |
-| tidalt, ALSA | `period = 1024 frames`, `buffer = 4 x period` (~93 ms @ 44.1 kHz), ALSA-default `sw_params` |
-| Shaka (TIDAL web) | `bufferingGoal = 40 s`, `bufferBehind = 40 s`, `defaultPresentationDelay = 0`, `disableText`, `disableThumbnails` |
-| ExoPlayer (TIDAL Android) | `backBuffer = 20 s`, `minPlaybackBuffer = maxPlaybackBuffer = 2 min`, `bufferForPlayback = 2.5 s`, `bufferForPlaybackAfterRebuffer = 5 s`, `audioTrackBuffer = 1.5 s` |
+**This is three separate pipeline stages, not one number — do not average them or read "2 minutes"
+as a single buffer size.**
 
-The ExoPlayer numbers are the closest thing to an official TIDAL statement of sensible buffering:
-**two minutes of media buffer, 1.5 s of device buffer.** Pick a number, make it configurable,
-default generously for the Pi/headless case.
+| Stage | Implementation | Setting |
+|---|---|---|
+| **Network/compressed** | Sone, `uridecodebin` source | `buffer-duration` = 15 s (DASH) / 5 s (BTS), `use-buffering=true` |
+| **Network/compressed** | Shaka (TIDAL web) | `bufferingGoal = 40 s`, `bufferBehind = 40 s`, `defaultPresentationDelay = 0` |
+| **Network/compressed** | ExoPlayer (TIDAL Android) | `DefaultLoadControl`'s "2 minutes" figure buffers *extracted/compressed* samples, not decoded PCM — easy to misread as the decoded-PCM number |
+| **Decoded PCM reservoir** | Sone, branch queue | `queue max-size-time = 15 s` of *decoded* audio, buffers/bytes unlimited |
+| **Decoded PCM reservoir** | Sone, appsink / writer channel | `max-buffers = 20`, `sync = false`; `crossbeam bounded(256)` |
+| **Device buffer** | Sone, ALSA | `buffer_time ~500 ms`, `period_time ~50 ms`, `start_threshold` = full buffer, `avail_min` = period |
+| **Device buffer** | tidalt, ALSA | `period = 1024 frames`, `buffer = 4 x period` (~93 ms @ 44.1 kHz), ALSA-default `sw_params` |
+| **Device buffer** | ExoPlayer (TIDAL Android) | `audioTrackBuffer = 1.5 s`; separately, `backBuffer = 20 s`, `bufferForPlayback = 2.5 s`, `bufferForPlaybackAfterRebuffer = 5 s` |
+
+**Default each stage independently** — network/compressed generous (network is the scarce resource
+on a Pi; TIDAL's web SDK's 40 s is a reasonable ceiling), decoded-PCM conservative, device buffer per
+`output-backends.md` §1/§9. **The memory arithmetic that makes this matter, especially headless/Pi:**
+two minutes of *decoded* 24-bit/192kHz stereo PCM in an S32 container is
+`192000 x 4 bytes x 2ch x 120s ~= 184 MB` (about 138 MB packed 24-bit); two prerolled gapless
+branches (§1(b)) double that. Sone's actual 15 s decoded reservoir at 24/192 is
+`192000 x 4 x 2 x 15 ~= 23 MB` per branch — safe on a 512 MB Pi. **That 23 MB figure is what
+generalises to a decoded-PCM default; ExoPlayer's "2 minutes" does not** (it's compressed data, and
+even the compressed-24/192-FLAC equivalent is only ~70-90 MB for 2 minutes).
 
 ## 6. On-disk cache, and the legal framing for it
 
 - **High Tide** caches whole tracks to `MUSIC_DIR/{track.id}_{quality}.m4a`, unencrypted, skipping
   caching entirely on a metered network. MPD tracks are remuxed with
   `ffmpeg -protocol_whitelist file,crypto,data,http,https,tcp,tls -i manifest.mpd -f mp4 -c copy`
-  into a `.tmp` then atomically renamed; BTS tracks are downloaded in 8192-byte chunks. No size cap,
-  no encryption. Note: the filename uses the *session's configured* quality, not necessarily the
-  quality actually served.
+  into a `.tmp` then atomically renamed; BTS tracks are downloaded in 8192-byte chunks.
+  **Correction: it is not uncapped.** `ref:high-tide/src/window.py:223` starts
+  `threading.Thread(target=utils.evict_cache, args=(utils.MUSIC_DIR, 5))` at window construction, and
+  `ref:high-tide/src/lib/utils.py:828-843` `evict_cache(cache_dir, max_gb)` sorts entries by
+  `st_atime` and unlinks the oldest-accessed until total usage is <= `max_gb * 1024**3` — a **5 GB
+  atime-LRU cache**, run once per window creation. No encryption is still correct. Two real
+  weaknesses worth copying the fix for, not the "no cap" myth: eviction runs only at window-open, not
+  during a long session, so usage can sit over 5 GB until the app is reopened; and `evict_cache` does
+  `f.stat().st_size`/`f.unlink()` over a bare `cache_dir.iterdir()`, so any subdirectory ever created
+  under `MUSIC_DIR` makes it raise. Note also: the filename uses the *session's configured* quality,
+  not necessarily the quality actually served.
+  **Also unsafe under prefetch/gapless — a separate bug**: every track's MPD is written to one fixed
+  path, `Path(utils.CACHE_DIR, "manifest.mpd")`, opened and overwritten on every track
+  (`ref:high-tide/src/lib/player_object.py:494-513`). Any prefetch of the next track (including High
+  Tide's own `about-to-finish` gapless, §1(a)) can overwrite the current track's MPD while the
+  demuxer may still need it. **streamboat must use a unique temp file per streaming session, delete
+  it on track teardown, and place it in `XDG_RUNTIME_DIR`, not a shared cache dir** (relevant inside
+  a Flatpak/Snap sandbox too).
 - **mopidy-tidal** runs an HTTP relay proxy on localhost in front of TIDAL's CDN, backed by SQLite.
   Insertion is only *finalised* when the whole resource arrives (unfinalised data dropped at next
   startup); stores a `TidalID -> Path` mapping so a cached track resolves fully offline. `Range`
@@ -217,10 +269,13 @@ default generously for the Pi/headless case.
   Sone never persists a manifest — stream manifests are in-memory only per session.
 
 **Legal framing:** caching for a logged-in subscriber during a session is a player concern; building
-a persistent, quality-tagged, indefinitely-retained library of decrypted files is a ripper. High
-Tide's `MUSIC_DIR` cache sits uncomfortably close to that line. If streamboat implements offline
-caching, it should be capped, evicted, encrypted at rest, tied to the current session's credentials,
-and purged on logout.
+a persistent, quality-tagged, indefinitely-retained library of decrypted files is a ripper.
+**Correction: High Tide's cache is not that case** — `MUSIC_DIR` is `Path(CACHE_DIR, "music")`
+(`ref:high-tide/src/lib/utils.py:76-78`), inside the XDG cache dir, and it is capped/LRU-evicted
+(above). It still lacks encryption at rest and a per-session/credential tie, which are the real gaps.
+If streamboat implements offline caching, it should be capped, evicted (continuously, not only at
+startup — High Tide's weakness), encrypted at rest, tied to the current session's credentials, and
+purged on logout.
 
 ## 7. Network resilience: manifest/token lifecycle, privileges websocket, play-reporting
 
@@ -236,12 +291,30 @@ and purged on logout.
   `{type: 'USER_ACTION', payload: {startedAt}}`
   (`ref:tidal-sdk-web/packages/player/src/internal/services/pushkin.ts`). Public event:
   `streaming-privileges-revoked`. `subStatus 4006` is the HTTP-side manifestation of the same thing
-  and is explicitly non-terminal.
-- **Play reporting.** Sone records the *actually served* attributes (`actual_product_id`, `quality`,
-  `audio_mode`, `presentation`, timestamp). TIDAL's own SDKs send a richer `streaming_metrics` event
-  set: `playback_info_fetch`, `streaming_session_start`/`_end`, `playback_statistics`,
-  `drm_license_fetch` — keyed on `streamingSessionId` (`tidal-manifest-api.md` §8). Whether
-  streamboat sends any of this is an open owner decision (SKILL.md).
+  and is explicitly non-terminal. **Reconnect policy — three rules, previously unstated:**
+  `USER_ACTION` is sent only on an explicit user-initiated play, never on autoplay or a gapless track
+  advance; on `RECONNECT`, re-fetch the WebSocket URL from a fresh `POST /v1/rt/connect` rather than
+  reusing the old one (issued per-connect, not guaranteed stable); a dropped socket must never, by
+  itself, stop playback — it degrades to "cannot confirm we still hold the privilege," not "stop."
+  Full protocol depth is the `headless-and-tidal-connect` skill's territory.
+- **Play reporting — full shape, from Sone.** `POST https://ec.tidal.com/api/event-batch`, batched
+  at `MAX_BATCH = 10` ("Max events per SQS SendMessageBatch"), one `playback_session` event per
+  qualifying play (`ref:sone/src-tauri/src/tidal_report/event.rs:6-51`). **Threshold: a flat 30
+  seconds regardless of track length** — "TIDAL's own rule: a play over 30 seconds counts as a
+  stream," unit-tested (30 s of a 200 s track counts; 25 s of a 25 s track does not). **Attribution:**
+  `SourceType::{Album, Playlist, Artist, Mix}` from the container the play started in; unmapped
+  sources (favourites, search, home) report sourceless. **Identity:** decoded from the access token's
+  JWT middle segment (`uid`/`cid`/`sid`), no signature verification. **The constraint that shapes the
+  auth layer:** "Events ride on that client's token, so they must describe that client — not
+  streamboat" — Sone pins `TIDAL_APP_VERSION = "2.205.0"`, `OS_NAME = "Android"`, `OS_VERSION = "35"`,
+  `DEVICE_MODEL = "Pixel 7"`, `DEVICE_VENDOR = "Google"` to match the client ID it authenticates with,
+  noting the pin drifts as TIDAL ships weekly updates
+  (`ref:sone/src-tauri/src/tidal_report/mod.rs:1-6,114-116,260-262,567-573`). Ships on by default with
+  a settings toggle; the endpoint is "private, undocumented — best-effort, may not surface." **This
+  device-impersonation requirement is a real maintenance tax and an ethical/ToS consideration the
+  owner should weigh explicitly, not a one-time implementation detail** (SKILL.md Open decisions).
+  Also suppress reporting for a `PREVIEW`-presentation play (`tidal-manifest-api.md` §13) — it must
+  never cross the 30-second threshold as if it were the real track.
 
 ## 8. Seeking within DASH
 
@@ -320,3 +393,44 @@ Both policies ship today:
 **Recommendation:** hold while playing, release after a configurable idle timeout on pause, and
 release the `org.freedesktop.ReserveDevice1` name at the same moment — holding a reservation without
 using the device helps nobody.
+
+## 13. Fade-out on stop/pause, and why it can't be a gain ramp in bit-perfect mode
+
+§2 covers crossfade; the more commonly-needed fade-out-on-stop/fade-on-pause (suppressing the
+audible click of abruptly tearing down a stream) is missing from the original report entirely, even
+though it's the defect an audiophile user notices first. Strawberry implements both, gated the same
+way as crossfade: `fadeout_enabled_`/`fadeout_duration_` fade the outgoing pipeline on stop/track
+change, `fadeout_pause_enabled_`/`fadeout_pause_duration_` fade on pause, both skipped when
+`AnyExclusivePipelineActive()` (`ref:strawberry/src/engine/gstengine.cpp:233-249,336-339,362-389`).
+Strawberry's own comment states the correctness detail worth copying verbatim: *"If we pause with
+fadeout, deactivate fadeout and resume playback, the player would be muted if not faded in"* — the
+fade-**in** on resume is mandatory, not cosmetic. **For streamboat's exclusive-mode path, the answer
+cannot be a gain ramp** — any software gain quantises, exactly like the volume slider (§4). Real
+options: (a) accept a click; (b) write a short silence ramp before `snd_pcm_drop()`/closing — not
+bit-perfect content, but inaudible content, a defensible trade for a stop/pause transition
+specifically; (c) `snd_pcm_drain()` then close, accepting the drain latency. Sone already writes
+50 ms silence buffers around its software pause (§12) — mechanism (b) already exists in embryo;
+extend it to stop as well as pause.
+
+## 14. CDN segment fetches carry no authentication
+
+Every design this skill and `output-backends.md`/`stacks-comparison.md` describe silently depends on
+handing a manifest/segment URL to `souphttpsrc`, libmpv's `loadfile`, or a bare `fetch` with no
+bearer token or header injection — stated nowhere until now. **Confirmed: TIDAL's CDN URLs are
+pre-signed and take no `Authorization` header.** tidal-cli fetches both the DASH init segment and
+every media segment with a bare `await fetch(url)` and no request-init at all
+(`ref:tidal-cli/src/playback.ts:156-170`); mopidy-tidal's relay proxy forwards to the CDN with no
+auth added; High Tide passes BTS URLs straight to `requests`/`ffmpeg` unmodified. **Corollaries:**
+(a) the expiry lives in the URL's own query token, which is why §10's mid-track 403 recovery means
+re-fetching the manifest, not refreshing the OAuth token; (b) any HTTP client works, so a
+mopidy-tidal-style localhost relay proxy is a legitimate way to insert caching, `Range` handling and
+retry *underneath* an engine that offers no hook — the cleanest answer to §10's open problem on
+Design B, where you cannot reach inside libmpv's demuxer; (c) a working TLS stack in whatever
+runtime/plugin set is shipped is therefore load-bearing on every platform — see
+`output-backends.md` §14's `gioopenssl.dll` finding for Windows specifically.
+
+## 15. Play reporting to TIDAL, in full
+
+See §7 above for the complete shape (endpoint, threshold, attribution, device-impersonation
+constraint) — kept there alongside the rest of network resilience since play-reporting shares the
+`streamingSessionId` join key with manifest prefetch (`tidal-manifest-api.md` §8).

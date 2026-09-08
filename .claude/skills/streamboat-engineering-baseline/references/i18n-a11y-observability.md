@@ -88,7 +88,10 @@ points at a shallow clone — see `sources.md`.
     Linux's AT-SPI bridge. Add a per-OS row to the manual test matrix (`docs/testing/audio-matrix.md`,
     see `testing-strategy.md` §7) and state the OS media-key/now-playing integration a
     screen-reader user relies on for each platform (SMTC on Windows, MPNowPlayingInfoCenter on
-    macOS, MPRIS on Linux) with acceptance criteria, not just a mention.
+    macOS, MPRIS on Linux) with acceptance criteria, not just a mention. On Windows specifically,
+    SMTC only appears when the AppUserModelID is set correctly (Win32
+    `SetCurrentProcessExplicitAppUserModelID` + a matching Start Menu shortcut) — see
+    `packaging-and-distribution.md` §5 for the no-precedent design that requires.
 - **Contrast and themes**: support the system light/dark preference and a high-contrast mode;
   never encode state in colour alone (quality badges need a text label as well as a colour —
   tidalt tests exactly this, asserting every tier on the quality ladder produces a non-empty
@@ -118,6 +121,10 @@ points at a shallow clone — see `sources.md`.
   behind an explicit flag, never on by default.
 - Keep a bounded in-memory ring buffer of the last N structured events regardless of the file-log
   toggle, so the debug bundle is useful even when file logging is off.
+- **Logs are a listening-history record — log `track_id` at `debug`, not `info`.** See
+  `config-cache-logs-telemetry.md` §5 for the full "no telemetry" tension this creates and the four
+  concrete mitigations (debug-bundle disclosure, `debug`-level track ids, `streamboat purge`
+  deleting logs, and relabeling the file-logging toggle in settings).
 
 ## 4. Network request logging with redaction
 
@@ -153,7 +160,9 @@ produces a single zip containing:
 3. The last N log files, passed through the same redactor.
 4. The signal-path snapshot: every pipeline element and its negotiated caps.
 5. The last M structured events from the ring buffer.
-6. A manifest listing exactly what is included, so the user can audit before sharing.
+6. A manifest listing exactly what is included, so the user can audit before sharing — call out
+   explicitly that the included log files contain listening history (§3), so "redacted" is not
+   misread as "anonymised".
 
 Print the output path and state plainly that the bundle has been redacted but should still be
 reviewed before posting publicly. This turns the sone playback-issue template's manual checklist

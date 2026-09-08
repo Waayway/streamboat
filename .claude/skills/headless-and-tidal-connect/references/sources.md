@@ -23,6 +23,7 @@ in the research environment — not part of the streamboat repo itself. Clones w
 | `tidal-hifi` | https://github.com/Mastermindzh/tidal-hifi | MIT (GitHub reports "other"/NOASSERTION) | Electron wrapper around the TIDAL web player. Source of the documented HTTP player-control API vocabulary this skill recommends copying almost verbatim. |
 | `high-tide` | https://github.com/Nokse22/high-tide | GPL-3.0 | Python + GTK4/libadwaita native Linux TIDAL client. Cited here only for its MPRIS bus-name convention. |
 | `tidal-cli` | https://github.com/lucaperret/tidal-cli | MIT | A Node/TypeScript CLI using the official SDK. The CLI precedent this project should build from — see `headless-daemon-precedents.md` §8 for its full command surface and the anti-pattern (temp-file playback) not to copy. |
+| `tidalrs` | https://github.com/phayes/tidalrs | MIT | A maintained Rust TIDAL client library (device-code OAuth2, auto token refresh, DASH/MPEG streaming) targeting the same unofficial v1 API this project uses. Evaluate as a stage-0 build-vs-adopt option and as a reference implementation for the token-refresh callback pattern — `daemon-architecture.md` §1, §5. |
 
 ## External references (no local checkout — cited by URL only)
 
@@ -43,7 +44,14 @@ obligation above (only the licence on the linked repo applies, and only if code 
 | mikebrady/shairport-sync | https://github.com/mikebrady/shairport-sync | AirPlay 2 receiver on Linux |
 | philippe44/libraop, music-assistant/airplay-cli, akustikrausch/airplay2-sender-cpp, owntone/owntone-server | (respective GitHub repos) | AirPlay sender precedents |
 | rgerganov/shanocast | https://github.com/rgerganov/shanocast | The one working open-source Chromecast receiver, and why it isn't a model to copy (reused AirReceiver signatures) |
-| Google Cast media docs | https://developers.google.com/cast/docs/media | Chromecast's FLAC quality ceiling |
+| Google Cast media docs | https://developers.google.com/cast/docs/media | Chromecast's FLAC quality ceiling — **blocked from this environment (added to the blocked-domains list below by the second fact-check pass, having previously been mis-cited as directly confirmed); recovered via search-index summary only, re-verify before quoting a number** |
+| tidal-sdk-web/android/ios API specs | `ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json`, `ref:tidal-sdk-android/tidalapi/bin/tidal-api.json`, `ref:tidal-sdk-ios/Sources/TidalAPI/Config/input/tidal-api-oas.json` | The official `openapi.tidal.com/v2` `/playQueues` server-side play-queue resource, bundled in all three SDKs — see `tidal-connect.md` §4 |
+| badaix/snapcast client | https://raw.githubusercontent.com/badaix/snapcast/develop/client/snapclient.cpp | Confirms snapclient has no Windows service mode — `daemon-architecture.md` §1's Windows-headless precedent |
+| Apple developer forums | https://developer.apple.com/forums/thread/759262 | macOS 15 `NSLocalNetworkUsageDescription`, the stale-purpose-string trap, `/Applications`-only LAN constraint — `daemon-architecture.md` §1 |
+| raspberrypi/linux issue #2215 | https://github.com/raspberrypi/linux/issues/2215 | Documented USB DAC dropout/glitch issue class on Raspberry Pi — `raspberry-pi-deployment.md` §1 |
+| Raspberry Pi Wi-Fi power-save guidance | https://forums.raspberrypi.com/viewtopic.php?t=380009, https://thepihut.com/blogs/raspberry-pi-tutorials/disable-wifi-power-management | Pi Wi-Fi `power_save` as a documented dropout cause, and the fix — `raspberry-pi-deployment.md` §1 |
+| freedesktop login1 `Inhibit` interface | (general systemd/logind specification, not a single URL) | Sleep/idle inhibition design — works headless because login1 is on the system bus, unlike MPRIS — `daemon-architecture.md` §1 |
+| systemd.exec(5) | (general systemd documentation, not a single URL) | `RuntimeDirectory=`/`StateDirectory=`/`ConfigurationDirectory=` for a headless system unit — `daemon-architecture.md` §1 |
 | MusicPlayerDaemon/MPD | https://raw.githubusercontent.com/MusicPlayerDaemon/MPD/master/doc/protocol.rst, `/doc/user.rst` | Primary MPD protocol spec (reachable even though `mpd.readthedocs.io`/`musicpd.org` are blocked) |
 | mopidy/mopidy-mpd | https://raw.githubusercontent.com/mopidy/mopidy-mpd/main/src/mopidy_mpd/protocol/music_db.py, https://github.com/mopidy/mopidy-mpd | MPD-over-non-file-backend precedent; project maintenance status |
 | docs.nuclearplayer.com | docs.nuclearplayer.com/nuclear/integrations/mpd-server | Nuclear's MPD-subset scope and port-fallback behaviour — page blocked from this environment, read via search-index summary |
@@ -70,9 +78,17 @@ obligation above (only the licence on the linked repo applies, and only if code 
 `tidal.com` (all paths, including `/connect` and `/supported-devices`), `developer.tidal.com`,
 `support.tidal.com`, `mpd.readthedocs.io`, `www.musicpd.org`, `docs.nuclearplayer.com`,
 `www.music-assistant.io`, `www.lesbonscomptes.com`, `deepwiki.com`, `protodoc.io`,
-`docs.spotifyd.rs`, `help.roonlabs.com`, `xakcop.com` all returned `EGRESS_BLOCKED` from this
-environment's proxy. Where a reachable primary source exists it is cited above instead (spotifyd's
-docs at their raw GitHub path; the Chromecast-receiver claim at `rgerganov/shanocast` directly;
-Roon/RAAT via the music-assistant discussion thread; MPD's protocol spec at its raw GitHub path).
-Anything else attributed to a blocked domain came from a search-result summary and is flagged
-`[documented-web]`/`[unverified]` inline where it appears.
+`docs.spotifyd.rs`, `help.roonlabs.com`, `xakcop.com`, `developers.google.com` all returned
+`EGRESS_BLOCKED` from this environment's proxy. **`developers.google.com` was added to this list by
+the second fact-check pass** — it had been cited as directly confirmed for the Google Cast quality
+ceiling despite never having been reachable, the same citation-hygiene mistake the first fact-check
+pass already caught for the domains before it. Where a reachable primary source exists it is cited
+above instead (spotifyd's docs at their raw GitHub path; the Chromecast-receiver claim at
+`rgerganov/shanocast` directly; Roon/RAAT via the music-assistant discussion thread; MPD's protocol
+spec at its raw GitHub path). Anything else attributed to a blocked domain came from a search-result
+summary and is flagged `[documented-web]`/`[unverified]` inline where it appears.
+
+Music Assistant's own choice of **WebRTC for Sendspin remote access outside the LAN** (cited in
+`daemon-architecture.md` §3 for streamboat's own "remote control outside the LAN" open decision) is
+documented at https://github.com/music-assistant/server/blob/dev/music_assistant/providers/sendspin/README.md,
+already listed above for its `ws://<server>:8927/sendspin` endpoint.

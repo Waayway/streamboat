@@ -26,11 +26,13 @@ Minimum viable set, all triggered on push + PR:
 | spellcheck | ubuntu-latest | codespell |
 | license scan | ubuntu-latest | disallowed-license list |
 | dependency audit | ubuntu-latest | known-vuln advisory database |
+| package install smoke test | Docker, per distro | installs the built `.deb`/`.rpm`, asserts window/daemon start + MPRIS/control-socket name + no missing `.so` — release-candidate tags only (`packaging-and-distribution.md` §4) |
 
-Plus scheduled jobs: daily API-spec diff (`testing-strategy.md` §4), weekly live canary on a
-self-hosted/maintainer runner (`testing-strategy.md` §5), weekly full-matrix rebuild (mopidy-tidal
-runs its integration suite on `cron: "0 0 * * 0"` — this is a *separate* workflow from its unit
-tests, see `sources.md`).
+Plus scheduled jobs: daily API-spec diff (`testing-strategy.md` §4), weekly live canary run from a
+**maintainer-local cron, not a GitHub-hosted self-hosted runner on the public repo**
+(`testing-strategy.md` §5 — a self-hosted runner on a public repo is a code-execution risk; never
+use `pull_request_target` either), weekly full-matrix rebuild (mopidy-tidal runs its integration
+suite on `cron: "0 0 * * 0"` — this is a *separate* workflow from its unit tests, see `sources.md`).
 
 Notes drawn from the references:
 
@@ -90,7 +92,10 @@ of stack.
   of them from one lockfile-aware tool and is the pragmatic default. Run it on PRs and nightly;
   fail on high/critical with a documented allowlist file for accepted risks.
 - **Static analysis**: CodeQL on the default branch (free for public repos). tidal-hifi also wires
-  SonarCloud (`.sonarcloud.properties`).
+  SonarCloud (`.sonarcloud.properties`). **No reference project runs a sanitizer, Valgrind, Miri or
+  CodeQL at all** (grep across all 21 checkouts for `fsanitize|ASAN|UBSAN|valgrind|miri` hits only
+  a false positive; zero CodeQL/Scorecard workflows) — run the §2.6 fuzz targets under ASan+UBSan
+  nightly regardless; see `testing-strategy.md` §6 for the full recommendation.
 - **Supply chain**: pin actions by SHA (above), enable branch protection with required checks,
   require signed commits or at least DCO, enable GitHub secret scanning + push protection, publish
   build provenance attestations, and publish `checksums.txt` with every release (see
@@ -105,7 +110,17 @@ Full bit-for-bit reproducibility is a large project; the achievable subset:
 - Set `SOURCE_DATE_EPOCH` from the tag's commit date in every packaging job.
 - Commit and use lockfiles everywhere; build with `--frozen-lockfile` / `--locked`.
 - Pin toolchain versions in-tree (`rust-toolchain.toml`, `.nvmrc`, `go.mod` `go` directive,
-  `.python-version`) and have CI read them rather than hardcoding.
+  `.python-version`) and have CI read them rather than hardcoding. **Rarer in the reference set
+  than that phrasing implies** — only 2 of 21 checkouts pin a toolchain in-tree at all
+  (`ref:tidal-hifi/.nvmrc`, `ref:tidal-sdk-web/.nvmrc`); no `rust-toolchain.toml` exists anywhere,
+  sone's `Cargo.toml` has no `rust-version` MSRV field (ref:sone/src-tauri/Cargo.toml:7).
+- **Pinning the build toolchain and declaring a minimum-supported toolchain (MSRV) are two
+  different decisions — make both explicitly, in `docs/DECISIONS.md`.** The build pin is what
+  reproducible-build tooling reads; the MSRV is what a Debian/Fedora packager checks before they
+  can package streamboat at all — an MSRV newer than Debian stable's compiler means no Debian
+  package, ever. Choose the MSRV against the oldest target distro's shipped toolchain (the same
+  constraint that drives building the deb on Ubuntu 22.04 for the oldest glibc,
+  `packaging-and-distribution.md` §4), and add a dedicated "oldest supported toolchain" CI leg.
 - Build release artifacts inside a pinned container image (sone's Dockerfiles pin
   `ubuntu:22.04` and `pnpm@11.1.3`; tidalt pins `FFMPEG_VERSION=7.1.5`).
 - Publish the exact build command and container digest in the release notes.

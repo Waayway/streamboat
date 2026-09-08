@@ -87,7 +87,10 @@ the page slugs `pages/rising`, `pages/explore`, `pages/suggested_new_tracks_for_
 `pages/suggested_new_albums_for_you` (§5), the `NEW_RELEASE_MIX` mix type (§7's mix types), and on
 the official API `/userNewReleaseMixes/{id}` and
 `/userRecommendations/{id}/relationships/newArrivalMixes`. Album credits, similarly, are not a
-dedicated endpoint the way track credits are — they arrive as a `credits` module inside `pages/album`.
+dedicated endpoint the way track credits are on the unofficial API — they arrive as a `credits`
+module inside `pages/album`. The official API does have a dedicated path, `/credits/{id}` (part of
+the 256-entry surface, `references/official-api.md`) — the alternative if streamboat needs album
+credits outside the page module.
 
 ## 5. Pages API (Home, Explore, artist/album/mix pages)
 
@@ -95,9 +98,10 @@ dedicated endpoint the way track credits are — they arrive as a `credits` modu
 `{title, rows: [{modules: [{type, title, pagedList:{items:[…]}, showMore:{apiPath,title}, viewAll}]}]}`.
 Dispatch on `module.type`: `PAGE_LINKS_CLOUD`, `PAGE_LINKS`, `FEATURED_PROMOTIONS`,
 `MULTIPLE_TOP_PROMOTIONS`, `ALBUM_LIST`, `ARTIST_LIST`, `TRACK_LIST`, `PLAYLIST_LIST`, `VIDEO_LIST`,
-`MIX_LIST`, `TEXT_BLOCK`, `ITEM_LIST_WITH_ROLES`, `MIXED_TYPES_LIST`, and `ALBUM_ITEMS` (handled
-alongside `ITEM_LIST_WITH_ROLES` — easy to miss, TidaLuna implements it too). **Ignore unknown
-module types rather than failing the page.**
+`MIX_LIST`, `TEXT_BLOCK`, `ITEM_LIST_WITH_ROLES`, `MIXED_TYPES_LIST`, `ALBUM_ITEMS`, and `ARTICLE_LIST`
+(the last two easy to miss). **Ignore unknown module types rather than failing the page** — new ones
+will appear. `showMore.apiPath`/`viewAll` is a **relative v1 path**, fetched with `deviceType` added
+(`DESKTOP` for `PageLink.get()`, `BROWSER` by default).
 
 Slugs in use: `pages/home` (legacy), `pages/explore`, `pages/for_you`, `pages/hires`, `pages/videos`,
 `pages/genre_page`(`_local`), `pages/moods`, `pages/my_collection_my_mixes`,
@@ -117,6 +121,12 @@ and falls back to concatenating v1 pages if v2 yields nothing.
 `countryCode,locale,deviceType=BROWSER,platform=WEB`, falling back to v1 `pages/artist?artistId=`.
 "View all" paths are v2, e.g. `artist/ARTIST_TOP_TRACKS/view-all?artistId=…&limit=&offset=`.
 
+**Pitfall: python-tidal's v2 "view all" is dead code upstream — do not copy it.**
+`PageCategoryV2.view_all()` calls `self.session.view_all(api_path)`, but `Session.view_all` does not
+exist anywhere in the package (confirmed by grep — no definition site). Following it produces an
+`AttributeError`. The only *working* v2 view-all example in any checkout is the artist-page pattern
+just above — build from that for any v2 feed row's `viewAll` field, not from python-tidal.
+
 **Mixes**: a mix id is a string; `mixType` values include `TRACK_MIX`, `ARTIST_MIX`,
 `HISTORY_ALLTIME_MIX`, `HISTORY_MONTHLY_MIX`, `HISTORY_YEARLY_MIX`, `NEW_RELEASE_MIX`. `pages/mix`
 returns a two-category page: category 0 is the header (title, subTitle, images, `mixType`,
@@ -128,15 +138,23 @@ returns a two-category page: category 0 is the header (title, subTitle, images, 
 
 ## 6. User library: favorites
 
-Base `users/{userId}/favorites`.
+Base `users/{userId}/favorites`. **A fifth collection, `playlists`, is easy to miss** and its
+parameter names are the ones most likely to break a generated/templated client:
 
 | Operation | Call |
 |---|---|
 | list | `GET .../favorites/{artists\|albums\|tracks\|videos}?limit=&offset=&order=&orderDirection=` |
+| list playlists | `GET .../favorites/playlists?countryCode&limit&offset` — separate from the four above |
 | add album(s)/artist(s)/track(s) | `POST .../favorites/{albums\|artists\|tracks}` form `{albumId\|artistId\|trackId}=<id[,id...]>` |
 | add video | `POST .../favorites/videos?limit=100` form `videoIds=<id>` — **plural**, unlike the others |
+| add playlist | `POST .../favorites/playlists` form `uuid=<uuid>` — **singular `uuid`, a UUID, not `playlistId`** |
 | remove | `DELETE .../favorites/{type}/{id}` — single id only |
-| all ids at once | `GET .../favorites/ids` → `{"TRACK":[...], "ALBUM":[...], ...}` (string ids) — the cheap way to render "is favourited" state across a whole view; fetch once per session |
+| remove playlist | `DELETE .../favorites/playlists/{uuid}` |
+| all ids at once | `GET .../favorites/ids?countryCode&locale&deviceType` → `{"TRACK":[...], "ALBUM":[...], "ARTIST":[...], "PLAYLIST":[...], ...}` (**all string ids, even for integer-id entity types**) — the cheap way to render "is favourited" state across a whole view; fetch once per session |
+
+**Do not generate the four add/remove calls from one `{type}Id` template** — albums/artists/tracks
+use `<type>Id`, videos use `videoIds` (plural), playlists use `uuid` (singular, a UUID not an
+integer). A templated client will silently send the wrong field name for videos and playlists.
 
 Sort values: albums `ARTIST|DATE|NAME|RELEASE_DATE`; artists `DATE|NAME`; items
 `ALBUM|ARTIST|DATE|INDEX|LENGTH|NAME`; mixes `DATE|MIX_TYPE|NAME`; playlists `DATE|NAME`; videos
@@ -188,20 +206,45 @@ Two things to internalize:
   playlist. Wrap it in one place.
 - **The ETag must be re-fetched after every mutation.** Fetch etag → mutate → refetch, as one helper.
 
-**`onDupes=FAIL` / `onArtifactNotFound=FAIL` on playlist item *adds* is unverified.** Reference
-clients only ever send `ADD`/`SKIP` for `onDupes` and `SKIP` for `onArtifactNotFound` on this
-endpoint. `FAIL` is verified only on the v2 favorites/mixes endpoints above. If streamboat builds a
-playlist-import feature around "fail loudly on a duplicate," test `FAIL` against a live account
-before documenting it as supported behavior.
+**`onDupes=FAIL` on playlist item adds is unverified — narrower than it may look.** python-tidal only
+ever sends `ADD`/`SKIP` for `onDupes` on this endpoint, at both call sites (`add()` and `merge()`).
+**`onArtifactNotFound=FAIL` *is* verified** — python-tidal's `merge()` (which POSTs to this same
+endpoint to merge another playlist in) sends `"FAIL"` when `allow_missing` is false, and the v2
+favorites/mixes endpoints use it too. If streamboat builds a playlist-import feature around "fail
+loudly on a duplicate," `onDupes=FAIL` is the one value to test against a live account first —
+`onArtifactNotFound` does not need that caveat.
 
 **Other user endpoints**: `GET users/{id}/playlists` (created playlists, v1),
-`GET users/{id}/playlistsAndFavoritePlaylists?limit=50` (**server-capped at 50**),
+`GET users/{id}/playlistsAndFavoritePlaylists?limit=50` (**server-capped at 50 — and its items are
+NOT bare playlists**: they are `{playlist: {...}, created: "..."}` wrappers; python-tidal rewrites
+`item["playlist"]["dateAdded"] = item["created"]` before parsing each one — reproduce that unwrap or
+every item silently loses its `dateAdded`),
 `GET https://api.tidal.com/v2/user-playlists/{id}/public?limit&offset`,
 `GET https://api.tidal.com/v2/profiles/{id}`.
 
 **Sone also creates/edits playlists through the official `openapi.tidal.com/v2` JSON:API** using the
 same Bearer token minted by the unofficial device-code flow (`POST/PATCH .../v2/playlists`) —
-proof the two APIs share a token and can be mixed freely. See `references/official-api.md`.
+proof the two APIs share a token and can be mixed freely. **Sone sends plain `Content-Type:
+application/json` for this, not the `application/vnd.api+json` the official web SDK sets — it still
+works, so treat "requires vnd.api+json" as the SDK's own behavior, not a demonstrated server
+requirement.** See `references/official-api.md`.
+
+**Sone's same token also drives official-API *artist* writes** — follower listing, bio/profile-link
+editing, and a four-step presigned-S3 cover-art upload (`POST /artworks` → `PUT` the presigned URL,
+no auth header, `content-md5` required → poll `GET /artworks/{id}` → `PATCH
+/artists/{id}/relationships/profileArt`). This is the only worked binary-upload example in any
+checkout and a real feature-scope question ("claim your artist page" is a native-app feature) — see
+`references/official-api.md` §8 for the full four-step flow.
+
+**Social features (follow, activity, sharing) are one coherent decision area, not scattered
+endpoints.** Follow/unfollow **does not exist on the unofficial API** in any checkout — the only
+follower surface anywhere is the official-API relationship `GET /artists/{id}/relationships/followers`
+(same artist-tools code above). The activity feed (§5) is unofficial-v2. Collaboration/sharing
+(`/shares`, `/dspSharingLinks`, `/collaborationInvites`, §8) is official-API only. Recommend the owner
+pick a tier for v1 rather than discover the API boundary mid-implementation: (a) read-only
+profile/public-playlist viewing — cheap, unofficial v2; (b) activity feed with seen-marking —
+unofficial v2; (c) following/collaboration/sharing — official API only, inherits its review/quota
+story (`references/official-api.md`).
 
 ## 8. What does NOT exist: collaborative playlists on the unofficial API
 

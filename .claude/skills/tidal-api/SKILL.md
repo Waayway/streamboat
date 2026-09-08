@@ -48,6 +48,11 @@ commit SHAs, and clone date: `references/sources.md`.
 | 11 | `api.tidal.com` is very likely **not CORS-enabled** for browser origins (unlike the official API) — a webview UI cannot call it directly. | Put the API client in native/backend code with no browser-origin dependency, regardless of UI toolkit. `references/official-api.md` §6 (flagged partially unverified — re-check with a live preflight). |
 | 12 | No dedicated "recently played," "charts," or "collaborative playlist" REST endpoint exists on the **unofficial** API — confirmed absent by grep across 23 checkouts, not merely unfound. | Don't hunt for these; use the page slugs / mix types documented, or the official API where they *are* modeled. `references/catalog-and-library.md` §4, §8. |
 | 13 | Writing plays back to TIDAL's Recently Played requires **impersonating TIDAL's Android client** (fixed `app-version`/`device-model`/`os-name` in the event payload) — there is no legitimate-looking way to do this. | This is a real policy decision, not an implementation detail — see Open decisions below. `references/play-logging-and-privileges.md` §3. |
+| 14 | A token-refresh **failure** needs a real taxonomy, not "retry or give up": network error (status 0) ≠ fatal 4xx ≠ retryable 5xx, and a `clientUniqueKey`/scope mismatch is fatal *before* the network call. Get this backwards and streamboat either logs users out on a flaky network, or loops forever on a revoked token. | Copy the official SDK's classification wholesale. `references/auth.md` §12. |
+| 15 | `bitDepth`/`sampleRate` are **not confirmed null only for LOW/HIGH** — an earlier draft got the tiers wrong (python-tidal's own comment says LOW and legacy `HI_RES`) and the web SDK gives no tier qualification at all. | Treat both fields as optional at every tier; prefer the DASH `Representation@id` triple when a manifest is present. `references/playback.md` §1. |
+| 16 | `tidal://` as a custom URI scheme is claimed by **three different things** in this ecosystem: Strawberry's OAuth redirect, Sone/High Tide's content deep links, and the official TIDAL desktop app's own registration. Reusing it for streamboat's OAuth redirect risks a redirect landing in the wrong app. | Register a distinct scheme (e.g. `streamboat://`) for both OAuth redirect and content deep links; never claim `tidal://`. `references/auth.md` §13. |
+| 17 | `EAC3_JOC` in the official `/trackManifests/{id}` `formats[]` ladder is attested **only on the Android SDK** — the web SDK and `tidal-cli` never request it, and Android additionally gates `FLAC_HIRES` on `HI_RES_LOSSLESS` specifically (not the legacy `HI_RES` tier). | Don't assume the web player requests immersive formats; follow the (more permissive) web SDK grouping if calling this endpoint directly. `references/playback.md` §10. |
+| 18 | The account's **quality ceiling comes from `GET /v1/users/{id}/subscription`'s `highestSoundQuality`** — starting the cascade at `HI_RES_LOSSLESS` for every user burns 2-4 wasted requests per track for non-Max subscribers. | Fetch and cache this at login; clamp the cascade to `min(preference, highestSoundQuality)`. `references/auth.md` §6. |
 
 ## Where to go for depth
 
@@ -102,12 +107,23 @@ Only the owner (thijs) can resolve these — do not assume an answer when writin
    several — constrains the core API layer more than any UI decision.
 8. **Write-scope policy.** How far does streamboat write to the user's real TIDAL account? A bug at
    the "writes" tier damages the subscriber's actual account, not just the local app.
+9. **Social features scope (follow, activity, sharing, artist tools).** No reference client models
+   follow/unfollow on the unofficial API at all; the official API has the full model (collaboration,
+   sharing links, artist-profile editing including a presigned-upload cover-art flow). Pick a tier
+   for v1 rather than discover the API boundary mid-implementation. `references/catalog-and-library.md`
+   §7, `references/official-api.md` §8.
+10. **Multi-account / profile switching.** No reference client supports more than one TIDAL account
+    per install. Decide now whether the credential-storage schema needs to be account-keyed from day
+    one — retrofitting it later is a migration, not a flag. `references/auth.md` §14.
+11. **User-Agent / `deviceType` honesty.** Every reference client either impersonates TIDAL's own
+    Android app or sends nothing distinctive; none has published whether an honest `streamboat/…` UA
+    still works. Decide the default and test it against a live account before shipping.
+    `references/transport.md` §3.
 
 ## Unverified — do not present these as settled fact in specs or code comments
 
 - **Rate-limit numbers.** No published figures; two independent developer questions to TIDAL
-  (`tidal-music` Discussions #269 and #285) are apparently unanswered — but #269's "unanswered"
-  status specifically was not independently re-confirmed in the pass that produced this skill.
+  (`tidal-music` Discussions #269 and #285) are **confirmed unanswered** (re-checked directly).
   `references/transport.md` §7.
 - **Whether a newly-registered third-party client gets full-track manifests or only 30-second
   previews from the official `/trackManifests/{id}`.** `tidal-music` Discussion #179 raises the
@@ -116,8 +132,10 @@ Only the owner (thijs) can resolve these — do not assume an answer when writin
   manifest cache, which *is* confirmed). `references/playback.md` §9.
 - **Whether `x-tidal-streamingsessionid` must correlate with the play-log's `playbackSessionId`**
   for a play to surface in Recently Played. `references/play-logging-and-privileges.md` §3.
-- **`api.tidal.com`'s CORS posture** — asserted from architecture and a community doc, not a live
-  preflight. `references/official-api.md` §6.
+- **`api.tidal.com`'s CORS posture** — asserted from architecture alone; the community-doc citation
+  once offered in support turned out on re-check to be about client-id retrieval, not CORS headers,
+  so it's weaker-sourced than an earlier draft implied. No live preflight exists.
+  `references/official-api.md` §6.
 - **Whether `sessionId` can be safely omitted on every endpoint** (Sone omits it and works; untested
   against endpoints Sone doesn't exercise that python-tidal does — `pages/*`, `genres`,
   `urlpostpaywall`). `references/auth.md` §6.
@@ -129,5 +147,11 @@ Only the owner (thijs) can resolve these — do not assume an answer when writin
 - **Flathub's current policy stance** on apps embedding credentials extracted from proprietary
   clients — tolerated in practice (both High Tide and Sone are listed), no policy statement found.
 - **Whether the shared ecosystem client-ID pair is still valid as of any given date** — TIDAL rotates
-  these periodically (confirmed via python-tidal's changelog); check against a live login before
-  assuming a hardcoded pair still works.
+  these periodically (confirmed via python-tidal's changelog); no TIDAL account was available in this
+  research pass to test it. **Recommend this as streamboat's literal first milestone**: run
+  python-tidal's device-code login against the ecosystem pair with a live paid subscription before
+  committing further engineering to the unofficial-API spine, and record the date and result.
+  `references/legal-and-landscape.md` §2.
+- **No example response bodies or captured fixtures exist in any of the 22 reference checkouts** —
+  every field list in this skill was read from parsing code, not from a sample. Capture your own
+  fixtures against a live account before writing strict deserializers. `references/transport.md` §8.

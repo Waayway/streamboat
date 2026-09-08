@@ -4,7 +4,7 @@ Table of contents:
 1. Home — two schemas, tabs, pagination
 2. Module/section type vocabulary and category titles
 3. Explore
-4. MixType — treat as open-ended
+4. Mixes and radio — MixType (open-ended), actions, routes, endpoints
 5. Search
 6. The 29-route-loader table
 7. Sidebar nav (top-level only — not the full inventory)
@@ -95,9 +95,9 @@ whatever page renders them (typically Explore/Home), and python-tidal has no art
 so this is client-side rendering of an existing module type, not new API surface. Low priority:
 no playback value, safe to defer behind the module renderer already required for Explore/Home.
 
-## 4. MixType — treat as open-ended
+## 4. Mixes and radio — MixType (open-ended), actions, routes, endpoints
 
-Desktop client's own model — **a subset, not the complete set**:
+Desktop client's own `MixType` model — **a subset, not the complete set**:
 `MixType = "VIDEO_MIX" | "TRACK_MIX" | "ALBUM_MIX" | "ARTIST_MIX"`
 (`ref:TidaLuna/plugins/lib/src/redux/types/store/content/Mix.ts`).
 
@@ -111,6 +111,26 @@ under `MixType`. The official v2 spec models the personalised families as separa
 from `/userRecommendations/{id}/relationships/{myMixes,discoveryMixes,newArrivalMixes,offlineMixes}`,
 and explicitly documents that new `MixType` values can appear at any time. Don't hard-code a closed
 enum for this.
+
+**Client actions** (`ref:TidaLuna/plugins/lib/src/redux/types/actions/actionTypes.ts`):
+`mix/PLAY_MIX`, `mix/LOAD_MIXES_SUCCESS`, `mix/LOAD_TRACK_LIST_FOR_MIX_ID`,
+`mix/LOAD_TRACK_MIX_ID` (+ `_SUCCESS`/`_FAIL`), `mix/LOAD_ALL_MIX_MEDIA_ITEMS_SUCCESS`,
+`mix/ADD_MIX_TO_PLAYLIST`, `mix/SHOW_CREATE_PLAYLIST_FROM_MIX_DIALOG`,
+`content/LOAD_DYNAMIC_MIX_PAGE`. Routes (§6): `LOADER_DATA__MIX`, `LOADER_DATA__ARTIST_MIX`,
+`LOADER_DATA__ALBUM_TRACK_MIX`. Favouriting a mix uses its own endpoint family, distinct from
+every other favourite type: `favorites/mixes/add`, `favorites/mixes/remove` (pitfall 8's
+"favorites is bare arrays" shape still applies — only the write endpoint differs).
+
+**API (v1, unofficial)**: `pages/mix?mixId=` (per-mix page, note the required query param — don't
+drop it), `pages/my_collection_my_mixes` (the My Collection → Mixes & Radio list), plus the
+per-entity radio/mix endpoints `tracks/{id}/mix`, `tracks/{id}/radio`, `artists/{id}/mix`,
+`artists/{id}/radio` (`ref:python-tidal/tidalapi/{mix,artist,media}.py`) — the artist versions are
+also covered from the artist-page angle in `library-playlists-collections.md` §3.
+
+An implementer building the Mix page needs all three of: this section (MixType, actions, routes,
+endpoints), `library-playlists-collections.md` §3 (artist mix/radio in context), and the
+`feature-matrix.md` "Mixes: My Mix N, Daily Discovery, New Arrivals, Video Mix, history mixes" row
+(tier **v1**) for the priority call.
 
 ## 5. Search
 

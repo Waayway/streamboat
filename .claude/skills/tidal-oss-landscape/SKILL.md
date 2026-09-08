@@ -6,10 +6,13 @@ description: Architectural precedent from 20+ open-source TIDAL clients and SDKs
 # TIDAL open-source landscape for streamboat
 
 Source of truth: `/home/user/streamboat/docs/research/oss-landscape.md` (the full research
-report, corrected against an independent fact-check pass — read it for narrative depth and the
-complete source list). This skill is the load-on-demand distillation: the facts, endpoints, code
-pointers, and pitfalls an implementer needs while writing code, without re-reading a 2,200-line
-report every time.
+report, corrected against **two** independent fact-check passes — read it for narrative depth and
+the complete source list). This skill is the load-on-demand distillation: the facts, endpoints,
+code pointers, and pitfalls an implementer needs while writing code, without re-reading a
+2,600-line report every time. Note: the *first* fact-check pass itself introduced a couple of
+errors while correcting the original draft (notably: it wrongly claimed Sone emits no
+`track-advanced` event); the second pass caught these — see `references/verification-notes.md`
+§1b if a fact here ever looks inconsistent with something you remember reading.
 
 `ref:<project>/<path>` throughout this skill and the main report points at a shallow git clone of
 a named open-source project kept in the research environment (e.g.
@@ -46,19 +49,24 @@ project→URL mapping, including projects cited by URL only with no local checko
 | 10 | Enabling EBU R128 loudness normalization in a GStreamer pipeline forces the downstream chain to float caps (`F32LE`/`F64LE`) — this is **structurally incompatible** with bit-perfect integer output, not just "should be off by default." | Any normalization stage must be bypassable, not merely defaulted off. `references/audio-engineering.md` §4. |
 | 11 | The entire `tidal.com` domain (not just `developer.tidal.com`/`support.tidal.com`) is blocked from this research environment — every quote from TIDAL's own policy text anywhere in this skill is second-hand. | Never cite these quotes as primary-sourced in user-facing legal text without a direct, unproxied re-read first. `references/verification-notes.md` §4. |
 | 12 | mopidy-tidal's "login hack" QR code (the cleverest headless-auth idea in the set) sends the one-time TIDAL login URL to a third-party host (`api.qrserver.com`) to render it. | Generate QR codes locally if adapting this pattern — tidalt's `mdp/qrterminal` is the pattern to copy instead. `references/api-auth-streaming.md` §3. |
+| 13 | A seek that detaches the armed gapless next-track slot (the "obvious" implementation) destroys a valid preroll and produces an audible gap — Sone tried this and reverted it. | Seek must leave the inactive prerolled `concat` branch alone; only the active branch gets flushed. `references/sone-deep-dive.md` §3a. |
+| 14 | Gapless *arming* logic that gates on `isPlaying` will silently disable itself during ALSA device-busy retries, because `isPlaying` flickers false during those retries and on every pause. | Gate arming on `gapless && !exclusiveMode && !bitPerfect && !currentVideo && currentTrack` — never on `isPlaying`. `references/sone-deep-dive.md` §3b. |
+| 15 | "Sone has 151 tests" reads as a test harness for the hard parts. It isn't one — `[dev-dependencies]` is one line (`tempfile`), and all 151 tests cover pure functions only; the HTTP layer, manifest parsers, and ALSA path have zero automated coverage. | Design a parser/transport split plus captured fixtures as new work — no project in this reference set demonstrates that pattern. `references/sone-deep-dive.md` §7. |
+| 16 | Every project in this landscape except High Tide and mopidy-tidal — Strawberry included — is effectively bus-factor 1. "Very mature, very active" (Strawberry) is not the same signal as "safe to depend heavily on." | Read "maturity" as age + release cadence + CI, not community size, when deciding how much to lean on any one reference project. `references/sone-deep-dive.md` §10. |
+| 17 | No project in the reference set signs its Windows/macOS builds or ships a signed in-app updater — including tidal-hifi, which has the best release CI in the set. | Budget code signing/notarization and decide the update mechanism per distribution channel as new work from day one; there is nothing to copy. `references/packaging-distribution.md` §3, §7. |
 
 ## Where to go for depth
 
 | Question | Reference file |
 | --- | --- |
-| Official vs unofficial API surfaces, auth flows (device code, PKCE, three redirect-capture strategies), stream-resolution endpoints and params, manifest formats (BTS/DASH/EMU/HLS), the `subStatus` taxonomy, quality-cascade stopping rules, credential-handling risk profiles, the Dolby Atmos gap | `references/api-auth-streaming.md` |
-| Bit-perfect ALSA negotiation (format/rate probing, promotion table, S24 naming inversion, hw/sw params), three gapless designs compared, DASH caps handling, three normalization formulas (incl. why EBU R128 breaks bit-perfect), the pure-Rust-vs-GStreamer question (librespot, cpal, wasapi), macOS CoreAudio hog-mode precedents outside this reference set, tidalt's ALSA refinements, volume curves | `references/audio-engineering.md` |
-| Sone's full stack, module map, IPC design and the state-ownership inversion to avoid, caching/crypto/settings, packaging+CI (and why there is none), code quality, borrow/avoid list, the sone-windows fork | `references/sone-deep-dive.md` |
-| Per-project deep dives for everything else: High Tide, Strawberry, tidal-hifi, TidaLuna, mopidy-tidal, tidal-connect, the three official SDKs, python-tidal, tidal-cli, tidalt, tidalrs, TidalSwift, and the smaller/historical projects | `references/project-profiles.md` |
-| The corrected overall/auth/audio comparison tables | `references/comparison-tables.md` |
-| Reusable packaging scripts and configs with paths, Sone's actual fetched Flathub manifest (and the Flatpak/bit-perfect conflict it confirms), the update-mechanism decision per distribution channel, the GStreamer/`libav` bundling licensing decision, the i18n decision, a licensing-obligation table | `references/packaging-distribution.md` |
-| Project→URL mapping (incl. projects cited by URL with no local checkout) and the domains blocked from this research environment | `references/sources.md` |
-| The fact-check audit trail: every refuted claim with its correction, every new finding with its source, and the recurring "read the code, not the comment" lesson | `references/verification-notes.md` |
+| Official vs unofficial API surfaces, auth flows (device code, PKCE, three redirect-capture strategies, python-tidal's incomplete poll loop), stream-resolution endpoints and params, manifest formats (BTS/DASH/EMU/HLS, four DASH delivery strategies), the `subStatus` taxonomy (incl. the streaming-privileges/`4006`/Pushkin gap), quality-cascade stopping rules, credential-handling risk profiles, the Dolby Atmos/`SONY_360RA` gap | `references/api-auth-streaming.md` |
+| Bit-perfect ALSA negotiation (format/rate probing, promotion table, S24 naming inversion, hw/sw params), three gapless designs compared, seeking's interaction with `concat` gapless, DASH caps handling, three normalization formulas (incl. why EBU R128 breaks bit-perfect), the pure-Rust-vs-GStreamer question (librespot, cpal, wasapi), macOS CoreAudio hog-mode precedents outside this reference set, tidalt's ALSA refinements (incl. release-on-pause) and combined device hot-plug/busy/lost policy, volume curves | `references/audio-engineering.md` |
+| Sone's full stack, module map, IPC design and the state-ownership inversion to avoid, seeking, the gapless prefetch/arming policy (the frontend half), caching/crypto/settings, play-reporting wire format, music videos, packaging+CI (and why there is none, incl. what "151 tests" doesn't cover), code quality, borrow/avoid list, the sone-windows fork (incl. its Windows GStreamer/AAC-decoder gap), bus factor/contributor counts | `references/sone-deep-dive.md` |
+| Per-project deep dives for everything else: High Tide, Strawberry, tidal-hifi, TidaLuna (incl. the official Redux action-namespace dump and Atmos/360RA handling), mopidy-tidal, Music Assistant, lms-plugin-tidal, tidal-connect, the three official SDKs, python-tidal, tidal-cli, tidalt (incl. its daemon/client D-Bus mechanics), tidalrs, TidalSwift, and the smaller/historical projects | `references/project-profiles.md` |
+| The corrected overall/auth/audio comparison tables, incl. the bus-factor caveat on the "maturity" column | `references/comparison-tables.md` |
+| Reusable packaging scripts and configs with paths, Sone's actual fetched Flathub manifest (and the Flatpak/bit-perfect conflict it confirms), the update-mechanism decision per distribution channel (generalized: no project in the set ships one), the GStreamer/`libav` bundling licensing decision (now with sone-windows' concrete plugin list and AAC-decoder gap), the i18n decision, code signing/notarization (no precedent to copy), a licensing-obligation table | `references/packaging-distribution.md` |
+| Project→URL mapping (incl. projects cited by URL with no local checkout, incl. Music Assistant and lms-plugin-tidal) and the domains blocked from this research environment | `references/sources.md` |
+| The fact-check audit trail across **both** passes: every refuted claim with its correction (including the first pass's own errors), every new finding with its source, and the recurring "read the code, not the comment" lesson | `references/verification-notes.md` |
 
 For streaming wire-format depth beyond what's needed to confirm an endpoint shape (full manifest
 byte layout, DRM specifics, image URL construction), go to `docs/research/tidal-api.md`. For
@@ -82,6 +90,13 @@ webview, not in the Rust core (Pitfall 6 above). **tidalt is the closest *shape*
 daemon holding the audio device plus a thin TUI client talking to it over D-Bus — but has no GUI
 and is Linux-only. No project in the reference set combines a GUI desktop client and a headless
 daemon from one codebase; that is the gap streamboat is actually filling.
+
+**If you need a ranked priority order, not just a flat pitfall table**: the main report's §18-Q
+gives a top-six ranking of everything in this skill, in order — (1) never decrypt, (2) core owns
+session/queue/transport, every UI is a subscriber, (3) platform audio split behind a trait from
+commit one, (4) unofficial v1 API as the only viable playback path, (5) client IDs/secrets as
+user-replaceable settings, (6) exclusive/bit-perfect output as a non-Flathub tier. Everything else
+in this skill ranks below those six.
 
 ## Open decisions (feed these into any decision tree or spec-writing task)
 
@@ -123,13 +138,25 @@ Only the owner (thijs) can resolve these — do not assume an answer when writin
 11. **i18n**: adopt a mechanism now (High Tide's gettext/Meson path is nearly free) or
     consciously ship English-only (Sone's actual, undocumented default) and say so.
     `references/packaging-distribution.md` §5.
-12. **Dolby Atmos policy**: prefer/request stereo and refuse Atmos-only manifests with an honest
-    message, or invest in the (currently unverified anywhere) Atmos decode path.
-    `references/api-auth-streaming.md` §9.
+12. **Dolby Atmos / 360 Reality Audio policy**: prefer/request stereo and refuse spatial-only
+    manifests with an honest message, or invest in the (currently unverified anywhere in this set)
+    decode path. Metadata/quality *handling* for spatial content does have a precedent to copy
+    (TidaLuna), decode does not — these are separable decisions. `references/api-auth-streaming.md`
+    §9.
 13. **GStreamer/`libav` bundling**: include the FFmpeg-derived `libav` plugin in a bundled
-    Windows/AppImage build (more codec coverage, more licensing obligation) or ship only
-    `base`/`good`/`bad` (FLAC + DASH demux + AAC, no FFmpeg). `references/packaging-distribution.md`
-    §4.
+    Windows/AppImage build (more codec coverage, more licensing obligation — sone-windows'
+    Windows bundle excludes it and as a result cannot decode AAC, TIDAL's HIGH/LOW tiers) or ship
+    only `base`/`good`/`bad` (FLAC + DASH demux, no FFmpeg, no lossy tiers on that platform).
+    `references/packaging-distribution.md` §4.
+14. **Music videos**: desktop-UI-only feature on a second, browser-based media path (Sone's
+    answer — a headless/daemon core cannot render video) or explicitly out of scope for now.
+    `references/sone-deep-dive.md` §5.
+15. **Code signing / notarization budget and timeline**: no project in the set signs anything;
+    this is new cost and CI-secrets work, not something to defer implicitly by omission.
+    `references/packaging-distribution.md` §7.
+16. **Whether and how to reverse-engineer TIDAL's real-time streaming-privileges channel** (the
+    official client has one, `player/STREAMING_PRIVILEGES_REVOKED`; no OSS project does) — or
+    accept `subStatus 4006` polling as the permanent answer. `references/api-auth-streaming.md` §6.
 
 ## Unverified — do not present these as settled fact in specs or code comments
 
@@ -155,11 +182,15 @@ Only the owner (thijs) can resolve these — do not assume an answer when writin
 - Whether the TIDAL Connect protocol is approachable at all for a receiver or a controller — no
   open-source implementation of either exists anywhere found; the only precedent wraps a
   proprietary certificate-authenticated binary.
-- Current contributor counts per project — the reference checkouts are shallow clones (one
-  author each, an artifact of clone depth) and this session's proxy refuses unauthenticated
-  GitHub contributor-endpoint calls. Treat "single-maintainer" claims in this skill as a
-  qualitative signal (no CI, high open-issue count), not a verified headcount. Method to get the
-  real numbers is in `references/verification-notes.md` §4.
 - Whether `playbackinfopostpaywall` accepts an audio-mode/immersive parameter for Dolby Atmos, and
-  what codec an Atmos track's BTS manifest actually reports — no reference project demonstrates
-  this end to end.
+  what codec an Atmos track's BTS manifest actually reports — no reference project *decodes* this
+  end to end (metadata/quality *handling* for spatial tracks is precedented, in TidaLuna — see
+  `references/api-auth-streaming.md` §9 — decode is not).
+- Whether TIDAL's real-time streaming-privileges channel (the mechanism behind
+  `player/STREAMING_PRIVILEGES_REVOKED` in the official client) can be reverse-engineered at all —
+  no open-source project in this set has attempted it. `references/api-auth-streaming.md` §6.
+
+**Resolved by the second fact-check pass (2026-09-08) — no longer unverified**: contributor
+counts per project (`references/sone-deep-dive.md` §10); whether Sone emits a `track-advanced`
+event (it does; `references/sone-deep-dive.md` §3); the DASH-consumption-strategy count (four, not
+two; `references/api-auth-streaming.md` §5).

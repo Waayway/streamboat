@@ -13,12 +13,15 @@ ownership, caching/crypto/settings, packaging, code quality, and what to borrow/
 1. Stack
 2. Module map
 3. IPC design — and the state-ownership inversion streamboat must NOT copy
+3a. Seeking
+3b. Gapless prefetch/arming policy (the frontend half of gapless)
 4. Caching, settings, secrets
-5. Theming, lyrics, miniplayer, integration surfaces
+5. Theming, lyrics, miniplayer, integration surfaces, music videos, play reporting
 6. Packaging and CI — reusable scripts, but no CI at all
-7. Code quality: strong source, weak process
+7. Code quality: strong source, weak process (and what "151 tests" does not mean)
 8. Borrow / avoid, consolidated
 9. sone-windows — the Windows fork, and why one codebase could serve both
+10. Bus factor / contributor counts
 
 ## 1. Stack
 
@@ -107,9 +110,17 @@ queue, and transport; every UI — desktop, CLI, MPRIS, HTTP — is a thin subsc
 lives in a webview cannot serve a CLI or a headless daemon as a first-class citizen; it can only
 be mirrored to them after the fact, which is exactly Sone's shape.
 
-**There is no `track-advanced` event and no position/state-tick event at all** — an earlier draft
-of the main report guessed this event existed; it does not. The real emitted-event set is
-`audio-error`, `audio-resampled`, `signal-path-changed`, `track-finished`,
+**Corrected (this file's own earlier draft got this backwards — read the current oss-landscape.md
+§2.4, not an older cached version of this claim): Sone *does* emit `track-advanced`.**
+`app_handle.emit("track-advanced", json!({"trackId":…, "qid":…, "replayGain":…,
+"peakAmplitude":…}))` fires from the audio thread on every gapless advance
+(`ref:sone/src-tauri/src/audio.rs:2671-2682`) and Rust itself consumes it for scrobbling
+(`ref:sone/src-tauri/src/lib.rs:705-712`). What remains true: **there is no periodic
+position/state-tick event** — `track-advanced` is a discrete track-boundary event, not a position
+stream. The full emitted-event set is `audio-error` (payload `kind` ∈ `{device_disconnected,
+device_changed, format_change_failed}` — values of one event, not separate events),
+`audio-resampled`, `audio-bit-depth-changed` (`audio.rs:852`, on a bit-depth promotion),
+`signal-path-changed`, `track-finished`, `track-advanced`,
 `pkce-login-success`/`-error`/`-cancelled`, `scrobble-auth-error`, `tray:{toggle-play,next-track,
 prev-track}`, and `mpris:{play,pause,stop,seek,set-position,set-volume,set-shuffle,
 set-loop-status,set-fullscreen,open-uri}` — the `tray:*`/`mpris:*` events flow **up** into the
@@ -118,6 +129,46 @@ polled, not pushed**: the frontend runs `setInterval(syncPosition, 500)`
 (`ref:sone/src/hooks/useProgressScrub.ts:38`); the miniplayer, overlay, and signal-path panel each
 poll independently on their own separate intervals. **Make an explicit push-vs-poll decision for
 streamboat's own core↔UI protocol** rather than reproducing N independent ad hoc pollers.
+
+## 3a. Seeking
+
+The transport operation most likely to break both `concat` gapless and the ALSA writer, and
+undocumented anywhere else in this skill until now. `AudioCommand::Seek`
+(`ref:sone/src-tauri/src/audio.rs:2307-2365`) carries an empirical comment from testing on
+GStreamer 1.24.2: `seek_simple(FLUSH|KEY_UNIT)` on the pipeline forwards `FLUSH_START`/
+`FLUSH_STOP` and the new `SEGMENT` only to `concat`'s **active** sink pad; the inactive prerolled
+next-track branch sees no flush events, stays linked and `PLAYING`, and `concat` still switches to
+it correctly at the active branch's EOS. **A seek must not detach the armed next-track slot** —
+Sone tried that once and it destroyed a valid preroll on every seek, producing an audible gap at
+the next track boundary. On the `DirectAlsa` (bit-perfect) path, a seek additionally bumps
+`track_generation`/`writer_gen` (dropping in-flight stale PCM chunks), sends `WriterCommand::
+Flush`, and re-bases `frames_written = position_secs * current_sample_rate` — **position on the
+bit-perfect path is derived from frames actually written to the PCM device, not from a GStreamer
+position query** — and paused state is saved/restored around the seek. Port this behaviour, not
+just the ALSA negotiation in §1 of `audio-engineering.md`, if streamboat copies Sone's bit-perfect
+path.
+
+## 3b. Gapless prefetch/arming policy (the frontend half of gapless)
+
+`audio-engineering.md` documents the Rust-side `concat` plumbing; this is the policy that decides
+*when* to arm it, which is pure frontend logic an implementer must design from scratch — no
+project other than Sone has one to copy. `ref:sone/src/hooks/useGaplessPrefetch.ts` (~180 lines):
+(1) gapless capability is cached once via `invoke("get_gapless_supported")`; (2) arming requires
+`gapless && !exclusiveMode && !bitPerfect && !currentVideo && currentTrack` — note **exclusive
+mode**, not just the `DirectAlsa` backend, disables it, and a **video** as the current queue item
+disables audio gapless too (see §5's music-videos note); (3) it deliberately does **not** gate on
+`isPlaying`, because "isPlaying flickers false during device-busy retries and on every pause" —
+i.e. Sone has an ALSA device-busy retry loop, and a paused track keeps its slot armed because
+`concat` cannot switch an inactive pad while paused; (4) it dedups on `(trackId, qid)` before
+calling into Rust, since the predicted next track is stable for a whole track and a naive debounce
+would otherwise re-run the backend's full quality cascade repeatedly; (5) a negative cache
+`failedRef {trackId, qid, until}` stops a track that failed to resolve from being retried on every
+queue mutation; (6) in-flight refreshes are **coalesced, not dropped** (with shuffle on, the
+prediction genuinely changes mid-flight); (7) a generation counter discards superseded responses.
+Backend side: `commands/playback.rs:209` `set_next_track(trackId, qid, useTrackGain)` →
+`audio_player.set_next_track(uri, gain, track_id, qid, rg, peak, is_dash)`, plus
+`clear_next_track`. Prediction: `ref:sone/src/lib/gaplessPredict.ts::pickGaplessNext`; post-advance
+bookkeeping: `ref:sone/src/hooks/usePlaybackActions.ts:494-540`.
 
 ## 4. Caching, settings, secrets
 
@@ -148,9 +199,11 @@ fields: `auth_tokens`, `client_id`, `client_secret`, `auth_method`, `volume`, `l
 `minimize_to_tray`, `decorations`, `titlebar_migration_v1`, `volume_normalization`,
 `exclusive_mode`, `exclusive_device`, `bit_perfect`, `gapless` (default true), `max_quality`
 (default `"HI_RES_LOSSLESS"`), `scrobble`, `proxy`, `discord_rpc`, `discord_status_text`,
-`legacy_auth_notice_count` (capped at 5 — despite a code comment claiming it "never resets", it
-*is* reset to 0 in two places, `commands/auth.rs:395,561` — read the expression, not the
-comment), `mcp_enabled`/`mcp_port` (5577)/`mcp_token`, `overlay_enabled`/`overlay_port`
+`legacy_auth_notice_count` (the doc comment at `lib.rs:164-167` claims a cap of 5 and "never
+resets" — **both halves are wrong**: the real cap is `const LEGACY_AUTH_NOTICE_LIMIT: u8 = 3`
+gated `>= LEGACY_AUTH_NOTICE_LIMIT` at `commands/auth.rs:484,493`, and it *is* reset to 0 in two
+places, `commands/auth.rs:395,561` — read the expression, not the comment),
+`mcp_enabled`/`mcp_port` (5577)/`mcp_token`, `overlay_enabled`/`overlay_port`
 (5578)/`overlay_host` (127.0.0.1 default — this is a user setting, not hard-coded;
 `overlay/server.rs:31-34` explicitly handles a `0.0.0.0` bind, unlike the MCP server which is
 loopback-only), `report_plays` (default true).
@@ -204,7 +257,24 @@ this exact pattern in streamboat** — if credentials ship at all, say so plainl
   handled — do not assume this one is loopback-locked the way MCP is.
 - **Play reporting** (`tidal_report/`): reports plays back to TIDAL so "Recently Played" works,
   capturing the *actually served* `audioQuality`/`audioMode`/`assetPresentation` from the
-  playbackinfo response. User-disableable via `report_plays` (default on).
+  playbackinfo response. User-disableable via `report_plays` (default on). **Wire format**: POSTs
+  to `https://ec.tidal.com/api/event-batch` (`tidal_report/event.rs:6`). `SessionEvent` carries
+  `session_id`, `requested_product_id`, `actual_product_id`, `quality`, `audio_mode`,
+  `presentation`, `source`, `start_ts_ms`, `end_ts_ms`, `end_asset_pos` (`event.rs:89-100`),
+  serialized as a mobile-shaped JSON body with `playbackSessionId`, `isPostPaywall: true`,
+  `productType: "TRACK"` (`event.rs:103-115`) — note requested vs. actual product id/quality are
+  both reported. There is a retry/offline queue (`tidal_report/queue.rs`). **Mint
+  `playbackSessionId` at stream-resolution time, not report time** — it is the same id the
+  official SDK sends as `x-playback-session-id` on its manifest request, so one id must span
+  resolve → play → report.
+- **Music videos are not in the Rust/GStreamer/ALSA engine at all.** `GET
+  /videos/{id}/playbackinfopostpaywall` (`tidal_api.rs:3816`) and `GET /videos/{id}`
+  (`tidal_api.rs:3871`) exist, but playback is `hls.js 1.6.16` inside the webview
+  (`package.json`) — a second, entirely separate media path — and
+  `ref:sone/src/hooks/useGaplessPrefetch.ts:65` disables audio gapless arming outright whenever
+  the current queue item is a video. A headless/daemon core cannot render video: decide whether
+  streamboat treats video as desktop-UI-only (Sone's answer) or out of scope, rather than
+  discovering the gap when a video row shows up in a playlist.
 - **Idle inhibit**: three implementations — D-Bus, Wayland (`idle-inhibit` protocol), X11
   (`x11rb` screensaver/dpms).
 - **Sone does not auto-update.** `commands/updates.rs::check_for_update` `GET`s
@@ -249,6 +319,19 @@ they're testable without a real clock, `rate_gate.rs`), and
 ALSA probing (`audio-engineering.md` §1) cannot be unit-tested this way and is covered only by
 the unrun `gapless_probe.py` — streamboat needs its own hardware test matrix for that part no
 matter how much code is ported.
+
+**"151 tests" does not mean there is a test harness for the hard part — read the numbers
+correctly.** `ref:sone/src-tauri/Cargo.toml` `[dev-dependencies]` is exactly one line —
+`tempfile = "3"`. There is no `mockito`, `wiremock`, `httpmock`, or recorded-response fixture
+anywhere in the crate; all 151 tests are inline `#[cfg(test)]` modules covering **pure functions
+only** — the HTTP layer, the manifest parsers against real payloads, and the whole ALSA path have
+**zero** automated coverage. The frontend's Vitest tests use hand-written `invoke` stubs
+(`src/hooks/useGaplessPrefetch.test.ts:36-39`), not a request-mocking library. Contrast:
+`ref:tidalrs/Cargo.toml` ships `mockito` as a dev-dependency, and Music Assistant's TIDAL provider
+has real mocked-API tests (`project-profiles.md` §8a). **The transferable pattern — parser/
+transport split plus captured request/response fixtures replayed in CI — is not demonstrated by
+any project in this reference set.** It is work streamboat must design, not code to port; see
+`docs/research/engineering-baseline.md`.
 
 ## 8. Borrow / avoid, consolidated
 
@@ -311,6 +394,22 @@ Linux-only; on Windows, bit-perfect relies entirely on `wasapi2sink exclusive=tr
 WiX fragment — directly reusable for any GStreamer-on-Windows app, regardless of what else
 streamboat borrows from Sone.
 
+**The actual bundled plugin list answers the "does the Windows bundle need `gstreamer1.0-libav`"
+licensing question — with a codec-coverage cost attached.** `tauri.conf.json`
+`bundle.windows.wix.componentRefs` lists 47 components, 16 of them GStreamer plugins:
+`gstadaptivedemux2`, `gstasio`, `gstaudioconvert`, `gstaudioparsers`, `gstaudioresample`,
+`gstcoreelements`, `gstdash`, `gstdecklink`, `gstflac`, `gstisomp4`, `gstplayback`, `gstsoup`,
+`gsttypefindfunctions`, `gstvolume`, `gstwasapi2`, `gstwinks`. **No `gstlibav`, no AAC decoder of
+any kind.** So the Windows bundle *is* LGPL-clean without FFmpeg — but it can only play
+FLAC-in-fMP4/DASH; TIDAL's `HIGH`/`LOW` tiers are AAC (`mp4a.40.2`/`mp4a.40.5`) and would fail to
+decode. There is no LGPL-clean AAC decoder in GStreamer at all: `avdec_aac` is FFmpeg-derived,
+`faad` (`gst-plugins-bad`) is GPL-encumbered, `fdkaacdec` carries the Fraunhofer FDK licence.
+"Exclude libav" in practice means "drop the lossy tiers on Windows, or ship a differently-licensed
+decoder and price that separately." Also: the same file's `bundle.linux.deb.depends`/
+`bundle.linux.rpm.depends` **do** include `gstreamer1.0-libav`, so Sone's Linux packages get AAC
+today and its Windows bundle silently does not — do not inherit that platform mismatch without
+deciding it on purpose.
+
 **Maintenance posture, verbatim from the README**: *"⚠️ Ported with help from AI agents"* and
 *"This Windows port was created for personal use and **may not be actively or correctly
 maintained** in the future."*
@@ -323,3 +422,17 @@ platform split behind a trait/`cfg` boundary in the audio module from commit one
 for a platform** — this is a stronger, more concrete version of the same lesson as §3's
 state-ownership inversion: both are about drawing the seam in the right place before the second
 platform/client exists, not after.
+
+## 10. Bus factor / contributor counts
+
+Now obtainable via `GET /repos/{owner}/{repo}/contributors?per_page=100&anon=1` — the "not
+obtainable" caveat in earlier drafts of this skill is stale. **Sone: 18 contributors,
+`lullabyX` 1,046 of ~1,081 commits (~97%) — bus factor 1.** This is not unusual in this landscape:
+of the projects examined, only High Tide (45 contributors, ~68% top author, a real long tail) and
+mopidy-tidal (12 contributors, a genuine 3-person history: `2e0byo` 372 / `tehkillerbee` 191 /
+`blacklight` 89) are not effectively single-maintainer. **Strawberry — read as "very mature, very
+active" elsewhere in this skill — is also bus factor 1 in relative terms**: `jonaski` has 5,678
+commits against the next *human* contributor at 28 (`LebedevRI`); the #2 entry by commit count is
+Strawberry's own bot (`strawbsbot`, 553). Read "mature" as age + release cadence + CI, not as
+community size, when weighing how much to lean on any single reference project — including Sone
+itself.

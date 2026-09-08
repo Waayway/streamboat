@@ -68,11 +68,36 @@ D200, Apple USB dongle, RPi HDMI/headphone outputs, …), with per-device `CARD_
 softvol notes. **This table and these presets are directly reusable as streamboat's ALSA device
 knowledge base.**
 
-**Wi-Fi buffering**: no measured guidance found in the reference set. The relevant lever available
-is mopidy-tidal's `playback_cache_buffer_bytes = 16777216` (16 MiB) with a Range-capable local proxy
-(`headless-daemon-precedents.md` §1 — but note that project's *caching legal-posture caveat* before
-copying its storage design, not just its buffer size). Adopt a comparable read-ahead buffer and
-make it configurable; sizing itself is [inferred, not measured].
+**Wi-Fi buffering**: no measured guidance found in the reference set for buffer *sizing*. The
+relevant lever available is mopidy-tidal's `playback_cache_buffer_bytes = 16777216` (16 MiB) with a
+Range-capable local proxy (`headless-daemon-precedents.md` §1 — but note that project's *caching
+legal-posture caveat* before copying its storage design, not just its buffer size). Adopt a
+comparable read-ahead buffer and make it configurable; sizing itself is [inferred, not measured].
+
+**Two specific hardware failure modes are well documented in the Pi audio community and cheap to
+check in `streamboat doctor` (§5) — an earlier draft of this reference said "no guidance found" for
+both, which was too pessimistic:**
+
+1. **Wi-Fi power management.** Pi Wi-Fi defaults to `power_save` on, a documented cause of audio
+   stalls and dropped connections. Fix: `iw dev wlan0 set power_save off`, persisted via a systemd
+   unit or, on NetworkManager systems, `wifi.powersave=2`. Standing community advice is Ethernet
+   where possible, 5 GHz Wi-Fi otherwise. `streamboat doctor` can read the current state with `iw
+   dev wlan0 get power_save` and warn if it is on. [documented-web:
+   https://forums.raspberrypi.com/viewtopic.php?t=380009,
+   https://thepihut.com/blogs/raspberry-pi-tutorials/disable-wifi-power-management]
+2. **USB DAC dropouts.** A known kernel/USB-scheduling issue class on Raspberry Pi, tracked upstream
+   as `raspberrypi/linux#2215` ("USB DAC dropouts/glitches") — worth naming explicitly so users don't
+   report it as a streamboat bug, and worth an explicit larger-period-size fallback in the ALSA
+   output backend when dropouts are detected. [documented-web:
+   https://github.com/raspberrypi/linux/issues/2215]
+3. **Onboard audio can go either way, and card resolution must be by name because of it.**
+   `ref:tidal-connect/README.md` documents both outcomes on real boxes: one where "the operating
+   system has just disabled the onboard audio and set the Hifiberry HAT as the default card" (line
+   337), and one where "the operating system has not disabled the onboard audio" so a USB DAC is
+   *not* selected automatically (line 373) — additional concrete evidence for the card-by-name rule
+   above. Document `dtparam=audio=off` in `/boot/firmware/config.txt` as the fix for a dedicated
+   audio box that keeps defaulting to the wrong device. [verified-source
+   `ref:tidal-connect/README.md:337,373`]
 
 ---
 
@@ -183,3 +208,9 @@ skill:
 **Decisions to state explicitly, not leave to accident**: where the queue state file lives
 (`$XDG_STATE_HOME`); whether it is written per mutation or on shutdown plus a timer; whether a
 restart resumes playing or paused; how many tracks ahead are prefetched.
+
+**Sleep/idle inhibition and resume-from-suspend are a related, unaddressed pair on a desktop host**
+(a laptop running the GUI-embedded core, not just a Pi): acquire a sleep/idle inhibitor only while
+playing (`daemon-architecture.md` §1 has the per-platform APIs), and on wake, explicitly reopen the
+ALSA device and reconnect the Pushkin socket (`daemon-architecture.md` §6) rather than leaving the
+daemon stuck paused with no error.

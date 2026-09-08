@@ -157,3 +157,14 @@ bug reports can quote it — sone's issue template does exactly that.
   3. Hosted Sentry — contradicts the no-telemetry stance; avoid.
   Note that a crash dump from an audio app can contain decoded PCM in memory. If you ship
   minidumps, exclude heap by default.
+- **Local logs are a listening-history record — resolve the tension with "no telemetry" on
+  purpose.** `i18n-a11y-observability.md` §5 recommends logging `track_id` and playback lifecycle
+  at `info` with the ~50 MB rotated ceiling above; the result is a plaintext file containing a
+  timestamped record of everything the user played. Logs never leave the machine, so "no
+  telemetry" (to *streamboat's developers*) stays true, but the file is personal data all the same.
+  Do four things: (1) log the track id at `debug`, not `info`; (2) the debug-bundle manifest
+  (`i18n-a11y-observability.md` §7) must call out that included log files contain listening
+  history, so "redacted" is not misread as "anonymised"; (3) `streamboat purge`
+  (`secrets-and-tokens.md` §8) deletes logs too; (4) keep sone's pre-start plaintext logging toggle
+  above, but label it in settings as "file logging (records what you play)", not a developer-only
+  switch. No reference project addresses this tension explicitly.

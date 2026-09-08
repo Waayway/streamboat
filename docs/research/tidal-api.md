@@ -58,11 +58,13 @@ Clone date for all of the above: 2026-09-07 (this session).
 
 ## Summary
 
-1. There are **two entirely different TIDAL APIs**. The *official Developer API* lives at
-   `https://openapi.tidal.com/v2/` (JSON:API), is documented, and is what `tidal-cli` and the
-   official SDKs target. The *unofficial/internal API* lives at `https://api.tidal.com/v1/` and
-   `https://api.tidal.com/v2/`, is what the TIDAL apps themselves use, and is what High Tide, Sone,
-   Strawberry, mopidy-tidal, python-tidal and every other Linux client uses for playback. [verified]
+1. There are **two different TIDAL API surfaces sharing one token, not two disjoint systems**. The
+   *official Developer API* lives at `https://openapi.tidal.com/v2/` (JSON:API), is documented, and
+   is what `tidal-cli` and the official SDKs target. The *unofficial/internal API* lives at
+   `https://api.tidal.com/v1/` and `https://api.tidal.com/v2/`, is what the TIDAL apps themselves use,
+   and is what High Tide, Sone, Strawberry, mopidy-tidal, python-tidal and every other Linux client
+   uses for playback. The same Bearer token minted by the unofficial device-code flow is accepted on
+   `openapi.tidal.com` (`ref:sone/src-tauri/src/tidal_api.rs:1859,1918`) — see §1. [verified]
 2. **Official-API playback is closed to third parties for two independent reasons, not one.**
    Contractually: TIDAL's developer guidelines state that "playbacks will only be available through
    our SDKs, namely, an official, unmodified version of the TIDAL Player module, and TIDAL will
@@ -74,9 +76,11 @@ Clone date for all of the above: 2026-09-07 (this session).
    — so even a client willing to ignore the contract cannot decode it without a licensed CDM. A native
    GStreamer/Qt/GTK client is blocked at the codec level, not only at the terms level. **[gap-filled]**
 3. **The official third-party app review pipeline appears stalled.** In `tidal-music` GitHub
-   Discussion #179, a developer reports waiting since ~2024 for app review, with a follow-up in
-   April 2026 saying "nothing has moved" and email to TIDAL unanswered. No TIDAL staff reply on the
-   thread. [documented]
+   Discussion #179 (opened 2025-06-03), a developer reports first contacting TIDAL about review
+   roughly six months before opening the thread (so late 2024/early 2025, not "since ~2024" as an
+   earlier draft inferred), with an update on 2026-04-16 saying "As of today, nothing has moved. I
+   even tried reaching them via e-mail a few months ago, but got no reply." No TIDAL staff reply on
+   the thread. [documented, corrected]
 4. The unofficial API's auth is OAuth2 against `https://auth.tidal.com/v1/oauth2/…` with the
    authorize page at `https://login.tidal.com/authorize`. Two flows are in use: **device code**
    (RFC 8628) and **authorization code + PKCE**. Both are used with **client IDs extracted from
@@ -111,8 +115,10 @@ Clone date for all of the above: 2026-09-07 (this session).
     server silently downgrades rather than erroring. [verified]
 11. **MQA and Sony 360 Reality Audio were removed from TIDAL on 2024-07-24.** Dolby Atmos survives,
     delivered as E-AC-3 JOC (`EAC3_JOC` in the official API, `EAC3`/`AC4` codec strings in the
-    unofficial one). Sony 360RA used the `mha1` codec; the iOS SDK explicitly says it "has no codec
-    the client needs, so it is unsupported here". [documented + verified]
+    unofficial one). The iOS SDK declares `mha1`/`mhm1` (MPEG-H) codec constants and returns `nil` for
+    `SONY_360RA` with the comment it "has no codec the client needs, so it is unsupported here" — that
+    360RA specifically *used* `mha1` on TIDAL is a plausible inference from the constant's presence,
+    not something any checkout states. [documented + verified, corrected]
 12. **`subStatus` codes in the 4xxx range are playback-specific and are not auth failures.** Sone
     treats `4005, 4010, 4030, 4031, 4032, 4034, 4035` as terminal ("this track will never play") and
     deliberately excludes `4006` (privileges lost, recovers) and `4033` (subscription up-sell). The
@@ -126,11 +132,11 @@ Clone date for all of the above: 2026-09-07 (this session).
 13. **429 handling matters.** python-tidal surfaces `Retry-After`; Sone runs a global cooldown gate
     (default 5 s, clamped to 120 s) shared across all requests, and returns a synthesized 429 to the
     UI while cooling down. No public rate-limit numbers exist — a developer asked TIDAL directly in
-    Discussion #269 and got no answer; a second, independent thread (Discussion #285, "Limitations on
-    requests that can be made consecutively") is also unanswered, and its author's own practice —
-    throttling to one request per 500 ms — is the only concrete community-sourced number available.
-    [verified + documented; #269's "unanswered" status itself is **unverified** in this pass, see
-    Unverified §]
+    Discussion #269 ("Rate limits and 403 errors during development — best practices?") and it sits at
+    zero replies, marked Unanswered — **confirmed** by re-fetching the thread; a second, independent
+    thread (Discussion #285, "Limitations on requests that can be made consecutively") is also
+    confirmed unanswered, and its author's own practice — throttling to one request per 500 ms — is
+    the only concrete community-sourced number available. [verified + documented]
 14. Playlist mutation on `api.tidal.com/v1` is **ETag-guarded**: `GET /playlists/{uuid}` (or
     `/tracks`, `/items`) returns an `etag` header that must be echoed as `If-None-Match` on the
     subsequent POST/DELETE. python-tidal and Sone both do this. [verified]
@@ -154,13 +160,20 @@ Clone date for all of the above: 2026-09-07 (this session).
     160x107/480x320/750x500/1080x720; users 100/210/600). Wrong sizes 403. [verified]
 19. **Everything except the official API is undocumented and can break without notice.** In
     March 2026 a report surfaced of community-shared API keys broken en masse
-    (`yaronzz/Tidal-Media-Downloader` issue #1213) — but that issue is specifically about the
-    **legacy pre-OAuth `x-tidal-token` keys** (the riad-uk gist family), not the OAuth client IDs
-    (device-code/PKCE pairs) that High Tide, Sone and python-tidal actually use, and it is a single
-    unconfirmed reporter. The stronger evidence for "these credentials get rotated" is python-tidal's
-    own changelog: two separate "OAuth Client ID, secret updated" entries (v0.8.7, v0.8.8). The
-    correct architectural response is unchanged: isolate the API layer and make the client ID
-    user-replaceable. [documented + inferred; scope-corrected — **[gap-filled]**]
+    (`yaronzz/Tidal-Media-Downloader` issue #1213, 2026-03-21: "I think all of the API keys in
+    [the linked gist] are now invalid"). **Correction to an earlier draft, which wrongly scoped this
+    to legacy pre-OAuth `x-tidal-token` keys:** the gist that issue actually links
+    (`gist.github.com/yaronzz/48d01f5a24b4b7b37f19443977c22cd6`) is a JSON file whose entries carry
+    `platform` (Fire TV, Android TV, Android Auto, TV), `formats`, **`clientId`, `clientSecret`** and
+    `valid` — i.e. OAuth client-credential pairs of the same *kind* python-tidal/High Tide/Sone use,
+    not `x-tidal-token` legacy keys (that separate, older family is documented in §3.4 via the
+    riad-uk gist and is a different thing entirely). The pairs in the yaronzz gist are not the same
+    two python-tidal ships, and this remains a single unconfirmed reporter with no second source. The
+    stronger evidence for "these credentials get rotated" is still python-tidal's own changelog: two
+    separate "OAuth Client ID, secret updated" entries (v0.8.7, v0.8.8). This makes the finding *more*
+    relevant to streamboat, not less — the correct architectural response is unchanged and now better
+    supported: isolate the API layer and make the client ID user-replaceable. [documented + inferred;
+    scope-corrected — **[gap-filled]**]
 20. Legal posture of the ecosystem is consistent: "not affiliated with TIDAL", "requires an active
     paid subscription", player-only, no downloader. Both High Tide and Sone are on Flathub under
     that framing. TIDAL has historically DMCA'd *downloaders* (TiDown, 2016) but there is no
@@ -176,12 +189,16 @@ Clone date for all of the above: 2026-09-07 (this session).
     official `openapi.tidal.com/v2` (which the browser-based `tidal-sdk-web` calls directly). Every
     unofficial-API OSS client that has a webview frontend (Sone, sone-windows) routes 100% of its
     TIDAL calls through native/backend code and only lets the webview touch `resources.tidal.com`
-    directly. A community docs repo names CORS explicitly as the reason browser-based PKCE handoffs
-    don't work. This is a hard constraint on streamboat's UI stack, not a preference: whatever the
-    toolkit, the API client must be a native-side module with no browser-origin dependency. **This
-    specific claim was not independently re-verified with a live CORS preflight in this pass — do
-    that before relying on it.** [inferred from architecture + documented from a community source;
-    **[gap-filled]**, partially **unverified**]
+    directly. This is a hard constraint on streamboat's UI stack, not a preference: whatever the
+    toolkit, the API client must be a native-side module with no browser-origin dependency. **Still
+    genuinely unverified, and weaker-sourced than an earlier draft implied: the `tidal-api-docs`
+    citation used to support it (`ref:tidal-api-docs/README.md:17`,
+    `Authorization/Retrieve-From-Authentication-Flow.md:8`) is actually about retrieving the
+    `client_id` from the web player from within a browser, not about `api.tidal.com`'s response
+    headers — it does not directly evidence CORS posture.** No checkout runs a live preflight against
+    `api.tidal.com`. Run `curl -i -H 'Origin: https://example.com' -X OPTIONS
+    https://api.tidal.com/v1/sessions` and record the result before treating this as settled. [inferred
+    from architecture; **[gap-filled]**, unverified — citation weakened on re-check]
 
 ---
 
@@ -212,7 +229,31 @@ PATCH  https://openapi.tidal.com/v2/playlists/{id}       (rename/describe/access
 UPC lookups (`filter[isrc]`, `filter[barcodeId]`) — `ref:python-tidal/tidalapi/session.py`
 `get_tracks_by_isrc` / `get_albums_by_barcode`. TidaLuna also hits
 `https://openapi.tidal.com/v2/tracks?filter[isrc]=…` —
-`ref:TidaLuna/plugins/lib/src/classes/TidalApi/index.ts:97`. [verified]
+`ref:TidaLuna/plugins/lib/src/classes/TidalApi/index.ts:97`. **Correction: Sone's POST/PATCH calls
+send plain `Content-Type: application/json` via reqwest's `.json(&body)`
+(`ref:sone/src-tauri/src/tidal_api.rs:1859-1866,1911-1918`), not the `application/vnd.api+json` the
+official web SDK sets for the same verbs (`ref:tidal-sdk-web/packages/api/src/api.ts:37-46`). It
+still works — so "requires vnd.api+json" is the SDK's own behaviour, not a demonstrated server
+requirement; do not block on setting that header exactly.** [verified, corrected]
+
+**Sone's unofficial-API token also drives official-API *artist* writes, not just playlist writes —
+worth naming explicitly since it is the only worked example of a binary upload to TIDAL in any
+checkout.** All on `https://openapi.tidal.com/v2` with the same Bearer token,
+`Content-Type: application/vnd.api+json`, `x-tidal-client-version`, `?countryCode=`:
+`GET /artists/{id}/relationships/followers`; `PATCH /artists/{id}` (attributes and external links);
+`PATCH /artistBiographies/{id}`. Cover-art upload is a four-step presigned-S3 flow: (1)
+`POST /artworks` with `{"data":{"type":"artworks","attributes":{"mediaType":"IMAGE","sourceFile":
+{"md5Hash":"<hex md5>","size":<bytes>}}}}` → the response carries `data.id` and
+`data.attributes.sourceFile.uploadLink.href`; (2) `PUT <uploadLink.href>` — a presigned URL with
+**no Authorization header**, but `content-md5: <base64 of the same md5 digest>` and
+`Content-Type: image/jpeg` required (note the digest is sent twice, hex in the JSON body and base64
+in the header — an easy transcription bug); (3) poll `GET /artworks/{id}` until ready; (4)
+`PATCH /artists/{id}/relationships/profileArt` with
+`{"data":[{"type":"artworks","id":"<artworkId>"}]}`. `ref:sone/src-tauri/src/tidal_api.rs:5512-5530`
+(GETs), `:5576-5602` (followers/PATCH artist), `:5628` (bio), `:5650-5672` (links), `:5675-5840`
+(the upload flow, `normalize_square_jpeg`, `poll_artwork_ok`). This is a genuine feature-scope
+question for the owner — "claim your artist page" / edit bio / edit links / upload art are things the
+native app does — not something the report should silently omit. **[gap-filled]**
 
 **The official API's surface is far larger than "ISRC lookup, JSON:API playlists, lyrics."** It is
 256 top-level path entries (`ref:tidal-sdk-web/packages/api/src/allAPI.generated.ts`, mechanically
@@ -225,9 +266,11 @@ contract. Note the locale format differs from the unofficial API: official is BC
 (`en-US`), unofficial is underscored (`en_US`). **[gap-filled]**
 
 **A third architecture exists and the report should name it, not silently reject it:**
-`@tidal-music/player` (the package behind `tidal-sdk-web`'s player) is published on npm,
-Apache-2.0, and is the *only fully ToS-compliant way to play full-quality TIDAL audio* as a third
-party — because it **is** "an official, unmodified version of the TIDAL Player module." It is a
+`@tidal-music/player` (the package behind `tidal-sdk-web`'s player) is published in the
+`tidal-music/tidal-sdk-web` monorepo (`ref:tidal-sdk-web/packages/player/package.json:2,38`,
+version 0.20.1) under Apache-2.0, and is the *only fully ToS-compliant way to play full-quality TIDAL
+audio* as a third party — whether it is additionally published to the public npm registry was not
+checked in this pass — because it **is** "an official, unmodified version of the TIDAL Player module." It is a
 Shaka-Player/EME-based browser player, so it needs a Widevine CDM — the same castlabs-Electron trick
 `tidal-hifi` already uses — and it **cannot run in a headless/Node CLI or with a native GStreamer/Qt
 audio pipeline**. So the real choice is: (a) "compliant-but-Chromium" — embed the sanctioned Player
@@ -386,9 +429,32 @@ so the client must capture the URL. Three strategies in the wild:
   `WebviewWindow` — `ref:sone/src-tauri/src/commands/auth.rs` around `finish_embedded_pkce`.
 - **Custom URI scheme.** Strawberry registers `tidal://login/auth` and does not run a local server
   (`set_use_local_redirect_server(false)`) — `ref:strawberry/src/tidal/tidalservice.cpp:82,133`.
+  **Do not copy the scheme name `tidal://` for this — see the collision warning below.**
 - **Local HTTP server.** mopidy-tidal runs one on port 8989 and serves a form for the paste —
   `ref:mopidy-tidal/mopidy_tidal/web_auth_server.py`. tidal-cli (official API) uses
   `http://localhost:17893/callback` — `ref:tidal-cli/src/auth.ts:23-24`.
+
+**Missing from an earlier draft entirely: inbound deep links, and a real scheme collision they
+create with the OAuth redirect above.** "Open this album in streamboat" from a browser or a chat
+message is a day-one desktop feature, and two of the reference projects implement it by registering
+the custom URI scheme **`tidal://`** for *content* links: Sone parses `tidal://<type>/<id>` for
+`type` in `{track, album, artist, playlist, mix}` (track ids and album/artist ids are integers,
+playlist ids are UUID strings, mix ids are strings; `track` triggers play, the rest navigate) —
+`ref:sone/src/lib/tidalUrl.ts` (`parseTidalUrl`), registered via `tauri-plugin-deep-link` in
+`ref:sone/src-tauri/src/lib.rs`. High Tide does the same, dispatching to `HTAlbumPage`/`HTArtistPage`/
+`HTMixPage`/`HTPlaylistPage` (`ref:high-tide/src/lib/utils.py`). **That is the same scheme Strawberry
+claims for its OAuth redirect (`tidal://login/auth`, just above), and the same scheme the official
+TIDAL desktop app itself registers on macOS and Windows.** Whichever app registered last wins the OS
+handler for the whole scheme, so an OAuth redirect delivered to the official TIDAL app instead of
+streamboat — or a content link swallowed by streamboat's login handler — is a real, hard-to-debug
+failure mode. **Register a distinct scheme for streamboat (e.g. `streamboat://`) for both the OAuth
+redirect and content deep links; do not use `tidal://login/auth` as streamboat's redirect URI.**
+Additionally *accept but never register* the web forms users will paste, since python-tidal's own
+outbound URL-building code shows what they look like:
+`https://listen.tidal.com/{track,album,artist,playlist,video}/{id}`,
+`https://listen.tidal.com/album/{albumId}/track/{trackId}`, `https://tidal.com/browse/{type}/{id}`,
+`https://listen.tidal.com/folder/{folderId}` (`ref:python-tidal/tidalapi/media.py:211-214`,
+`album.py:76-79`, `artist.py:51-54`, `playlist.py:71-74,338`). **[gap-filled]**
 
 Token exchange:
 
@@ -448,8 +514,13 @@ into the official Tidal app; it is not a user credential" —
 Behavioural differences established from the code:
 
 - The PKCE pair is what unlocks Hi-Res. python-tidal `login_pkce` docstring: "This is the only way
-  how to get access to HiRes (Up to 24-bit, 192 kHz) FLAC files." mopidy-tidal's README/config
-  distinguishes OAuth (default) from "PKCE (HI_RES only)". [verified]
+  how to get access to HiRes (Up to 24-bit, 192 kHz) FLAC files." **Correction to an earlier draft,
+  which misquoted mopidy-tidal as "PKCE (HI_RES only)", inverting the meaning:** mopidy-tidal's
+  README says "For HI_RES and HI_RES_LOSSLESS playback, the PKCE authentication method is required"
+  (`ref:mopidy-tidal/README.md:282`) and separately "PKCE is optional, and allows HI_RES_LOSSLESS,
+  LOSSLESS playback" (`:190`) — PKCE is *required for* Hi-Res, not *limited to* it; it still serves
+  LOSSLESS too. The config values are the bare strings `"OAUTH"` and `"PKCE"`
+  (`ref:mopidy-tidal/mopidy_tidal/__init__.py:37`). [verified, corrected]
 - Track `get_url()` (the `urlpostpaywall` shortcut) is **disabled** under a PKCE session in
   python-tidal: `if self.session.is_pkce: raise URLNotAvailable(...)` —
   `ref:python-tidal/tidalapi/media.py:410-417`. So the PKCE identity gets DASH manifests, not plain
@@ -537,6 +608,36 @@ The official SDK also has `grant_type=update_client` ("token upgrade"), used whe
 added to a previously public client — `ref:tidal-sdk-web/packages/auth/src/auth/auth.ts:469-480`.
 Not needed for the unofficial flow. [verified]
 
+**Missing from an earlier draft: what to do when the refresh call itself fails.** This is the most
+user-visible failure mode of a long-lived client — get it wrong and streamboat either logs users out
+on every flaky network blip, or spins forever showing "loading" on a genuinely revoked token. The
+official web SDK's classification on the token-endpoint response, worth copying wholesale:
+
+- HTTP status `0` (no response at all) → `NetworkError` — the client is offline; do **not** wipe
+  credentials or retry aggressively.
+- HTTP `400`-`499` → `UnexpectedError`, treated as fatal by the caller: `logout()` then rethrow — wipe
+  local credentials and force re-login.
+- HTTP `500`-`599` → `RetryableError` — rethrown up to the exponential-backoff retry wrapper (§4).
+- otherwise, parse the response body's `error` field into a `TokenResponseError`.
+
+Two more rules from the same module: a scope shrink or a `clientUniqueKey` mismatch is fatal
+**before any network call is made** —
+`if (state.credentials.clientUniqueKey !== accessToken.clientUniqueKey || (accessToken.userId &&
+newScopeIsSameOrSubset === false)) { logout(); throw new IllegalArgumentError(...) }` — so changing
+streamboat's requested OAuth scope set in a later release will log every existing user out; pick the
+scope set once. And a refresh is forced even on an unexpired token when the last response carried one
+of `knownSubStatus = ['11003','6001','11001','11002','11101']` (§4).
+
+**Correction of emphasis to the "refresh ~5 minutes before expiry" recommendation earlier in this
+section:** TIDAL's own SDK actually uses a **60-second** margin, checked against server-anchored time
+rather than the local clock: `accessToken.expires > trueTime.now() + oneMinute` where
+`oneMinute = 60 * 1000` (`@tidal-music/true-time`, §10.1). Either margin works in practice; the
+official client leans on time-sync (not a fat margin) to handle clock skew.
+(`ref:tidal-sdk-web/packages/auth/src/utils/fetchHandling.ts:10-23`;
+`ref:tidal-sdk-web/packages/auth/src/auth/auth.ts:68` (`knownSubStatus`), `:577-637`
+(`getCredentialsInternal`: the `clientUniqueKey`/scope check, `upgradeToken`, the one-minute margin,
+`UnexpectedError`→logout, `RetryableError`→rethrow).) **[gap-filled]**
+
 #### 3.6 Session bootstrap: `GET /v1/sessions`
 
 **Not every client calls this** — see correction below — but python-tidal, Sone, sone-windows and
@@ -570,6 +671,38 @@ Login validity check: python-tidal's `check_login()` calls
 `GET /v1/users/{userId}/subscription` and returns whether it was OK —
 `ref:python-tidal/tidalapi/session.py`. Cheap and it also tells you the tier. [verified]
 
+**The response shape of `GET /v1/users/{userId}/subscription` — missing from an earlier draft, and
+this is where the quality-cascade "ceiling" (§8.4) actually comes from:**
+
+```json
+{
+  "startDate": "2022-09-23T04:52:14.568+0000",
+  "validUntil": "2025-06-09T04:52:11.406+0000",
+  "status": "<string>",
+  "subscription": { "type": "<string>", "offlineGracePeriod": 30 },
+  "highestSoundQuality": "LOW|HIGH|LOSSLESS|HI_RES_LOSSLESS",
+  "premiumAccess": true,
+  "canGetTrial": false,
+  "paymentType": "<string>",
+  "paymentOverdue": false
+}
+```
+Fetch this once at login alongside `GET /v1/sessions`, cache it, and clamp the quality cascade to
+`min(user preference, highestSoundQuality)` rather than always starting at
+`HI_RES_LOSSLESS` and burning 2-4 wasted `playbackinfopostpaywall` requests per track for every
+non-Max subscriber. Surface `status`/`validUntil`/`paymentOverdue` in the account UI so a lapsed
+subscription shows a real message instead of an opaque playback failure.
+(`ref:tidalswift/TidalSwiftLib/Sources/TidalSwiftLib/Codables/Users.swift:78-90`,
+`ref:tidalswift/TidalSwiftLib/Sources/TidalSwiftLib/Session/User.swift:14`.)
+
+The same endpoint family models a **device list**: each authorized client is a `UserClient` —
+`{id, name, application:{name,type:{name},service}, uniqueKey, authorizedForOffline,
+authorizedForOfflineDate, lastLogin, created, numberOfOfflineAlbums, numberOfOfflinePlaylists}`
+(`ref:TidaLuna/plugins/lib/src/redux/types/store/User.ts:3-23,81-96`). `uniqueKey` here is the
+`client_unique_key` from §3.2 — independent confirmation that regenerating it per process (instead of
+persisting it) creates a visible phantom-device row in the user's TIDAL account settings, the
+concrete harm behind that section's recommendation. **[gap-filled]**
+
 #### 3.7 Secure token storage per OS
 
 | Project | Mechanism |
@@ -590,6 +723,21 @@ the keyring yourself, you go through the Secret portal. A headless/server mode h
 all, so streamboat needs a documented file fallback with restrictive permissions. [verified +
 inferred]
 
+**Multi-account / profile switching is not mentioned anywhere above, and every storage scheme just
+described assumes exactly one account.** This constrains the layout, not just the feature list:
+`client_unique_key` is device identity (§3.2), so two TIDAL accounts used from one streamboat install
+probably need two separate keys, or TIDAL sees one device flipping between users — a decision that
+belongs in the storage schema, not bolted on later as a migration. **No reference client supports
+multi-account — state that as the finding, not an omission to fill in from precedent**: High Tide
+stores one libsecret item keyed `high-tide-login`; Sone stores one settings blob at
+`~/.config/sone/settings.json` with one master-key entry; python-tidal writes one
+`tidal-oauth.json`/`tidal-pkce.json`; tidal-cli writes one `~/.tidal-cli/session.json`. The household
+case (two people, two TIDAL accounts, one machine) and the headless-daemon-vs-desktop-app case
+(different accounts on the same box) both break the single-slot assumption. Minimum forward-compatible
+move, costing nothing now: key credential storage by account id (e.g. a keyring item
+`streamboat/account/<userId>`) with a separate `active-account` pointer, and store `client_unique_key`
+inside each account's blob rather than globally. **[gap-filled]**
+
 ### 4. Request conventions on the unofficial API
 
 **Headers.** python-tidal sends, on every request
@@ -604,6 +752,18 @@ Sone sends `x-tidal-client-version: 2025.11.3` **only on `/v2/` URLs** —
 `ref:sone/src-tauri/src/tidal_api.rs:1512-1514, :91`. That version string is a moving target: it
 pins the web client build and both projects bump it periodically. Neither sets a distinctive
 User-Agent identifying the app. [verified]
+
+**This baseline is itself an impersonation posture, and it deserves a deliberate decision, not a
+silent default — worth surfacing next to §14's disclaimer wording.** python-tidal's UA
+(`Mozilla/5.0 (Linux; Android 12; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0
+Chrome/91.0.4472.114 Safari/537.36`) is applied to literally every request unless overridden
+(`ref:python-tidal/tidalapi/request.py:57-60,88-93`); Sone sends no distinctive UA at all. The same
+question applies to `deviceType` (above), which visibly changes what content a page endpoint
+returns. Recommendation: send an honest `streamboat/<version> (+<url>)` UA by default, keep the
+Android string behind a single settings toggle labelled as a compatibility workaround, default
+`deviceType=BROWSER` (the least identity-claiming value and what Sone/python-tidal default to for
+pages), and test the honest-UA path against a live account before shipping — nobody in this ecosystem
+has published whether TIDAL's servers care. **[gap-filled]**
 
 The official player's legacy playbackinfo call adds:
 `x-tidal-token: <clientId>`, `x-tidal-streamingsessionid: <uuid>`, `x-tidal-playlistuuid: <uuid>`
@@ -627,10 +787,14 @@ Recommendation, cheap and low-risk: generate one UUID per playback, send it as
 `x-tidal-streamingsessionid` anyway (matches the official client, costs nothing) and reuse it as
 `playbackSessionId` in reporting (§10). **[gap-filled]**
 
-**Common query parameters.** `countryCode` (required), `locale` (`en_US`), `deviceType`
-(`BROWSER` | `DESKTOP` | `PHONE`; python-tidal defaults pages to `BROWSER`, `PageLink.get()` uses
-`DESKTOP`), `platform` (`WEB`, only on v2 page endpoints), `limit`, `offset`, `order`,
-`orderDirection`. [verified]
+**Common query parameters.** `countryCode` (required), `locale` (`en_US`), `deviceType` — **correction:
+only `BROWSER` and `DESKTOP` are attested in any unofficial-API checkout** (python-tidal defaults
+pages to `BROWSER`, `PageLink.get()` uses `DESKTOP`; Sone's v2 calls send `BROWSER`); the official v2
+schema types the field `"BROWSER" | "CAR" | "DESKTOP" | "PHONE" | "TABLET" | "TV"`
+(`ref:tidal-sdk-web/packages/api/src/allAPI.generated.ts:5886` and ~14 similar sites), and the
+unofficial API plausibly accepts the same set, but `PHONE` specifically is not attested anywhere in
+these checkouts — do not assume it. Also: `platform` (`WEB`, only on v2 page endpoints), `limit`,
+`offset`, `order`, `orderDirection`. [verified, corrected]
 
 **Pagination.** Offset/limit with `totalNumberOfItems` in the body for v1 collections. python-tidal
 gets a count cheaply with `limit=1` and reads `totalNumberOfItems`
@@ -817,8 +981,12 @@ are the v1 page slugs already in §6's table (`pages/rising`, `pages/explore`,
 `pages/suggested_new_tracks_for_you`, `pages/suggested_new_albums_for_you`), the `NEW_RELEASE_MIX`
 mix type, and on the official API `/userNewReleaseMixes/{id}` and
 `/userRecommendations/{id}/relationships/newArrivalMixes`. Album credits, similarly, are not a
-dedicated endpoint the way track credits are (`tracks/{id}/credits`) — they arrive as a `credits`
-module inside `pages/album` (`ref:sone/src-tauri/src/tidal_api.rs:5325`). **[gap-filled]**
+dedicated endpoint the way track credits are (`tracks/{id}/credits`) on the unofficial API — they
+arrive as a `credits` module inside `pages/album` (`ref:sone/src-tauri/src/tidal_api.rs:5325`). The
+official API does have a dedicated path, `/credits/{id}` (present in the paths interface of
+`ref:tidal-sdk-web/packages/api/src/allAPI.generated.ts`, part of the 256-entry surface counted in
+§1) — worth naming as the alternative if streamboat ever needs album-level credits outside the page
+module. **[gap-filled]**
 
 ### 6. Pages API (Home, Explore, artist/album pages)
 
@@ -827,8 +995,14 @@ module inside `pages/album` (`ref:sone/src-tauri/src/tidal_api.rs:5325`). **[gap
 python-tidal parses `row["modules"][0]` per row and dispatches on `module.type`:
 `PAGE_LINKS_CLOUD`, `PAGE_LINKS`, `FEATURED_PROMOTIONS`, `MULTIPLE_TOP_PROMOTIONS`, `ALBUM_LIST`,
 `ARTIST_LIST`, `TRACK_LIST`, `PLAYLIST_LIST`, `VIDEO_LIST`, `MIX_LIST`, `TEXT_BLOCK`,
-`ITEM_LIST_WITH_ROLES`, `MIXED_TYPES_LIST` — `ref:python-tidal/tidalapi/page.py:176-244, 389-470`.
-`showMore.apiPath` / `viewAll` give you the "see all" page path to `GET` next. [verified]
+`ITEM_LIST_WITH_ROLES`, `MIXED_TYPES_LIST`, and (**correction: an earlier draft's list was not
+exhaustive**) also `ALBUM_ITEMS` and `ARTICLE_LIST` —
+`ref:python-tidal/tidalapi/page.py:176-244, 389-470` (the latter two at `:218,220`). Dispatch on
+`type` and ignore unknown values rather than failing the page; new module types will appear.
+`showMore.apiPath` / `viewAll` give you the "see all" page path to `GET` next: `showMore.apiPath` (or
+the bare `viewAll` string) is a **relative v1 path**, fetched as `GET <apiPath>` with `deviceType`
+added — `PageLink.get()` sends `deviceType=DESKTOP`, `Page.get()` defaults to `deviceType=BROWSER`
+(`ref:python-tidal/tidalapi/page.py:141-156,482-492`). [verified, corrected]
 
 Slugs actually in use:
 
@@ -874,6 +1048,15 @@ There is also a **v2 artist page**: `GET https://api.tidal.com/v2/artist/{id}` w
 Its "view all" paths are v2 paths such as `artist/ARTIST_TOP_TRACKS/view-all?artistId=…&limit=&offset=`
 — `ref:sone/src-tauri/src/tidal_api.rs:5181-5290`. [verified]
 
+**Pitfall: python-tidal's v2 "view all" code path is dead upstream — do not copy it as a working
+example.** `PageCategoryV2.view_all()` calls `self.session.view_all(api_path)`
+(`ref:python-tidal/tidalapi/page.py:324-331`), but `Session.view_all` does not exist anywhere in the
+package (`rg view_all` over the whole checkout returns only page.py:167,170,171,324,331 — no
+definition). So following python-tidal for v2 "see all" navigation leads to an `AttributeError`. The
+only working example of v2 view-all in any checkout is Sone's artist-page pattern immediately above
+(`artist/<TYPE>/view-all?artistId=…&limit=&offset=`) — build from that, not from python-tidal, for
+any v2 feed row's `viewAll` field. **[gap-filled]**
+
 **Mixes.** A mix id is a string like `0016d…`; `mixType` values seen include `TRACK_MIX`,
 `ARTIST_MIX`, `HISTORY_ALLTIME_MIX`, `HISTORY_MONTHLY_MIX`, `HISTORY_YEARLY_MIX` —
 `ref:sone/src-tauri/src/tidal_api.rs:844`. `pages/mix` returns a two-category page: category 0 is
@@ -888,20 +1071,30 @@ Mark seen with `PUT https://api.tidal.com/v2/feed/activities/seen` —
 
 ### 7. User library
 
-**Favorites (v1).** Base `users/{userId}/favorites`.
+**Favorites (v1).** Base `users/{userId}/favorites`. **Correction: an earlier draft's table omitted
+a fifth favorited collection, `playlists`**, and its parameter names are the ones most likely to trip
+up a generated/templated client:
 
 | Operation | Call |
 |---|---|
 | list | `GET .../favorites/{artists\|albums\|tracks\|videos}?limit=&offset=&order=&orderDirection=` |
+| list playlists | `GET .../favorites/playlists?countryCode&limit&offset` — separate from the four above |
 | add album(s) | `POST .../favorites/albums` form `albumId=<id[,id...]>` |
 | add artist(s) | `POST .../favorites/artists` form `artistId=<ids>` |
 | add track(s) | `POST .../favorites/tracks` form `trackId=<ids>` |
 | add video | `POST .../favorites/videos?limit=100` form `videoIds=<id>` (note: **`videoIds`**, plural, unlike the others) |
+| add playlist | `POST .../favorites/playlists` form `uuid=<uuid>` — **singular `uuid`, a UUID string, not `playlistId`** |
 | remove | `DELETE .../favorites/{artists\|albums\|tracks\|videos}/{id}` — single id only |
-| all ids at once | `GET .../favorites/ids` → `{"TRACK":[...], "ALBUM":[...], ...}` (string ids) |
+| remove playlist | `DELETE .../favorites/playlists/{uuid}` |
+| all ids at once | `GET .../favorites/ids?countryCode&locale&deviceType` → `{"TRACK":[...], "ALBUM":[...], "ARTIST":[...], "PLAYLIST":[...], ...}` (all string ids, even for integer-id entity types) |
 
-`ref:python-tidal/tidalapi/user.py:289-485`, `ref:sone/src-tauri/src/tidal_api.rs:3066-3100`.
-Sone adds `onArtifactNotFound=FAIL` on video adds. [verified]
+`ref:python-tidal/tidalapi/user.py:289-485`, `ref:sone/src-tauri/src/tidal_api.rs:3066-3100`
+(favorites/ids), `:2105-2117,2153-2164` (list playlists), `:2967-2977` (add playlist, singular
+`uuid`), `:2999-3006` (remove playlist), `:3096-3104` (PLAYLIST key in favorites/ids). Sone adds
+`onArtifactNotFound=FAIL` on video adds. **Do not generate the four `add`/`remove` calls from one
+template with a `{type}Id` parameter name** — albums/artists/tracks use `<type>Id`, videos use
+`videoIds` (plural), and playlists use `uuid` (singular, and a UUID, not an integer); a templated
+client will silently send the wrong field name for videos and playlists. [verified, gap-filled]
 
 Sort values (`order`): albums `ARTIST|DATE|NAME|RELEASE_DATE`; artists `DATE|NAME`; items
 `ALBUM|ARTIST|DATE|INDEX|LENGTH|NAME`; mixes `DATE|MIX_TYPE|NAME`; playlists `DATE|NAME`; videos
@@ -961,12 +1154,16 @@ GET    playlists/{uuid}/recommendations/items?limit&offset            (suggested
   `GET playlists/{uuid}`) after each mutating call. Sone re-fetches immediately before each
   mutation and defaults to `*` if absent. [verified]
 
-**`onDupes=FAIL` / `onArtifactNotFound=FAIL` on playlist item adds is unverified — do not assume it
-works.** python-tidal only ever sends `ADD`/`SKIP` for `onDupes` and `SKIP` for `onArtifactNotFound`
-on this endpoint (`ref:python-tidal/tidalapi/playlist.py:585-599`). `FAIL` is verified only on the
-v2 favorites/mixes endpoints (`ref:python-tidal/tidalapi/user.py:418`). If streamboat builds a
-playlist-import feature around "fail loudly on a duplicate," test `FAIL` against a live account
-before shipping it as documented behavior. **[gap-filled]**
+**`onDupes=FAIL` on playlist item adds is unverified — narrower than an earlier draft claimed.**
+python-tidal only ever sends `"ADD"`/`"SKIP"` for `onDupes` on this endpoint, at both call sites
+(`ref:python-tidal/tidalapi/playlist.py:585-599` for `add()`, `:614-635` for `merge()`). **Correction:
+`onArtifactNotFound=FAIL` *is* verified** — python-tidal's `merge()` (which POSTs to this same
+`playlists/{uuid}/items` endpoint to merge another playlist in) sends
+`"onArtifactNotFound": "SKIP" if allow_missing else "FAIL"` (`:614-635`), and the v2 favorites/mixes
+endpoints also use it (`ref:python-tidal/tidalapi/user.py:418,499`). If streamboat builds a
+playlist-import feature around "fail loudly on a duplicate," `onDupes=FAIL` specifically is the one
+value to test against a live account before shipping it as documented behavior — `onArtifactNotFound`
+does not need that caveat. **[gap-filled, corrected]**
 
 **Collaborative playlists are not reachable from the unofficial API used by any reference client.**
 Grepping all checkouts for `collaborat` returns only one unrelated Sone UI string. It *is* modelled
@@ -981,9 +1178,28 @@ for the playlist model: official `Playlists_Attributes` additionally carries `pl
 `ref:tidal-sdk-web/packages/api/src/allAPI.generated.ts:23766-23820`. **[gap-filled]**
 
 **Other user endpoints.** `GET users/{id}/playlists` (created playlists, v1),
-`GET users/{id}/playlistsAndFavoritePlaylists?limit=50` (v1; limited to 50 by the server),
-`GET https://api.tidal.com/v2/user-playlists/{id}/public?limit&offset`,
-`GET https://api.tidal.com/v2/profiles/{id}`. [verified]
+`GET users/{id}/playlistsAndFavoritePlaylists?limit=50` (v1; limited to 50 by the server — its items
+are **not** bare playlists, they are `{playlist: {...}, created: "..."}` wrappers, and python-tidal
+rewrites `item["playlist"]["dateAdded"] = item["created"]` before parsing each one
+(`ref:python-tidal/tidalapi/user.py:194-195,204-206`) — reproduce that unwrap or every item silently
+loses its `dateAdded`), `GET https://api.tidal.com/v2/user-playlists/{id}/public?limit&offset`,
+`GET https://api.tidal.com/v2/profiles/{id}`. [verified, gap-filled]
+
+**Social features (follow, activity, sharing) are a real feature area the report should surface as
+one decision, not leave scattered.** Pieces already appear above (`v2/feed/activities` + `PUT
+.../seen`, this section) and in §1's openapi enumeration (`/shares`, `/dspSharingLinks`,
+`/collaborationInvites`) — but there is no place that says "this is a coherent area; decide the
+scope." Two concrete facts: **follow/unfollow does not exist on the unofficial API in any checkout**
+— `rg follow` over `python-tidal/tidalapi/user.py` returns only an unrelated pagination docstring,
+and the only follower surface anywhere is the official-API relationship
+`GET /artists/{id}/relationships/followers` that Sone's artist-tools code uses (§1,
+`ref:sone/src-tauri/src/tidal_api.rs:5576-5587`). Second, the openapi v2 surface already documented
+in §1 (`/shares`, `/dspSharingLinks`, `/collaborationInvites`, playlist `relationships/collaborators`)
+is the *complete* social model — the unofficial API has none of it. Recommended framing for the
+owner: three tiers — (a) read-only profile/public-playlist viewing (cheap, unofficial v2 covers it);
+(b) the activity feed with seen-marking (also unofficial v2, documented above); (c) following,
+collaboration and sharing links (official API only, so it inherits that API's review/quota story,
+§1). Pick a tier for v1 rather than discovering the boundary mid-implementation. **[gap-filled]**
 
 **History.** There is no clean "recently played" REST endpoint in any reference implementation. The
 only surfaces are the `pages/my_collection_recently_played` page and the `HISTORY_*` mix types.
@@ -1035,21 +1251,23 @@ Response fields (union of what the implementations parse):
 | Field | Notes |
 |---|---|
 | `trackId` (or `videoId`) | Strawberry logs a mismatch against the requested id — track substitution is real |
-| `assetPresentation` | `FULL` \| `PREVIEW` |
-| `previewReason` | only on previews |
+| `assetPresentation` | `FULL` \| `PREVIEW` — from the web SDK / TidaLuna types; python-tidal's `Stream.parse` does not read this field |
+| `previewReason` | only on previews — web SDK / TidaLuna only, same caveat |
 | `audioMode` | `STEREO` \| `DOLBY_ATMOS` \| `SONY_360RA` (python-tidal's own `AudioMode` enum only declares `STEREO`/`DOLBY_ATMOS` — a value it doesn't model can still arrive on the wire) |
 | `audioQuality` | **what you actually got**, which may be lower than requested |
 | `manifestMimeType` | see below |
 | `manifest` | base64 |
 | `manifestHash` | integrity/dedup key |
-| `bitDepth`, `sampleRate` | **null for LOW/HIGH tiers**; python-tidal defaults to 16/44100, the web SDK explicitly annotates "API sends null" |
+| `bitDepth`, `sampleRate` | **correction: not established which tiers actually return null.** python-tidal's own comment reads "Bit depth, Sample rate not available for low,hi_res quality modes" (i.e. LOW and legacy HI_RES, not LOW/HIGH as an earlier draft said) and defaults both to 16/44100 (`ref:python-tidal/tidalapi/media.py:595-598`); the web SDK types both `number \| null` with the comment "API sends null" but **no tier qualification at all** (`ref:tidal-sdk-web/.../playback-info-resolver.ts:41-42`). Treat both fields as optional at every tier; prefer the DASH `Representation@id` triple (e.g. `id="FLAC,44100,16"`) when a manifest is present rather than trusting these two fields blindly (§8.2). |
 | `albumReplayGain`, `albumPeakAmplitude`, `trackReplayGain`, `trackPeakAmplitude` | dB and linear peak |
-| `licenseSecurityToken` | present on DRM'd assets — `ref:tidal-sdk-web/.../playback-info-resolver.ts:25` |
-| `streamingSessionId` | echoed from the `x-tidal-streamingsessionid` header |
+| `licenseSecurityToken` | present on DRM'd assets — web SDK only (`ref:tidal-sdk-web/.../playback-info-resolver.ts:25`); not read by python-tidal |
+| `streamingSessionId` | echoed from the `x-tidal-streamingsessionid` header — web SDK only, see §4's open question on whether this is required for Recently Played |
 
-`ref:python-tidal/tidalapi/media.py:546-575` (`Stream.parse`),
+`ref:python-tidal/tidalapi/media.py:546-575,595-598` (`Stream.parse`),
 `ref:sone/src-tauri/src/tidal_api.rs:575-607`,
-`ref:TidaLuna/plugins/lib/src/classes/TidalApi/types/PlaybackInfo.ts`. [verified]
+`ref:TidaLuna/plugins/lib/src/classes/TidalApi/types/PlaybackInfo.ts`,
+`ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts:20-52`. [verified,
+corrected]
 
 Critical: **over-requesting quality returns HTTP 200 with a downgraded `audioQuality`, not an error.**
 Sone states this in a comment as the reason not to walk the cascade after a rate-limit or terminal
@@ -1186,11 +1404,35 @@ degraded. [verified in Strawberry; status unverified]
 GET https://api.tidal.com/v1/videos/{id}/playbackinfopostpaywall
     ?videoquality=HIGH&playbackmode=STREAM&assetpresentation=FULL&countryCode=XX
 ```
-→ `{videoId, videoQuality, manifestMimeType, manifest}` where the manifest decodes to
-`{urls: [...]}`; the URL is an HLS `.m3u8` — `ref:sone/src-tauri/src/tidal_api.rs:3808-3870`.
+→ `{videoId, videoQuality, manifestMimeType, manifest}` where the manifest decodes to a
+`{urls: [...]}` EMU JSON body — Sone's struct is literally `struct EmuManifest { urls: Vec<String> }`
+and takes `urls[0]` without checking its extension
+(`ref:sone/src-tauri/src/tidal_api.rs:3808-3870`). **That `urls[0]` is specifically an HLS `.m3u8` is
+an inference, not confirmed for this EMU path in any checkout** — the only direct evidence for the
+`.m3u8` shape is python-tidal's docstring on the separate *`urlpostpaywall`* shortcut ("Retrieves the
+URL to the m3u8 video playlist"), not on the EMU-manifest path. Assume `.m3u8` but verify against a
+live response before hardcoding a parser that requires it.
 `GET videos/{id}/urlpostpaywall?urlusagemode=STREAM&videoquality=&assetpresentation=FULL` is the
 shortcut form — `ref:python-tidal/tidalapi/media.py:967-985`. Sone plays video through hls.js in the
-webview, separate from the audio pipeline. [verified]
+webview, separate from the audio pipeline. [verified, corrected]
+
+**Concrete per-tier codec/resolution/bitrate data — answers part of Open Question 6.** libopenTIDAL's
+manual (dated 2021; the page itself warns actual bitrate/resolution may vary by client id, so treat
+as indicative, not a contract):
+
+| `videoquality` | Codecs | Resolution / framerate / bitrate |
+|---|---|---|
+| `AUDIO_ONLY` | HE-AAC (`mp4a.40.5`) | no video — **reusable by the existing audio pipeline with no video surface at all** |
+| `LOW` | AAC-LC `mp4a.40.2` + H.264 `avc1.42001e` | 320x180 @ 25 fps |
+| `MEDIUM` | AAC-LC `mp4a.40.2` + H.264 `avc1.4d001f` | 640x360 @ 25 fps |
+| `HIGH` | HLS, multiple renditions | adaptive ladder, 1920x1080 @ 25 fps (~10173 kbps) down to 320x180 @ 12.5 fps (~318 kbps) — **needs a real ABR-capable player, not a single URL handed to a decoder** |
+
+So `AUDIO_ONLY` is a cheap, low-cost partial answer to "video in or out for v1" — it needs no new
+pipeline — while `HIGH` is genuinely a second pipeline (adaptive HLS + a video surface). The same
+manual page corroborates §8.7's audio tiers (LOW = AAC+ @96 kbps, HIGH = AAC @320 kbps, LOSSLESS =
+FLAC 1411 kbps 16/44.1) and, as a dating marker only, still describes the dead `HI_RES` tier as
+"FLAC + MQA Encoding @ 24bit/96kHz" — pre-2024-removal, so treat the whole document as historical
+color, not current spec. (`ref:libopentidal/Docs/OTQuality.7`.) **[gap-filled]**
 
 #### 8.7 Audio modes and codecs
 
@@ -1198,7 +1440,7 @@ webview, separate from the audio pipeline. [verified]
 |---|---|---|
 | `STEREO` | `mp4a.40.5`/HE-AAC (LOW), `mp4a.40.2`/AAC-LC (HIGH), `flac` (LOSSLESS, HI_RES_LOSSLESS) | current |
 | `DOLBY_ATMOS` | E-AC-3 JOC — `EAC3` in the unofficial API, `EAC3_JOC` in the official one. The iOS SDK: "Dolby Atmos is delivered in the E-AC-3 (JOC) codec; the quality tier is irrelevant." `AC4` also appears in codec enums. | current |
-| `SONY_360RA` | `mha1` (MPEG-H). iOS SDK: "Sony 360 Reality Audio has no codec the client needs, so it is unsupported here." | **removed from TIDAL 2024-07-24** |
+| `SONY_360RA` | `mha1` (MPEG-H) is a plausible but unconfirmed codec — see Summary point 11. The iOS SDK's `init?(from:mode:)` returns `nil` for `SONY_360RA` rather than selecting a codec, with the comment "Sony 360 Reality Audio has no codec the client needs, so it is unsupported here." | **removed from TIDAL 2024-07-24** |
 | MQA (`HI_RES` tier) | `mqa` | **removed from TIDAL 2024-07-24** |
 
 `ref:tidal-sdk-ios/Sources/Player/Common/Data/AudioCodec.swift:11-120`,
@@ -1284,8 +1526,21 @@ within the set you offer):
 | LOW | `HEAACV1` |
 | HIGH | `HEAACV1, AACLC` |
 | LOSSLESS | `HEAACV1, AACLC, FLAC` |
-| HI_RES / HI_RES_LOSSLESS | `HEAACV1, AACLC, FLAC, FLAC_HIRES` |
+| HI_RES / HI_RES_LOSSLESS (web SDK); **HI_RES_LOSSLESS only** (Android SDK, equality check) | `HEAACV1, AACLC, FLAC, FLAC_HIRES` |
 | immersive audio (any tier) | append `EAC3_JOC` |
+
+Two corrections to an earlier draft's ladder, both confirmed by re-reading the source: **`EAC3_JOC`
+is only attested on the Android SDK** — `getRequestedFormats`, which does `if (immersiveAudio)
+formats += Formats.EAC3_JOC.value`
+(`ref:tidal-sdk-android/player/streaming-api/.../PlaybackInfoRepositoryDefault.kt:108-120`);
+`rg EAC3_JOC` over `tidal-sdk-web/packages/player` and over `tidal-cli` returns nothing, so do not
+assume the web player or `tidal-cli` ever request it. **And the two SDKs disagree on where
+`FLAC_HIRES` starts**: the web player groups `HI_RES` with `HI_RES_LOSSLESS`
+(`ref:tidal-sdk-web/.../playback-info-resolver.ts:286-301`), while the Android SDK gates it on an
+*equality* check against `HI_RES_LOSSLESS` specifically — so on Android, requesting the legacy
+`HI_RES` tier does **not** get `FLAC_HIRES`. If streamboat calls `/trackManifests/{id}` directly,
+follow the web SDK's (more permissive) grouping and do not special-case `HI_RES`. [verified,
+corrected]
 
 Documented error responses include 403, 404 and 429. This is the endpoint Open Question 8 (below)
 asks whether a newly registered third party actually receives full manifests from, or only previews
@@ -1442,6 +1697,17 @@ client produces event timestamps that are silently dropped or misordered server-
 is hard to attribute from the client side alone. `GET /v1/ping` is also useful on its own as a
 connectivity/health probe for the headless mode, before showing a login error. **[gap-filled]**
 
+**A second, separate reporting channel exists for offline plays — answers a question the brief asked
+explicitly.** `https://api.tidal.com/v1/report/offlineplays` is used by TIDAL's own iOS SDK:
+`private let OFFLINE_PLAYS_URL: URL = URL(string: "https://api.tidal.com/v1/report/offlineplays")!`,
+posted on a timer from a separate on-disk `offlinePlaysDirectory` queue, distinct from the
+`ec.tidal.com` event queue above (`ref:tidal-sdk-ios/Sources/Player/PlaybackEngine/Internal/Events/PlayerEventSender.swift:9,180-183`).
+No OSS client uses it, and it is irrelevant to streamboat if `playbackmode=OFFLINE` is ruled out by
+policy (§8.11 recommends exactly that) — worth stating as a confirmed absence rather than leaving it
+as an open question. **Also confirmed absent: a `/v1/users/{id}/activity` endpoint does not exist in
+any checkout** (`rg` for it across all 22 checkouts returns nothing); the only activity surface is
+the v2 `feed/activities` endpoint already documented above. **[gap-filled]**
+
 #### 10.2 Streaming privileges
 
 `POST https://api.tidal.com/v1/rt/connect` → `{ url: "<websocket url>" }`; the client opens that
@@ -1547,19 +1813,24 @@ against `LICENSE`/`COPYING` where present]
   extension requests for any Offering that attempts to circumvent this." Also: creating certain app
   categories (alarm/ringtone, games/quizzes, voice control, non-interactive webcasting, mixing TIDAL
   content with other services' streams) is prohibited without express written approval.
-  [documented, medium confidence — from search excerpts of developer.tidal.com, which I could not
-  fetch]
+  **[documented, higher confidence — the exact sentence was independently re-confirmed via a targeted
+  search excerpt in the fact-check pass; developer.tidal.com itself remains unfetchable from this
+  session]**
 - **Developer Terms:** prohibits accessing the Developer Tools "beyond the scope of these Developer
   Terms or without an authorized TIDAL account", and prohibits text/data mining or scraping of the
   TIDAL Platform. TIDAL "may limit the number of service calls that applications may make, as TIDAL
   deems appropriate, in its sole discretion, without notice"; apps stay "in development" with quota
-  limits until formally approved. [documented, medium confidence]
+  limits until formally approved. **[documented, lower confidence than the Guidelines bullet above —
+  the fact-check pass could not re-obtain verbatim wording for these three clauses, only confirm the
+  page exists at `developer.tidal.com/documentation/guidelines-developer-terms-2_0`]**
 - **Consumer Content Guidelines / Terms:** users agree not to undertake "Circumventing or modifying,
   attempting to circumvent or modify, or encouraging or assisting any other person in circumventing
   or modifying any security technology or software that is part of the TIDAL Services" and not to
   "Reverse-engineer, decompile, disassemble, modify, or create derivative works of any material on
   the TIDAL Services, except where such restriction is expressly prohibited by applicable law".
-  [documented, medium confidence]
+  **[documented, lower confidence — plausible boilerplate, not verbatim-corroborated in this or the
+  prior pass; do not quote it in a public-facing document until `tidal.com/content-guidelines` is
+  read directly]**
 
 **Honest reading.** Using an unofficial client with your own paid subscription is not obviously
 "circumventing security technology" as long as the client plays only what the service hands it in the
@@ -1601,20 +1872,26 @@ event documented]
 
 #### Enforcement history
 
-- 2016: TIDAL's counsel (Reed Smith LLP) filed a DMCA takedown against **TiDown**, a downloader,
-  asserting "The code provided by the user can be used to circumvent access controls to copyright
-  protected works". The developer disputed the framing. Covered by TorrentFreak and Digital Music
-  News. [documented]
+- 2016-08-31: TIDAL's counsel (Reed Smith LLP) filed a DMCA takedown against **TiDown**
+  (`github.com/Lordmau5/Tidown`), a downloader, asserting "The code provided by the user can be used
+  to circumvent access controls to copyright protected works". The developer disputed the framing.
+  **Primary source, directly readable**:
+  `github.com/github/dmca/blob/master/2016/2016-08-31-Tidal.md` — cite this over the TorrentFreak
+  coverage, which this session could not fetch (see below). [documented, corrected to cite the primary
+  record]
 - Downloaders such as `Tidal-Media-Downloader` and `tidal-dl-ng` continue to exist publicly, carrying
   their own "Private use only … may be illegal in your country" notices. [documented]
 - I found **no evidence of any enforcement action against a player** — High Tide, Sone, Strawberry,
   mopidy-tidal and tidal-hifi are all publicly distributed, several through Flathub, with no
   takedown history. [documented — absence of evidence, stated as such]
-- 2026-03-21: community-shared TIDAL API keys reported broken en masse
-  (`yaronzz/Tidal-Media-Downloader` issue #1213). No workaround documented in that thread. This is
-  the operational risk, and it is recurring: python-tidal's changelog shows credential updates in
-  v0.8.7 ("OAuth Client ID, secret updated") and again in v0.8.8 ("Bugfix: OAuth Client ID, secret
-  updated") — `ref:python-tidal/HISTORY.rst`. [documented + verified]
+- 2026-03-21: community-shared **OAuth `clientId`/`clientSecret` pairs** reported broken en masse
+  (`yaronzz/Tidal-Media-Downloader` issue #1213, linking a gist of per-platform pairs — Fire TV,
+  Android TV, Android Auto, TV — see Summary point 19 for the correction to an earlier draft that
+  mis-scoped this to legacy `x-tidal-token` keys). No workaround documented in that thread, and it is
+  a single unconfirmed reporter. This is the operational risk, and it is recurring more reliably:
+  python-tidal's changelog shows credential updates in v0.8.7 ("OAuth Client ID, secret updated") and
+  again in v0.8.8 ("Bugfix: OAuth Client ID, secret updated") — `ref:python-tidal/HISTORY.rst`.
+  [documented + verified, corrected]
 
 #### Packaging implications
 
@@ -1654,6 +1931,44 @@ or 24/48) is currently inexistent on Tidal" for the Connect binary post-MQA-remo
 **Recommendation:** state Connect as permanently out of scope in any public roadmap, and offer the
 substitutes streamboat *can* build instead: MPRIS (Linux desktop integration), UPnP/DLNA push,
 Chromecast, Snapcast, and plain ALSA/PipeWire/WASAPI device selection.
+
+### 16. Deserialization pitfalls, consolidated **[gap-filled]**
+
+Individual facts below are already stated elsewhere in this report; this section exists because
+scattered across nine sections they get missed, and together they are close to a deserializer spec.
+
+**No example response bodies exist anywhere in the 22 checkouts.** python-tidal's own test suite
+(`ref:python-tidal/tests/` — `conftest.py` plus `test_album/artist/genres/media/mix/page/playlist/
+session/user.py`) exercises the *live* API with real credentials; there are no captured `.json`
+fixture files in the tree, and none of the other 21 checkouts carry any either. streamboat cannot
+borrow fixtures from this ecosystem — capturing its own against a live account, before writing
+parsers, is a concrete first-week task, not an afterthought.
+
+**Date/timestamp format is a parser trap.** TIDAL emits `2022-09-23T04:52:14.568+0000` — ISO-8601
+*basic*-format offset (`+0000`), not RFC 3339 extended (`+00:00`). Python's `dateutil.parser.isoparse`
+accepts both, which is why python-tidal never had to notice; Rust's
+`chrono::DateTime::parse_from_rfc3339` and Go's `time.RFC3339` both **reject** the no-colon form. This
+will bite on the first `dateAdded`, `releaseDate`, `tidalReleaseDate`, `userDateAdded`, `created`,
+`lastUpdated`, `lastItemAddedAt`, `updated`, `startDate` or `validUntil` field parsed — costs five
+minutes to handle in advance, an afternoon of confusion otherwise. Some date-only fields arrive as
+bare `YYYY-MM-DD`. In Rust, use `chrono`'s `%Y-%m-%dT%H:%M:%S%.3f%z` format string or the `iso8601`
+crate — not `parse_from_rfc3339` — and treat every date field as nullable.
+(`ref:TidaLuna/plugins/lib/src/redux/types/store/User.ts:16-20,82-85` — `@example` literals with
+`+0000`; `ref:python-tidal/tidalapi/playlist.py:113-138`, `media.py:268-274`, `album.py:147-157`,
+`artist.py:104`, `mix.py:250,278` — `dateutil.parser.isoparse` used everywhere.)
+
+**Consolidated nullability/absence traps**, one place instead of nine: `bitDepth`/`sampleRate` are
+optional at every tier, not just LOW/HIGH — treat as nullable always (§8.1). `subStatus` can arrive
+float-encoded as `4005.0`, not just as an int (§4). `sourceType` in a play-log event is *omitted
+entirely* rather than nulled when the play has no known container (§10.1). A token-refresh response
+may omit `refresh_token` — fall back to the existing one (§3.5). `keyId` in a BTS manifest is present
+only when `encryptionType != NONE` (§8.2). `GET .../favorites/ids` returns every id as a **string**,
+even for entities whose id is otherwise an integer (§7). `audioMode` can carry values python-tidal's
+own enum does not model — do not fail closed on an unrecognised value (§8.1, §8.7).
+`playlistsAndFavoritePlaylists` items are `{playlist, created}` wrappers, not bare playlists (§7).
+`AssetPresentation`/`PlaybackMode` are not modelled as enums anywhere in python-tidal — it only ever
+sends the literal strings `"FULL"`/`"STREAM"`; source `OFFLINE`/`PREVIEW` to the Android SDK's
+`PlaybackMode.kt`/`AssetPresentation.kt` instead (§8.1).
 
 ---
 
@@ -1773,7 +2088,8 @@ Things only the owner can decide:
    with the transport layer abstract enough to move metadata later.
    - **1a. [gap-filled] "Compliant-but-Chromium" vs "native-but-unofficial" — this is really two
      sub-questions and an earlier draft only implicitly answered the second.** `@tidal-music/player`
-     is a published, Apache-2.0 npm package that **is** "an official, unmodified version of the
+     is an Apache-2.0 package in the `tidal-music/tidal-sdk-web` monorepo (public npm publication not
+     independently confirmed in this pass) that **is** "an official, unmodified version of the
      TIDAL Player module" — the only fully ToS-compliant way for a third party to play full-quality
      audio. It needs a Widevine-CDM browser runtime (the castlabs-Electron trick `tidal-hifi` uses)
      and cannot run headless or with a native GStreamer/Qt pipeline. Given the owner's explicit
@@ -1820,16 +2136,24 @@ Things I could not verify and that someone should check against a live account:
    `tidal-music` Discussion #179 raise exactly this doubt and get no answer. tidal-cli's code assumes
    full tracks. Untested here. Moot in practice if streamboat rules out the "compliant-but-Chromium"
    path (1a) — but relevant if it doesn't.
-10. **Current rate limits.** Nobody has published numbers; Discussion #269 asked and got no reply
-    (that "no reply" status is itself **unverified** in this pass — see Unverified section below). A
-    second thread, Discussion #285, is confirmed unanswered and its author's own practice (throttling
-    to 1 request/500ms) is the only concrete community number available. Sone's 5 s / 120 s cooldowns
-    are guesses that work, not measured limits. **[gap-filled]**
-11. **Whether the shared `<client_id A>` / `<client_id B>` pair is still valid today.** The
-    March 2026 breakage report is about **legacy pre-OAuth keys, not these OAuth client IDs** — see
-    the correction to Summary point 19. python-tidal's changelog (two credential-rotation entries) is
-    the better evidence that these do get rotated periodically. python-tidal 0.8.11's values are what
-    the current checkout ships; whether they work in September 2026 is untested. **[corrected scope]**
+10. **Current rate limits.** Nobody has published numbers; Discussion #269 asked and is confirmed
+    unanswered (re-fetched this pass — 0 comments, marked Unanswered). A second thread, Discussion
+    #285, is likewise confirmed unanswered and its author's own practice (throttling to 1
+    request/500ms) is the only concrete community number available. Sone's 5 s / 120 s cooldowns are
+    guesses that work, not measured limits. **[gap-filled]**
+11. **Whether the shared `<client_id A>` / `<client_id B>` pair is still valid today.** **Corrected
+    scope** (see Summary point 19): the March 2026 breakage report (`yaronzz/Tidal-Media-Downloader`
+    issue #1213) is about a widely-mirrored gist of **OAuth `clientId`/`clientSecret` pairs**, one per
+    platform (Fire TV, Android TV, Android Auto, TV) — not legacy pre-OAuth `x-tidal-token` keys as an
+    earlier draft said. Those pairs are not the same two python-tidal ships, and it remains a single
+    unconfirmed reporter with no second source. python-tidal's own changelog (two credential-rotation
+    entries, v0.8.7/v0.8.8) is the stronger, better-corroborated evidence that these credentials do
+    get rotated periodically. python-tidal 0.8.11's values are what the current checkout ships;
+    **whether they work in September 2026 is untested — no TIDAL account is available in this
+    session.** Recommend making this streamboat's literal first milestone: run python-tidal's
+    device-code login against `<client_id A>` with a live paid subscription before committing further
+    engineering to the unofficial-API spine, and record the date and result. **[corrected scope,
+    gap-filled]**
 12. **`x-tidal-client-version` semantics** — whether an out-of-date value degrades or blocks
     anything. python-tidal pins `2025.7.16`, Sone `2025.11.3`; neither explains why.
 13. **What `Config(alac=...)` in python-tidal still does.** The docstring makes strong claims ("ALAC
@@ -1846,10 +2170,11 @@ Things I could not verify and that someone should check against a live account:
 15. **Flathub's current stance** on apps embedding credentials extracted from proprietary clients.
     Both High Tide and Sone are listed today, so it is at minimum tolerated, but I could not fetch
     flathub.org to check for any policy statement.
-16. **`api.tidal.com`'s CORS posture** — asserted in Summary point 22 from architecture and a
-    community doc, not from a live preflight request. Re-verify with
-    `curl -I -H 'Origin: https://example.com' https://api.tidal.com/v1/sessions` before treating it
-    as settled. **[gap-filled, partially unverified]**
+16. **`api.tidal.com`'s CORS posture** — asserted in Summary point 22 from architecture alone; the
+    `tidal-api-docs` citation once offered in support turned out, on re-check, to be about client-id
+    retrieval from a browser, not CORS headers, so it is weaker evidence than an earlier draft
+    implied. Re-verify with `curl -i -H 'Origin: https://example.com' -X OPTIONS
+    https://api.tidal.com/v1/sessions` before treating it as settled. **[gap-filled, unverified]**
 
 ---
 
@@ -1956,9 +2281,14 @@ Things I could not verify and that someone should check against a live account:
   "audio bytes flow exclusively through the official TIDAL Player SDK; the Playback API only issues
   signed manifests" formulation and the scope/flow summary. *Third-party paraphrase of TIDAL's docs,
   not TIDAL's own words.*
-- <https://github.com/orgs/tidal-music/discussions/179> — third-party app review stalled since 2024;
-  April 2026 "nothing has moved"; developer uncertainty about full tracks vs 30-second previews.
-- <https://github.com/orgs/tidal-music/discussions/269> — rate limits asked, unanswered.
+- <https://github.com/orgs/tidal-music/discussions/179> — third-party app review pipeline stalled;
+  opened 2025-06-03, first contact roughly six months earlier per the OP; 2026-04-16 update "nothing
+  has moved"; developer uncertainty about full tracks vs 30-second previews.
+- <https://github.com/orgs/tidal-music/discussions/269> — rate limits asked, confirmed unanswered
+  (0 comments, marked Unanswered).
+- <https://github.com/orgs/tidal-music/discussions/285> — a second, independently-found unanswered
+  thread on the same topic ("Limitations on requests that can be made consecutively"), source of the
+  one concrete community number (throttling to 1 request/500ms).
 - <https://developer.tidal.com/documentation/guidelines/guidelines-developer-guidelines> and
   `.../guidelines-developer-terms-1_0`, `.../guidelines-developer-terms-2_0` — the Player-module-only
   requirement, the prohibited-application categories, the scraping and authorised-account clauses,
@@ -1971,7 +2301,12 @@ Things I could not verify and that someone should check against a live account:
   <https://www.phonearena.com/news/tidal-removes-mqa-360-reality-audio-formats_id159679> — MQA and
   Sony 360 Reality Audio removed 2024-07-24, replaced by FLAC and Dolby Atmos.
 - <https://github.com/yaronzz/Tidal-Media-Downloader/issues/1213> — community API keys reported
-  broken 2026-03-21, no workaround.
+  broken 2026-03-21, no workaround; linked from that thread,
+  <https://gist.github.com/yaronzz/48d01f5a24b4b7b37f19443977c22cd6> is the actual gist of
+  per-platform OAuth `clientId`/`clientSecret`/`valid` entries the report — this is not the same
+  gist as riad-uk's legacy `x-tidal-token` list below.
+- <https://github.com/github/dmca/blob/master/2016/2016-08-31-Tidal.md> — the primary 2016 TiDown
+  DMCA takedown notice, directly readable (unlike torrentfreak.com, see below).
 - <https://torrentfreak.com/tidal-shuts-tidal-downloader-tool-160902/>,
   <https://www.digitalmusicnews.com/2016/09/05/tidown-downloader-taken-down/> — the 2016 TiDown DMCA
   takedown and the exact wording of the claim.

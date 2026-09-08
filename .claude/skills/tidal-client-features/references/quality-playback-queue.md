@@ -4,23 +4,39 @@ Table of contents:
 1. Quality ladder and the naming trap
 2. Where quality is chosen / what's actually playing
 3. Manifest fetch, the quality cascade, and terminal error codes
-4. Queue semantics
-5. Audio output: exclusive mode, Force Volume, device enumeration
-6. Crossfade, gapless, autoplay
-7. Normalization / ReplayGain
-8. Voice commands
-9. Failure/notification model
-10. Settings surface (desktop)
-11. Platform notes: web player limits, no Linux desktop client
+4. Transport and player state
+5. Queue semantics
+6. Audio output: exclusive mode, Force Volume, device enumeration
+7. Crossfade, gapless, autoplay
+8. Normalization / ReplayGain
+9. Voice commands
+10. Failure/notification model
+11. Settings surface (desktop)
+12. Platform notes: web player limits, no Linux desktop client
 
 All facts below carry the same version caveat as the rest of this skill: sourced from TidaLuna
 `v1.16.6-beta` (commit `d8cd6bc`, 2026-09-02) unless otherwise noted.
+
+**Provenance note for every `ref:TidaLuna/...` citation below**: only
+`plugins/lib/src/redux/types/*` is a verbatim `Object.keys(luna.core.buildActions)` export from the
+shipping official TIDAL client — the strongest evidence tier this skill uses.
+`plugins/lib/src/classes/*` is different: it is TidaLuna's **own** plugin/mod code, which imports
+`@luna/core` and `@inrixia/helpers` and merely *consumes* those redux types. Treat anything sourced
+from `classes/*` (concurrency limits, display names/labels, badge colours, request-retry logic) as
+one modder's implementation choice, not attested official-client behaviour — it is directionally
+useful (it had to work against the real API to ship) but not the same evidence tier as the redux
+type dump.
 
 ## 1. Quality ladder and the naming trap
 
 Source of truth: `ref:TidaLuna/plugins/lib/src/classes/Quality.ts`. Seven ordered rungs (`idx`
 0–6), each with a name and badge colour, and **two separate lookup tables that disagree with each
-other at the bottom two rungs** — this is the trap:
+other at the bottom two rungs** — this is the trap. Per the provenance note above, `Quality.ts` is
+`classes/` code, so the rung **names** ("HiRes", "Sony630", "Low", "Lowest") and **badge colours**
+below are TidaLuna's own labels, not confirmed TIDAL UI strings — treat the "UI …" annotations
+(sourced separately from live DOM/UI observation) as the actual UI-facing claim. The two **lookup
+tables** (`audioQuality` enum and `mediaMetadata.tags` values, both `redux/types` wire enums) are
+the solid part, independently corroborated by `tidal-sdk-web`'s `audioQualityToFormats` below:
 
 | `idx` | Name | Badge colour | `audioQuality` enum → this rung | `mediaMetadata.tags` → this rung | Codec/format | Ceiling |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -84,14 +100,18 @@ GET https://api.tidal.com/v1/tracks/{id}/playbackinfopostpaywall
     &countryCode=XX
 ```
 (`ref:python-tidal/tidalapi/media.py:507-516`; also `urlpostpaywall` with `urlusagemode=STREAM` for
-a direct URL, used by `tidalt`/`tidalrs`.) The **official desktop client** uses
-`https://desktop.tidal.com/v1/tracks/{id}/playbackinfo` with the same query shape, headers
-`Authorization: Bearer` + `x-tidal-token`, and a **semaphore of 2 concurrent requests**
-(`ref:TidaLuna/plugins/lib/src/classes/TidalApi/index.ts:52,57`).
+a direct URL, used by `tidalt`/`tidalrs`.) TidaLuna's own client-side API helper calls
+`https://desktop.tidal.com/v1/tracks/{id}/playbackinfo` with the same query shape and headers
+`Authorization: Bearer` + `x-tidal-token` — evidence of the host the official client's requests
+go to, not of the client's own internals — wrapped in a **self-imposed semaphore capping it to 2
+concurrent requests** (`ref:TidaLuna/plugins/lib/src/classes/TidalApi/index.ts:51-52`, `// Lock to
+two concurrent requests` / `new Semaphore(2)`). Per the provenance note above, that concurrency
+cap is **TidaLuna's own rate-limiting choice**, not an attested TIDAL server-side or
+official-client constraint — do not cite "2" as a TIDAL-imposed limit.
 
 Response carries `manifestMimeType` (`application/dash+xml` or `application/vnd.tidal.bts`,
 historically also `application/vnd.tidal.emu`), base64 `manifest`, `manifestHash`, `audioQuality`,
-`audioMode`, `bitDepth`, `sampleRate`, plus four ReplayGain/peak fields (§7). BTS manifests
+`audioMode`, `bitDepth`, `sampleRate`, plus four ReplayGain/peak fields (§8). BTS manifests
 base64-decode to JSON `{mimeType, codecs, encryptionType, keyId, urls[]}`; DASH manifests decode to
 MPD XML.
 
@@ -104,9 +124,13 @@ GET /trackManifests/{id}
     &uriScheme=DATA
     &usage=PLAYBACK
     &adaptive=
+    &shareCode=
 ```
 plus an `x-playback-session-id` header. `manifestType` is chosen as `HLS` when FairPlay is
-supported, else `MPEG_DASH`. Manifests expire after **3,600,000 ms (1 hour)**
+supported, else `MPEG_DASH`. `shareCode` is optional — it carries the share-link context when
+playback was reached via a shared link, present on every official-SDK call whether or not the
+caller has one (`ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts:361-378`,
+destructured from `mediaProduct.shareCode`). Manifests expire after **3,600,000 ms (1 hour)**
 (`ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts:79,362-377`).
 
 **Quality cascade**: request the highest tier, degrade on failure. **Terminal sub-statuses — the
@@ -114,13 +138,20 @@ literal list, not a range**: `4005, 4010, 4030, 4031, 4032, 4034, 4035`
 (`ref:sone/src-tauri/src/tidal_api.rs:18`). Treat these as permanently unplayable and skip; retry
 only transient errors.
 
+**Playbackinfo sub-statuses occupy 4000–4999; auth failures use a separate namespace** (11002/11003
+token, 6001 session, 1002 pending), so a 4xxx sub-status on a 401 response is never fixed by
+refreshing the token (`ref:sone/src-tauri/src/tidal_api.rs:11-13`,
+`PLAYBACKINFO_SUB_STATUS_RANGE = 4000..=4999`). Scope the classifier to the 4xxx range before
+matching it against the terminal list below.
+
 **Two sub-statuses in the same 4xxx range are deliberately excluded from that terminal list, and
 must NOT evict the track** (`ref:sone/src-tauri/src/tidal_api.rs:15-18`, doc comment on
 `TERMINAL_SUB_STATUSES`):
-- **4006** — streaming privileges lost. This recovers; it's the same condition as
-  `player/STREAMING_PRIVILEGES_REVOKED` (§9) — a second device took over the one-stream slot, and
-  playback can resume once the user reclaims it. Treat as a transient/recoverable state, not a dead
-  track.
+- **4006** — streaming privileges lost; recovers (`ref:sone/src-tauri/src/tidal_api.rs:15-18`).
+  Almost certainly the same condition the desktop client surfaces as
+  `player/STREAMING_PRIVILEGES_REVOKED` (§10) — a second device taking over the one-stream slot,
+  with playback resuming once the user reclaims it — but that identification is **[inferred]**, not
+  stated in either source. Treat as transient/recoverable either way, not a dead track.
 - **4033** — subscription up-sell (the account needs a higher tier for this content). This is
   user-fixable (upgrade), not permanently unplayable — surface it as an account/entitlement message,
   not a "this track is broken" skip.
@@ -133,14 +164,21 @@ the 4xxx range as "also terminal" will wrongly delete tracks on 4006/4033.
 unofficial-API path reaches unencrypted FLAC/AAC manifests for the subscriber's own account.
 **Strawberry explicitly refuses to play anything where `encryptionKey` is non-empty or
 `encryptionType`/`securityType` != `NONE`**, showing a user-facing error instead
-(`ref:strawberry/src/tidal/tidalstreamurlrequest.cpp:244-247,295-298,303-307`). Copy this posture:
-detect encryption and decline, never circumvent — this is both the correct legal stance and a clean
+(`ref:strawberry/src/tidal/tidalstreamurlrequest.cpp:244-247,295-298,303-307`). **Whether TIDAL
+delivers an encrypted or unencrypted stream at all is not a fixed property of a track — Strawberry's
+own refusal message states it "depends on the client ID in use"**
+(`ref:strawberry/src/tidal/tidalstreamurlrequest.cpp:246-248,297-299`). This changes how the
+quality cascade and the refuse-cleanly path should be designed: encryption is a per-request
+outcome of which client ID made the call, not a per-track fact you can cache once and reuse — see
+`docs/research/tidal-api.md` for client-ID provenance. Copy Strawberry's posture regardless: detect
+encryption and decline, never circumvent — this is both the correct legal stance and a clean
 failure mode. Document it in the README so nobody files "add Widevine support."
 
 **Region unavailability / media replacement**: the v2 spec exposes a `replacement` relationship on
 `tracks`/`videos`/`albums` and a `replaceMedia=<relationship paths>` query param, with each
 identifier carrying `meta.replacement: ORIGINAL|REPLACED|NOT_REPLACED` (flagged "BETA Internal
-only" as of this reading). On v1, the equivalent signal is the per-item `StreamingFlags` (§ below)
+only" as of this reading). On v1, the equivalent signal is the per-item `StreamingFlags` (see the
+`StreamingFlags` block at the end of this section)
 plus `message/MEDIA_NOT_PLAYABLE` — the native app surfaces a message and moves on rather than
 stalling on a dead track. `/usageRules` and `/tracks/{id}/relationships/usageRules` are the v2 home
 for per-item entitlement rules.
@@ -150,7 +188,41 @@ adSupportedStreamReady, djReady, stemReady, premiumStreamingOnly }`
 (`ref:TidaLuna/plugins/lib/src/redux/types/store/content/StreamingFlags.ts`). `djReady`/`stemReady`
 plausibly gate the DJ Extension add-on — this mapping is **[inferred]**, not stated in source.
 
-## 4. Queue semantics
+## 4. Transport and player state
+
+The state machine every implementer writes first — get this right before wiring the queue on top
+of it. All facts below are `[verified-source]`
+(`ref:TidaLuna/plugins/lib/src/redux/types/store/Playback.ts:10-11,45-46` for the state/enum shapes,
+`ref:TidaLuna/plugins/lib/src/redux/types/actions/actionTypes.ts` for the action inventory).
+
+**`playbackControls/*` actions**: `PLAY`, `PAUSE`, `TOGGLE_PLAYBACK`, `STOP`, `SKIP_NEXT`,
+`SKIP_PREVIOUS`, `SEEK`, `SEEK_FORWARDS`, `SEEK_BACKWARDS`, `START_AT`, `TIME_UPDATE`,
+`SET_DURATION`, `SET_VOLUME`, `INCREASE_VOLUME`, `DECREASE_VOLUME`, `SET_MUTE`, `TOGGLE_MUTE`,
+`SET_VOLUME_UNMUTE`, `SET_PLAYBACK_STATE`, `SET_DESIRED_PAUSE_STATE`, `MEDIA_PRODUCT_TRANSITION`,
+`PREFILL_MEDIA_PRODUCT_TRANSITION`, `UPDATE_PLAYBACK_CONTEXT`, `ENDED`.
+
+**State shape**:
+
+```
+PlaybackState = "PLAYING" | "IDLE" | "PAUSED" | "NOT_PLAYING" | "STALLED"
+Player = "BOOMBOX" | "GOOGLE_CAST" | "REMOTE_PLAYBACK"          // which engine renders audio
+ActivePlayerType = "PLAYER_SDK" | "WEBPLAYER" | "EXTERNAL_PLAYER"  // ref:.../store/index.ts:64
+volume: number       // 0-100, not 0-1
+volumeUnmute: 100     // the level TOGGLE_MUTE restores to
+```
+
+**Five playback states, not a `playing: boolean`.** `STALLED` (buffering) and `NOT_PLAYING`
+(nothing loaded) are distinct from `IDLE`/`PAUSED` — a naive boolean loses both: the buffering
+state a loading spinner needs, and the cold-start "nothing loaded yet" state a fresh-launch UI
+needs. `PlaybackControls` also carries `desiredPlaybackState` (what the user asked for) separately
+from `playbackState` (what's actually happening) and `mediaProduct: {productId, productType,
+referenceId, sourceId, sourceType}`. `PlaybackContext` (the "what's actually playing" struct) is
+covered separately in §2.
+
+Model streamboat's own playback state machine on this five-value enum from day one — retrofitting a
+`STALLED` state into code built around a boolean is a rewrite, not a patch.
+
+## 5. Queue semantics
 
 State (`ref:TidaLuna/plugins/lib/src/redux/types/store/PlayQueue.ts`):
 
@@ -188,7 +260,7 @@ tailPosition, tailItemId, currentItemId, historyMediaItemIds, repeatMode, shuffl
 NONE|ONE|BATCH, shuffle: OFF|BATCH|ALL, shuffled: boolean}`. No OSS client implements this yet, but
 it is documented, not a black box.
 
-## 5. Audio output: exclusive mode, Force Volume, device enumeration
+## 6. Audio output: exclusive mode, Force Volume, device enumeration
 
 State: `activeDeviceId`, `activeDeviceMode: "exclusive" | "shared"`, `availableDevices[]` of
 `{id, name, nativeDeviceId, webDeviceId, type, controllableVolume}`, `desiredDeviceMode` (per
@@ -208,13 +280,22 @@ or speakers." **This pins the in-app level at 100% so an external DAC/amp is the
 control — it is the opposite of a software-volume fallback.** Exclusive Mode and Force Volume are
 mutually exclusive in the UI (enabling one disables the other).
 
-## 6. Crossfade, gapless, autoplay
+## 7. Crossfade, gapless, autoplay
 
-**Crossfade**: confirmed shipping on iOS and Web as of 2026 — TIDAL Magazine, "What We're Working
-On. (And Why.)" (June 2026): "Crossfade is once again available on iOS and Web… go to Settings and
-turn it on," 0–12 second slider (independently corroborated by piunikaweb.com, 23 Mar 2026). Not
-present in the TidaLuna 1.16.6-beta desktop dump — most likely a stale snapshot, not evidence the
-desktop client lacks it. Treat as parity work if built, not a differentiator.
+**Crossfade**: confirmed shipping on **iOS and Web** — TIDAL Magazine, "What We're Working On. (And
+Why.)" (June 2026): "Crossfade is once again available on iOS and Web… go to Settings and turn it
+on," 0–12 second slider, corroborated by piunikaweb.com (23 Mar 2026, which puts the earliest
+public sighting in March, ahead of TIDAL's own June Magazine post). Both sources put the
+announcement in the **Mar–Jun 2026** window. Treat "iOS and Web" as the best-attested platform set
+from these two sources, not necessarily an exhaustive one — neither source was cross-checked
+against, say, Android release notes, so don't rule out a wider mobile rollout on the strength of
+this citation alone. The TidaLuna desktop dump this skill is built on is
+dated **2026-09-02 — three months after** that window, not before it. That makes the crossfade
+toggle's absence from the desktop settings dump (§11) **real evidence the Electron desktop build
+had not shipped it as of 2026-09-02**, not a "stale snapshot" artifact to explain away — a dump
+this recent had every opportunity to carry a feature TIDAL had already announced for other
+platforms months earlier. The only genuinely open question is desktop-client status: has it shipped
+there since this dump was taken. Treat as parity work if built, not a differentiator, either way.
 
 **Gapless**: implemented by preloading — `player/PRELOAD_ITEM`, `player/PRELOAD_NEXT_ITEM`,
 `player/PRELOAD_SUCCESS`, `playbackControls.prefilled` (boolean), and
@@ -227,7 +308,7 @@ switches buffers" — direct evidence gapless is live in the web/desktop player.
 When the queue ends, TIDAL appends algorithmically suggested tracks. Not all TIDAL Connect devices
 support Autoplay ([verified-web, unfetched]).
 
-## 7. Normalization / ReplayGain
+## 8. Normalization / ReplayGain
 
 `settings.audioNormalization: "NONE" | "ALBUM" | "TRACK"`, action `settings/TOGGLE_NORMALIZATION`
 (the *only* normalization action in the dump — no `SET_NORMALIZATION`, so the UI's cycling logic
@@ -244,13 +325,13 @@ without re-checking support.tidal.com.
 Audio spectrum visualiser: `settings.audioSpectrumEnabled` / `settings/SET_AUDIO_SPECTRUM_ENABLED`
 — a toggle in the desktop app, no other detail known.
 
-## 8. Voice commands
+## 9. Voice commands
 
 `speech/{START_RECOGNITION, STOP_RECOGNITION, PARSE_VOICE_COMMAND}` with
 `speech.recognitionSupported` — the desktop client has voice command support, not publicly
 documented, likely the Web Speech API. Out of scope for streamboat; low value relative to cost.
 
-## 9. Failure/notification model
+## 10. Failure/notification model
 
 Copy this as streamboat's own error/toast design rather than inventing one — third-party clients
 are most visibly worse than the native app exactly at failure moments. The native client has:
@@ -269,7 +350,7 @@ are most visibly worse than the native app exactly at failure moments. The nativ
 
 This is enough to specify streamboat's whole error surface as an explicit parity target.
 
-## 10. Settings surface (desktop)
+## 11. Settings surface (desktop)
 
 The complete persisted settings state
 (`ref:TidaLuna/plugins/lib/src/redux/types/store/index.ts`):
@@ -295,9 +376,9 @@ client-side only in practice (SKILL.md "Open decisions" #8).
 
 **Adjacent user-facing settings surfaces that live outside the `settings` slice** — don't miss
 these when building a Settings screen from the block above alone:
-- Sound output device + exclusive/shared mode: `player.*`, context menu `SELECT_SOUND_OUTPUT` (§5).
+- Sound output device + exclusive/shared mode: `player.*`, context menu `SELECT_SOUND_OUTPUT` (§6).
 - Force Volume per device: `player.forceVolume`, `player/SET_FORCE_VOLUME` — mutually exclusive
-  with exclusive mode in the UI (§5).
+  with exclusive mode in the UI (§6).
 - Last.fm connection: `lastFm/{LOGIN, DISCONNECT, REFRESH_SESSION, SET_CONNECTION_STATE}`, its own
   route `route/LOADER_DATA__LASTFM` — TIDAL treats this as headline enough to give it a dedicated
   screen, not just a settings toggle (see `entitlements-tiers-history.md` §7 for auth, and SKILL.md
@@ -308,16 +389,24 @@ these when building a Settings screen from the block above alone:
   user-facing setting to replicate.
 - The blocked-items page (`route/LOADER_DATA__BLOCKS`) — the Block action itself is in
   `library-playlists-collections.md` §5.
+- Desktop lifecycle/update UX (minor, but the native app's parity target if streamboat ships an
+  auto-updater): `modal/SHOW_DESKTOP_RELEASE_NOTES`, `session/TOGGLE_SHOW_DESKTOP_RELEASE_NOTES`,
+  `message/MESSAGE_DESKTOP_RELEASE` (in-app release notes on update, alongside the
+  `updateAvailable` flag above) and `modal/SHOW_UNSUPPORTED_OS_MODAL` /
+  `session/ACKNOWLEDGE_OUTDATED_OS` (a warn-and-continue path for OS versions TIDAL no longer
+  supports) — `ref:TidaLuna/plugins/lib/src/redux/types/actions/actionTypes.ts`.
 
 **Absent from this settings dump, notably: no crossfade toggle, no equalizer, no gapless toggle, no
 cache-size control, no download/offline settings.** Apply the standing version caveat here
-specifically: read "no crossfade" as "not in TidaLuna 1.16.6-beta (2026-09-02)" — TIDAL has since
-announced a crossfade toggle for iOS/Web (§6) that predates this dump's snapshot date, so its
-absence here is a dating artifact, not evidence the desktop client lacks it. The rest (equalizer,
+specifically, but get the direction right: TIDAL announced a crossfade toggle for iOS/Web in
+Mar–Jun 2026 (§7), and this dump is dated 2026-09-02 — **three months later, not earlier** — so "no
+crossfade toggle" here is real evidence the Electron desktop build hadn't shipped it as of that
+build, a genuine platform gap, not a dating artifact that explains the absence away. Only desktop
+status stays open (has it shipped since 2026-09-02). The rest (equalizer,
 cache-size control, download/offline settings) has no counter-evidence and can still be treated as
 genuinely absent from the desktop client as of this reading.
 
-## 11. Platform notes: web player limits, no Linux desktop client
+## 12. Platform notes: web player limits, no Linux desktop client
 
 **There is no official TIDAL desktop client for Linux.** Windows and macOS get an Electron desktop
 app; Linux users run `listen.tidal.com` directly or a wrapper (tidal-hifi, Sone, High Tide) — this
@@ -336,7 +425,7 @@ audio/OS-integration: no exclusive/bit-perfect output, no tray/autostart/close-t
 to 48 kHz unless the browser is launched with `--audio-output-sample-rate=192000`
 (`ref:tidal-hifi/docs/audio-quality.md`) — a HiRes 24/192 stream silently becomes 48 kHz audio
 without that flag. This is one more reason the manifest-based unofficial-API path (native decode,
-not an embedded browser) is the more robust design for streamboat's bit-perfect-output goal (§5),
+not an embedded browser) is the more robust design for streamboat's bit-perfect-output goal (§6),
 not merely a legal-posture choice.
 
 **Widevine DRM is broken on Windows for the castlabs Electron build (error S6007)**, with no

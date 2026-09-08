@@ -16,6 +16,11 @@ Full narrative: `docs/research/audio-pipeline.md` §1, plus fact-check gap-fill 
 9. `mediaMetadataTags` / `audioModes` vocabulary
 10. Quality-tier transitions mid-stream (ABR)
 11. Open question: is v2 reachable to an unofficial client at all?
+12. HLS and EMU manifests need an explicit decision, not silent failure
+13. PREVIEW / `previewReason` — a required behaviour, not an edge case
+14. `countryCode` provenance and its diagnostic implication
+15. Streaming-privileges WebSocket reconnect policy
+16. Capture real TIDAL manifest fixtures — do this before writing a parser
 
 ---
 
@@ -34,8 +39,15 @@ Quality.default          = "HIGH"
 A legacy fifth value `HI_RES` maps to MQA and is dead content since 24 July 2024 (§1.7 caveat
 below). The 96/320/1411/up-to-24-192 kbps figures are TIDAL marketing numbers repeated by
 third-party reviews — not confirmed against a first-party TIDAL page in this research pass
-(`support.tidal.com` is blocked from the environment). The authoritative per-track values are the
-v1 response's `bitDepth`/`sampleRate` fields (**not** present on v2 — see §2).
+(`support.tidal.com` is blocked from the environment). **Correction: `bitDepth`/`sampleRate` are
+not reliable on v1 either.** A prior version of this note called them "the authoritative per-track
+values" on v1, "not present on v2." Both TIDAL's own web SDK and Sone treat the v1 fields as
+optional/nullable: the SDK types them `bitDepth: number | null` / `sampleRate: number | null` with
+the comment `// API sends null`, and Sone declares both `#[serde(default)] Option<u32>`
+(`ref:tidal-sdk-web/.../playback-info-resolver.ts`, `ref:sone/src-tauri/src/tidal_api.rs:3676-3682`).
+**Treat both endpoints the same way: parse `bitDepth`/`sampleRate` out of the DASH `Representation@id`/
+`audioSamplingRate` or HLS `X-COM-TIDAL-SAMPLE-*` tags (§4), and confirm the final value by reading
+it back from the opened device — never trust either endpoint's JSON fields as authoritative.**
 
 Tier→codec table, from `ref:tidal-sdk-ios/Sources/Player/Common/Data/AudioCodec.swift`:
 
@@ -103,10 +115,18 @@ no `postpaywall`): `x-tidal-token: {clientId}`, `x-tidal-streamingsessionid: {se
 
 Strawberry supports four v1 variants, user-selectable, defaulting to `playbackinfopostpaywall`
 (`ref:strawberry/src/tidal/tidalstreamurlrequest.cpp:118-146`):
-`tracks/{id}/streamUrl?soundQuality=`,
-`tracks/{id}/urlpostpaywall?audioquality=&urlusagemode=STREAM` (the simplest — returns
-`{urls: [...]}`, a direct CDN URL, no manifest at all; tidalt uses only this), `.../playbackinfopostpaywall`,
+`tracks/{id}/streamUrl?soundQuality=`, `tracks/{id}/urlpostpaywall?…` (the simplest — returns
+`{urls: [...]}`, a direct CDN URL, no manifest at all), `.../playbackinfopostpaywall`,
 `.../playbackinfo`.
+
+**`urlpostpaywall`'s parameter set is not one fixed shape — record both variants seen, don't invent
+a third.** Strawberry's request carries **four** params: `audioquality`, `playbackmode=STREAM`,
+`assetpresentation=FULL`, `urlusagemode=STREAM` (`tidalstreamurlrequest.cpp:126-131`). python-tidal's
+own call sends a different set again — `urlusagemode=STREAM`, `audioquality`, `assetpresentation=FULL`,
+with **no** `playbackmode` (`ref:python-tidal/tidalapi/media.py:422-429`) — and python-tidal refuses
+this endpoint entirely under a PKCE session (`if self.session.is_pkce: raise URLNotAvailable`). If
+streamboat ends up using PKCE auth (see `tidal-api` skill), `urlpostpaywall` may not be an option at
+all regardless of which parameter shape is used.
 
 **v2 — what TIDAL's own SDKs use:**
 
@@ -203,7 +223,9 @@ mid-stream ABR switching (§10 below). python-tidal indexes
 Fields:
 
 - `MPD@mediaPresentationDuration` (ISO-8601, e.g. `PT2M26.47S`)
-- `AdaptationSet@contentType`, `@mimeType` (`audio/mp4`)
+- `AdaptationSet@contentType`, `@mimeType` (`audio/mp4`) — **[unverified]**: no reference client
+  asserts this literal string, only reads the attribute; it is inferred from FLAC-in-fMP4 convention,
+  not observed in a captured TIDAL manifest (see the fixture-capture note at the end of this section)
 - `Representation@codecs` (`flac`, `mp4a.40.2`, `mp4a.40.5`)
 - `Representation@audioSamplingRate`
 - `Representation@id` — carries `"FLAC,44100,16"` (codec, rate, bit depth). **Evidenced only by the
@@ -213,16 +235,27 @@ Fields:
 - `SegmentTemplate@initialization`, `@media` (a `$Number$` template), `@timescale`
 - `SegmentTimeline/S@d` (duration in timescale units), `@r` (repeat count)
 
-**Segment numbering disagreement (real, unresolved by the DASH spec's `startNumber` default):**
+**Segment numbering disagreement — TWO separate bugs, not one:**
 
 - python-tidal: `segments_count = 1 + 1 + Σ(S.r or 1)`, then
   `[media.replace("$Number$", str(i)) for i in range(segments_count)]` — starts at **0**, folds the
-  init segment into the same numbering (`media.py:828-875`).
+  init segment into the same numbering (`media.py:828-875`, accumulation loop at `:836-845`).
 - tidal-cli: downloads `initialization` separately, numbers media segments from **1**
-  (`playback.ts:120-170`).
+  (`playback.ts:120-170`, specifically `:124-133`).
 
-Neither reads `SegmentTemplate@startNumber` (DASH default 1). **Any hand-rolled assembler must read
-`startNumber` rather than guessing.**
+Neither reads `SegmentTemplate@startNumber` (DASH default 1). That's bug #1 (start index).
+
+**Bug #2, easy to miss: python-tidal also mis-accumulates `@r` itself.** Per the DASH spec,
+`SegmentTimeline/S@r` is the number of *additional* repeats — one `<S>` element with a given `@r`
+contributes **`r + 1`** segments to the timeline, and `@r` defaults to 0. python-tidal's loop does
+`segments_count += s.r if s.r else 1` — it adds `r`, not `r + 1`, so it **under-counts by one segment
+per `<S>` run that carries a nonzero `@r`**. tidal-cli gets it right:
+`const repeat = m[2] ? parseInt(m[2]) + 1 : 1;` (`playback.ts:126-132`). python-tidal's
+`1 + 1 + …` fudge only happens to land close to correct on a typical single-run MPD; it is not a safe
+pattern to copy.
+
+**The spec rule to implement, ignoring both references: total segments in one `<S d="…" r="N"/>` run
+= `N + 1`; `@r` defaults to 0; `SegmentTemplate@startNumber` defaults to 1.**
 
 python-tidal also synthesises an HLS playlist from the parsed MPD (`DashInfo.get_hls`), emitting
 `#EXTINF` values of `S.d / timescale` — a useful trick for handing a TIDAL DASH track to any
@@ -252,7 +285,11 @@ for exactly this reason (`ref:mopidy-tidal/mopidy_tidal/gstreamer_proxy/types.py
 
 `encryptionType` in a BTS manifest takes values `NONE` and `OLD_AES`
 (`ref:TidaLuna/plugins/lib.native/src/request/decrypt.ts:41-52`). python-tidal defaults
-`encryption_type="NONE"` for MPD, reads the field for BTS (`media.py:660,672`).
+`encryption_type="NONE"` for MPD, reads the field for BTS (`media.py:660,672`). **Caveat: `OLD_AES`
+is attested by exactly one file in the whole 21-project reference set** — it is not a proven-exhaustive
+vocabulary. This is exactly why the refusal rule below is a denylist-of-one ("anything not `NONE`"),
+not an allowlist of known-safe values — do not special-case `OLD_AES` as "the encrypted one" and treat
+anything else as safe.
 
 **Strawberry's rule — copy this exactly.** Refuse and say so when any of these hold
 (`ref:strawberry/src/tidal/tidalstreamurlrequest.cpp:244-310`):
@@ -379,3 +416,79 @@ v2" (a major recommendation of the parent report) is buildable at all — if v2 
 developer-portal grant an unofficial player cannot get, the v1 quality cascade in §7 is not a
 fallback, it is the only path. Confirm this against the live API with streamboat's actual client
 credentials before committing architecture to v2.
+
+## 12. HLS and EMU manifests need an explicit decision, not silent failure
+
+§3 lists all four MIME types but a naive implementation only handles BTS and DASH — and
+python-tidal, the most-copied unofficial client, has EMU and APPL (HLS) **commented out** of its
+`ManifestMimeType` enum and raises `UnknownManifestFormat` on anything else
+(`ref:python-tidal/tidalapi/media.py:112-120`). Since manifest type is DRM/client-driven (§2 — HLS
+if FairPlay is supported, else DASH) and streamboat's client-ID choice is an open owner decision, a
+credential that makes TIDAL answer with `application/vnd.apple.mpegurl` is otherwise an undesigned
+total playback failure. **Decide it now:**
+
+- **EMU**: parse with the exact same code path as BTS. TIDAL's own web SDK's manifest parser handles
+  both with the same `parseJSONManifest` function (§3) — this is free, not separate work.
+- **HLS**: either implement the web SDK's double-base64 variant decode (§3), or fail with a specific,
+  actionable error naming the client ID as the likely cause — never a generic "unsupported manifest"
+  message that gives the user nothing to act on.
+
+## 13. PREVIEW / `previewReason` — a required behaviour, not an edge case
+
+Both v2 SDKs surface `trackPresentation`/`assetPresentation` as first-class: the Android SDK maps
+`TrackPresentation.PREVIEW` and `PreviewReason.{SUBSCRIPTION, PURCHASE, HIGHER_ACCESS_TIER}`
+(`ref:tidal-sdk-android/.../PlaybackInfoRepositoryDefault.kt`), and the web SDK **defaults
+`assetPresentation` to `'PREVIEW'` when the attribute is absent from a v2 response** — the opposite
+default from v1, which defaults to `FULL`. A player that ignores this silently plays a 30-second clip
+as though it were the full track and, if it sends play-reporting (§8, and see
+`references/playback-behavior.md` §7), reports it to TIDAL as a full play — worse than an error.
+
+**Required behaviour:**
+
+- Treat `assetPresentation != FULL` as its own playback outcome with its own UI state — not a generic
+  error and not silently played as if full.
+- Suppress play-reporting for a preview: it must never cross the 30-second "counts as a stream"
+  threshold as if it were the real track.
+- Surface `previewReason` verbatim (`SUBSCRIPTION` / `PURCHASE` / `HIGHER_ACCESS_TIER`) — each implies
+  a different corrective action (upgrade plan / buy the track / raise quality tier). Only the exact UI
+  copy per reason remains genuinely open.
+
+## 14. `countryCode` provenance and its diagnostic implication
+
+§2's canonical v1 URL includes `countryCode`, and Sone passes it explicitly
+(`ref:sone/src-tauri/src/tidal_api.rs:3665`) — but python-tidal's `get_stream` sends only
+`playbackmode`/`audioquality`/`assetpresentation`; `countryCode` is injected by its request layer
+from the **session**, not passed per call site. A client that omits it, sends a stale value, or
+derives it from OS/browser locale instead of the account's actual country gets region-limited
+results that surface as sub-status 4032/4035 (`PEContentNotAvailableInLocation`, §7) — which is
+**terminal**, i.e. "skip this track, don't retry." **A misconfigured `countryCode` therefore looks
+identical to "the whole catalogue is region-locked."** Specify `countryCode`'s provenance as the
+session/user profile (never OS/browser locale), inject it once in the request layer rather than per
+call site, and add a diagnostic that distinguishes "this specific track is genuinely region-locked"
+from "our `countryCode` is wrong" before treating 4032/4035 as unconditionally terminal.
+
+## 15. Streaming-privileges WebSocket reconnect policy
+
+§8 gives the message vocabulary (`POST /v1/rt/connect` → WebSocket URL,
+`PRIVILEGED_SESSION_NOTIFICATION`, `RECONNECT`, `USER_ACTION`) but not a reconnect policy — and
+getting this wrong is maximally user-visible: either streamboat silently loses the stream to another
+device with no message, or it fights another device for the privilege in a loop. Full detail lives in
+the `headless-and-tidal-connect` skill (the Pushkin protocol is core to that skill's territory); the
+three rules to know here: `USER_ACTION` is sent only on an explicit user-initiated play, never on
+autoplay or a gapless track advance; on `RECONNECT`, re-fetch the WebSocket URL from a fresh
+`POST /v1/rt/connect` rather than reusing the old one (the URL is issued per-connect, not guaranteed
+stable); and a dropped socket must never, by itself, stop playback — it degrades to "cannot confirm
+we still hold the privilege," not "stop."
+
+## 16. Capture real TIDAL manifest fixtures — do this before writing a parser
+
+No captured TIDAL MPD or BTS response exists anywhere in the 21 reference checkouts — every DASH
+structural claim in §4 (single-Period/AdaptationSet/Representation, the literal
+`AdaptationSet@mimeType` value, the absence of `startNumber`, `Representation@id` shape) is
+parser-derived, not observed. That is exactly why python-tidal and tidal-cli can disagree about
+segment numbering with neither demonstrably wrong. **Make this the first engineering task, ahead of
+any parser code:** on first successful login, dump one BTS and one DASH manifest per tier
+(`LOW`/`HIGH`/`LOSSLESS`/`HI_RES_LOSSLESS`) plus one Dolby Atmos and one `PREVIEW`-asset response to
+`tests/fixtures/`, redact the CDN tokens, and drive every parser test off them from day one. One step
+converts §4's `startNumber`/`@r`/`mimeType` open questions from open to closed and gives CI something
+concrete to fail on when TIDAL changes its manifest shape.

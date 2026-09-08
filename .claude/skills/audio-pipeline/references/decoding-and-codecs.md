@@ -9,6 +9,7 @@ Symphonia-FLAC-in-fMP4 gap-fill in §1.4 and §9 (Design C).
 2. Decoder stacks compared, and their licences
 3. AAC patent status in 2026
 4. FFmpeg's E-AC-3/JOC decoder — what it does and doesn't do
+5. AAC-tier gapless is a different, harder, currently-unsolved problem
 
 ---
 
@@ -38,11 +39,27 @@ stated motive (`ref:sone/src-tauri/src/audio.rs:1790-1795,3302-3305`).
 
 **Debian 13 "trixie" (the base for current Raspberry Pi OS, and the brief's own headless/Pi target)
 ships `gstreamer1.0-plugins-bad` 1.26.2-3 and `gstreamer1.0` 1.26.2-2** —
-eight point releases below the 1.26.10 floor. **A GStreamer-based streamboat must use the legacy
-`dashdemux`/`uridecodebin` path (never `uridecodebin3`/`playbin3` for DASH) until its minimum
-supported GStreamer is >= 1.26.10**, which will not be true on Debian stable for the foreseeable
-future. This is also a caveat on High Tide's `playbin3` gapless design, which depends on the newer
-path being available (see `playback-behavior.md` §1).
+eight point releases below the 1.26.10 floor. **A GStreamer-based streamboat must route TIDAL's DASH
+manifests through the legacy `dashdemux` (never `dashdemux2`) until its minimum supported GStreamer
+is >= 1.26.10**, which will not be true on Debian stable for the foreseeable future. This is also a
+caveat on High Tide's `playbin3` gapless design, which depends on the newer path being available (see
+`playback-behavior.md` §1).
+
+**Correction: choosing `uridecodebin` over `uridecodebin3` does not, by itself, select the legacy
+demuxer.** Both `dashdemux` (legacy, `GST_RANK_PRIMARY`) and `dashdemux2`
+(gst-plugins-good's `adaptivedemux2`, `GST_RANK_PRIMARY + 1`) register for `application/dash+xml`;
+autoplugging picks the higher rank. On any distro that ships `adaptivedemux2` — the normal case —
+plain `uridecodebin` therefore autoplugs `dashdemux2`, not `dashdemux`, regardless of source-element
+choice. **The actual fix is a startup step**: `gst_plugin_feature_set_rank(dashdemux2_factory,
+GST_RANK_NONE)` (or raise `dashdemux`'s rank above it), or a `decodebin::autoplug-select` hook — see
+`output-backends.md` §12 for the full detail and the precedent this mirrors (Strawberry's Windows
+sink-rank demotion).
+
+**GStreamer version, corrected:** the 1.28 series (released 27 January 2026) has shipped through
+**1.28.6** (5 August 2026, the final 1.28 bug-fix release) as of this skill's last update — a prior
+pass of this report said "1.28.2/1.28.3 is current," which is stale. 1.28.6 adds FFmpeg 9.0 support,
+matching the `ffmpeg-next` 9.0.0 crate recommendation in `stacks-comparison.md`. The 1.28.3
+`devicemonitor` fix referenced throughout this skill (`os-integration.md` §3) is unaffected.
 
 ## 2. Decoder stacks compared, and their licences
 
@@ -111,6 +128,21 @@ LOSSLESS-only, never requesting `LOW`/`HIGH`. FLAC is patent-free and BSD-licens
 streamboat has no codec-licensing question at all (see the "lossless-only?" open decision in
 SKILL.md).
 
+**"Rely on system/distro codecs" is not a solved problem — it's a per-distro, per-platform gap.**
+Sone's own install instructions expose the split: Debian/Ubuntu gets `gstreamer1.0-libav` from
+`main`; **Fedora needs `gstreamer1-plugin-libav`, which lives in RPM Fusion (free), not Fedora's
+default repos** — a stock Fedora install has no AAC decoder unless the user has RPM Fusion enabled;
+Arch gets `gst-libav` (`ref:sone/README.md:283,306,345,401`). Sone's Snap build has to stage
+`libfaad*` explicitly and recreate `blas`/`lapack` `update-alternatives` symlinks "so `libgstlibav`
+(ffmpeg) can load them" — even the confined build needs deliberate, non-obvious work
+(`ref:sone/snap/snapcraft.yaml:40,127-129,153`). **On Windows the gap is total**: the one documented
+GStreamer-bundling recipe in the reference set (`output-backends.md` §11, sone-windows) ships no AAC
+decoder plugin at all — `LOW`/`HIGH` are unplayable on a shipping Windows build assembled that way
+unless an AAC decoder is deliberately added to the bundle. **Add a startup capability probe**
+(`gst::ElementFactory::find("avdec_aac")`, or a decodebin dry-run) that reports which tiers are
+actually playable on the running installation, feed it into the same transparency panel as the
+signal path, and grey out unreachable quality tiers in the UI instead of failing at play time.
+
 ## 4. FFmpeg's E-AC-3/JOC decoder — what it does and doesn't do
 
 FFmpeg's `eac3` decoder decodes the E-AC-3 core bed but **discards Dolby Atmos's JOC object
@@ -122,3 +154,22 @@ metadata** — the output is a 5.1 downmix, not object-based Atmos. Verified dir
 i.e. FFmpeg can *detect* that a stream carries Atmos, but has no object renderer, only the core-bed
 decoder. A real Atmos renderer needs a licence from Dolby. See `atmos-and-immersive.md` for the full
 feasibility discussion and recommendation (do not build it for v1).
+
+## 5. AAC-tier gapless is a different, harder, currently-unsolved problem
+
+`playback-behavior.md` §1's gapless designs all implicitly assume FLAC. FLAC has no encoder padding,
+so concatenating decoded output is exact. AAC does: every AAC-LC frame set starts with priming
+samples (2112 conventionally for AAC-LC, more for HE-AAC/SBR) and ends with trailing padding,
+signalled in fMP4 by an `elst` edit-list box and/or an iTunes `gapless` atom. Concatenating two AAC
+tracks without honouring that inserts tens of milliseconds of silence plus an audible click at every
+boundary — on the `LOW`/`HIGH` tiers, gapless silently does not work even though the code path looks
+identical to the FLAC case. **No reference client in the 21-project set handles AAC encoder-delay/
+edit-list trimming** — Sone's `concat`, High Tide's `about-to-finish`, Strawberry's `SetNextUrl`, and
+TIDAL's own 250 ms Shaka micro-crossfade all either delegate trimming to the demuxer or don't trim at
+all. Working assumptions, **none verified end-to-end**: GStreamer's `qtdemux` + `aacparse` are
+expected to apply `elst` trimming, so Sone's `concat` design is *probably* correct on AAC too but
+must be tested on a real AAC album, not assumed; libmpv/FFmpeg's `mov` demuxer applies edit lists and
+`--gapless-audio=weak` keeps the device open, so Design B is *likely* fine; Symphonia's ISO/MP4
+gapless support is explicitly "No" (§2), so Design C cannot do AAC gapless at all — one more argument
+for a lossless-only Design C variant. **Scope the gapless guarantee to the FLAC tiers explicitly;
+treat AAC-tier gapless as best-effort, and verify it per-engine before claiming it in any UI or docs.**

@@ -16,6 +16,13 @@ Full narrative: `docs/research/audio-pipeline.md` §3, plus fact-check gap-fill 
 9. Real-time thread scheduling for the writer thread
 10. Verifying bit-perfectness — a test plan
 11. Device identity and persistence across reboots/hot-plug
+12. `dashdemux2` outranks `dashdemux` by default — the rank-collision correction
+13. What a custom ALSA writer buys over plain `alsasink`
+14. Shipping GStreamer on Windows and macOS
+15. Bit-perfect through PipeWire — unresolved, and it decides Flatpak's fate
+16. Device hot-plug and removal on Windows and macOS while held exclusively
+17. Time-to-first-audio is a composed budget
+18. Bundle vs. system GStreamer — three options
 
 ---
 
@@ -52,9 +59,16 @@ Bit-perfect format selection (`pick_capsfilter_format`, lines 516-544):
 
 - `set_access(RWInterleaved)`.
 - Bit-perfect: `set_format(requested)` must succeed, no fallback ladder.
-- Bit-perfect: `set_rate_resample(false)` — **the one call that makes ALSA bit-perfect.**
+- Bit-perfect: `set_rate_resample(false)`. **Correction: this is belt-and-braces, not "the one call
+  that makes ALSA bit-perfect."** `snd_pcm_hw_params_set_rate_resample` restricts a *plugin-backed*
+  PCM's config space (the `plug`/`rate` chain); a raw `hw:CARD,DEV` PCM has none, so the call is a
+  no-op there. It matters only if streamboat ever opens `plughw:`/`default` instead of `hw:`. On
+  `hw:`, bit-perfection comes from having no conversion stage at all — **plus the next line**.
 - `set_rate(rate, Nearest)`, then read back `get_rate()` and **fail** if it differs — message:
-  "DAC doesn't support {n}kHz — turn off bit-perfect mode for compatibility".
+  "DAC doesn't support {n}kHz — turn off bit-perfect mode for compatibility". **This read-back is the
+  real guard**, and it's the actual justification for a custom writer (§13): upstream `alsasink`
+  calls `set_rate_near` but never reads the negotiated rate back, so `alsasink device=hw:X,Y` cannot
+  make this check on its own.
 - Channel negotiation falls back to `get_channels_min()` — pro USB interfaces (Focusrite, Audient)
   expose a fixed channel count and reject stereo.
 - `set_buffer_time_near(500_000)` (500 ms), `set_period_time_near(50_000)` (50 ms).
@@ -144,7 +158,9 @@ feature in the reference set.
 **PipeWire's own capabilities** (from PipeWire docs, summarized — re-check exact config keys before
 publishing): the audio adapter supports a passthrough mode with no conversions, the mechanism behind
 exclusive access; `default.clock.rate`/`default.clock.allowed-rates` control which rates the graph
-switches to; per-device `audio.format` can be pinned in WirePlumber.
+switches to; per-device `audio.format` can be pinned in WirePlumber. **This is unresolved, not merely
+unverified** — see §15 for the specific questions to check and why it decides whether the Flatpak
+build (§3) can ever offer bit-perfect output at all.
 
 ## 3. Sandbox implications (Flatpak, Snap)
 
@@ -184,9 +200,14 @@ switches to; per-device `audio.format` can be pinned in WirePlumber.
 - Device enumeration: Strawberry has `MMDeviceFinder` (wasapisink/wasapi2sink),
   `UWPDeviceFinder` (`wasapi2sink_`), `DirectSoundDeviceFinder`. sone-windows enumerates via
   GStreamer's `DeviceMonitor` filtered on `device.api ∈ {wasapi, wasapi2}`, reading `device.id`.
-- **ASIO.** Strawberry has an `AsioDeviceFinder` targeting `asiosink` — a GStreamer ASIO sink exists,
-  but no reference TIDAL client uses it. ASIO SDK redistribution carries its own Steinberg licence
-  terms `[unverified whether asiosink ships in mainstream Windows GStreamer builds]`.
+- **ASIO — settled, previously an open question.** Strawberry has an `AsioDeviceFinder` targeting
+  `asiosink` — a GStreamer ASIO sink exists, but no reference TIDAL client uses it.
+  `asiosink` **does** ship in the mainstream Windows GStreamer runtime: sone-windows's build
+  instructions bundle `gstasio.dll` straight from the official GStreamer MSVC x86_64 runtime
+  installer's own `lib/gstreamer-1.0/` directory (`ref:sone-windows/README.md:114-146`, and §14
+  below) — it is not a separately-built or third-party sink. Only the Steinberg ASIO SDK's
+  redistribution terms for whatever ASIO host component streamboat ships alongside `gstasio.dll`
+  remain genuinely open.
 - Rust crate: `wasapi` 0.24.0 (MIT) exposes exclusive-mode format probing directly for a
   non-GStreamer path.
 
@@ -383,3 +404,148 @@ starts providers async, so devices() may initially be empty"*
 stale:** GStreamer 1.28.3 changed `devicemonitor` to wait for its start thread before listing
 devices, so this poll is only needed on 1.28.0-1.28.2 — scope any copied workaround to that window,
 and subscribe to `DeviceMonitor` bus messages rather than polling as the long-term design.
+(GStreamer's current release is **1.28.6**, the final 1.28 bug-fix release, not 1.28.2/1.28.3 — see
+`decoding-and-codecs.md` §1 for the corrected version statement.)
+
+## 12. `dashdemux2` outranks `dashdemux` by default — the rank-collision correction
+
+Choosing `uridecodebin` over `uridecodebin3` (for the "legacy dashdemux, works with `data:` URIs and
+pre-1.26.10 GStreamer" reasons in `decoding-and-codecs.md` §1) does **not** by itself select the
+legacy DASH demuxer. Both elements autoplug for `application/dash+xml`; `dashdemux` (legacy,
+gst-plugins-bad) registers at `GST_RANK_PRIMARY`, while `dashdemux2`
+(gst-plugins-good's `adaptivedemux2`) registers at `GST_RANK_PRIMARY + 1` — one rank higher.
+Whenever `adaptivedemux2` is installed (the normal case on any mainstream distro, and true of
+sone-windows's own bundled plugin set — see §14), plain `uridecodebin` autoplugs `dashdemux2`, not
+the legacy element, regardless of source-element choice. **Add an explicit startup step**:
+`gst_plugin_feature_set_rank(dashdemux2_factory, GST_RANK_NONE)` (or raise `dashdemux` above it) —
+the same mechanism Strawberry already uses to prefer `directsoundsink` over `wasapisink`/
+`wasapi2sink` on Windows (§4, `ref:strawberry/src/engine/gststartup.cpp:57-77`) — or hook
+`decodebin::autoplug-select` to reject `dashdemux2` explicitly. Without this, a Debian-13/Pi build on
+GStreamer 1.26.2 (or a naive Windows bundle carrying both plugins) autoplugs `dashdemux2` and fails
+on FLAC-in-DASH no matter which `uridecodebin` variant is used.
+
+## 13. What a custom ALSA writer buys over plain `alsasink`
+
+§1 presents Sone's ~500-line ALSA writer as the way to be bit-perfect on Linux, while Strawberry gets
+exclusive/bit-perfect output from plain `alsasink device=hw:X,Y` with **no custom writer at all**.
+The delta, read from upstream `gst-plugins-base/ext/alsa/gstalsasink.c`:
+
+**Already handled by `alsasink` — not a reason to avoid it:** format negotiation from caps; period/
+buffer time negotiation; and the `sw_params` fix §1/§9 credit to a custom writer —
+`alsasink` computes `start_threshold = (buffer_size / avail_min) * avail_min` and calls
+`set_avail_min` itself.
+
+**Not handled by `alsasink` — the real reasons to own a writer:** (1) no rate read-back (§1's
+correction above) — `alsasink` calls `set_rate_near` but never compares the negotiated rate to the
+request, so there's no hook for "DAC doesn't support 192kHz"; (2) no per-format/per-rate probing
+ladder, so no lossless-narrowest-promotion policy; (3) no `set_rate_resample(false)` call anywhere in
+the file — a `plughw:`/`default` fallback resamples silently instead of failing explicitly;
+(4) no `snd_pcm_hw_params_get_sbits()` read-back for reporting true significant bit depth (tidalt
+does this, §1); (5) no hook for tidalt's period-before-buffer ordering for DACs with buggy
+`period_size_min`; (6) no `snd_pcm_delay()` position correction (§8); (7) no in-writer per-format PCM
+volume for exclusive-but-not-bit-perfect mode.
+
+**Recommendation:** start Linux output with `alsasink device=hw:` + a `capsfilter` and the
+`/proc/asound`-reading transparency panel (§2), and treat the custom writer as a justified
+second-stage upgrade for items (1), (2), (6) specifically — not unconditional day-one work.
+
+## 14. Shipping GStreamer on Windows and macOS
+
+**Windows has a complete, documented recipe** — the only one in the reference set. sone-windows:
+install the official GStreamer MSVC x86_64 runtime + devel MSIs, copy a hand-picked subset into
+`src-tauri/gstreamer-runtime/`, run `node scripts/prepare-gstreamer.js`, which generates
+`gstreamer-hooks.nsi` (NSIS) and `gstreamer-fragment.wxs` (WiX) so both installer formats carry it —
+roughly 20 MB total (`ref:sone-windows/README.md:95-155`). Bundled plugins: `gstadaptivedemux2`,
+`gstasio`, `gstaudioconvert`, `gstaudioparsers`, `gstaudioresample`, `gstcoreelements`, `gstdash`,
+`gstdecklink`, `gstflac`, `gstisomp4`, `gstplayback`, `gstsoup`, `gsttypefindfunctions`, `gstvolume`,
+`gstwasapi2`, `gstwinks`, plus `lib/gio/modules/gioopenssl.dll` — documented as *"essential for
+secure HTTPS connection to TIDAL"*; without it `souphttpsrc` cannot do TLS and every stream fails,
+making that one DLL load-bearing for the whole pipeline.
+
+**Two consequences worth acting on:** (a) **no AAC decoder is in that plugin list** — no `gst-libav`,
+no `faad` — so a Windows build assembled this way plays only the FLAC tiers; `LOW`/`HIGH` need an AAC
+decoder deliberately added (see `decoding-and-codecs.md` §2's AAC-availability finding, which also
+covers Fedora's parallel gap); (b) **both `gstdash.dll` (legacy) and `gstadaptivedemux2.dll`
+(containing `dashdemux2`) are bundled together** — exactly the §12 rank-collision situation, so the
+Windows build needs the same rank-demotion startup step, not only Linux.
+
+**No equivalent recipe exists for macOS anywhere in the reference set** — no reference client ships
+GStreamer on macOS at all. Cost and schedule Design A's macOS packaging (a `GStreamer.framework` or
+private dylib tree, universal arm64+x86_64, notarization of ~30 unsigned dylibs,
+`GST_PLUGIN_SYSTEM_PATH` set inside the `.app` bundle) as **unproven**, not as "needs shipping the
+plugin set" — that phrasing understates the risk relative to the documented Windows path.
+
+## 15. Bit-perfect through PipeWire — unresolved, and it decides Flatpak's fate
+
+§3's Flatpak conclusion (no `/dev/snd` without `--device=all`, grey the toggle out) assumes raw
+device grab is the only path to bit-perfect output. If PipeWire-native bit-perfect is good enough,
+the Flatpak build keeps the feature via `--filesystem=xdg-run/pipewire-0`, already granted in High
+Tide's manifest. **This could not be resolved in this research pass** — `docs.pipewire.org` is
+blocked from the environment, and web search returned only forum-level material
+(`bbs.archlinux.org/viewtopic.php?id=290859`, "[SOLVED] Get bit-perfect audio with PipeWire"). Before
+treating the Flatpak grey-out as final, check
+`docs.pipewire.org/page_man_pipewire-props_7.html` (`audio.format`, `audio.rate`, `audio.channels`,
+`api.alsa.disable-mixer`, `api.alsa.period-size`, `api.alsa.headroom`),
+`docs.pipewire.org/page_man_pipewire_conf_5.html` (`default.clock.rate`,
+`default.clock.allowed-rates`), and the WirePlumber 0.5 device-config docs, and answer three
+questions: (a) does the graph convert everything to F32 before the sink, and does an S24 stream
+survive bit-exactly (F32's 24-bit mantissa preserves it; true S32 does not)? (b) does a stream whose
+format/rate exactly match the sink node bypass the resampler and volume stage, and how does a client
+force that (`node.lock-quantum`, `node.dont-remix`, per-device `audio.format`/`audio.rate` in
+WirePlumber)? (c) does `default.clock.allowed-rates` need pre-populating with the full rate set for
+per-track rate-following — i.e. is this a user/distro config step streamboat must document, not
+something the app can request at runtime? Two facts elsewhere in this skill bear on the answer: High
+Tide disables gapless entirely on `pipewiresink` for an unexplained reason
+(`playback-behavior.md` §1); mpv's `pipewire` AO accepts `--audio-exclusive=yes` (§6) — which, if it
+means what it says, is a documented PipeWire exclusive path Design B may get for free inside Flatpak.
+
+## 16. Device hot-plug and removal on Windows and macOS while held exclusively
+
+§11 covers Linux device identity/hot-plug in detail; Windows and macOS are uncovered, and **device
+removal while a device is held exclusively** is uncovered on every platform. Unplugging a USB DAC
+mid-track is routine and, in exclusive mode, is a hard failure that must become a clean, recoverable
+state, not a crash. **No reference client handles this on Windows or macOS** (Sone's `ENODEV`
+teardown, §11, is the only handling anywhere in the set) — write it from platform APIs directly:
+
+- **Windows:** register an `IMMNotificationClient` on `IMMDeviceEnumerator` for
+  `OnDeviceStateChanged`, `OnDeviceRemoved`, `OnDeviceAdded`, `OnDefaultDeviceChanged`. A removed or
+  invalidated endpoint surfaces on the render client as `AUDCLNT_E_DEVICE_INVALIDATED` from
+  `GetBuffer`/`ReleaseBuffer` — not in §4's failure-state list — and needs a full
+  stop-release-reacquire cycle, not a retry.
+- **macOS:** add a property listener on `kAudioHardwarePropertyDevices` (add/remove) and on
+  `kAudioObjectPropertyDeviceIsAlive`/`kAudioHardwarePropertyDefaultOutputDevice` for the held
+  device. Release hog mode explicitly on device loss or it can leak; CamillaDSP's BlackHole warning
+  (§5) applies to anyone routing through Loopback/Soundflower too.
+- Tie both to §11: the reconnect path resolves the *persisted stable device id*, and re-opens only if
+  it is the same device — never silently fall back to `default`.
+
+## 17. Time-to-first-audio is a composed budget
+
+"Press play, hear music" is the most-felt performance characteristic, and the exclusive/bit-perfect
+path has several genuinely serial steps this skill documents individually but never sums. Composed:
+manifest resolution (1 RTT on v2, up to four sequential requests on the v1 cascade — see
+`tidal-manifest-api.md` §7); the `ReserveDevice1` handshake budget, `500 + 200 + 800 ms = 1.5 s`
+(§2); the ALSA/WASAPI/CoreAudio device open, including macOS's asynchronous
+`kAudioDevicePropertyNominalSampleRate` wait (§5); CDN connect + init segment + first media segment;
+`start_threshold` = the full ~500 ms ALSA buffer before sound starts (§1). Serially, that's
+comfortably 2-3 seconds. **The fix is architectural:** device reservation and open depend only on the
+*chosen device*, not the track — run them **concurrently** with manifest resolution, even starting at
+app launch or on device selection. Lower `start_threshold` for the very first buffer of a session and
+raise it back to steady-state after. Design the device state machine with `Resolving` and
+`Reserving`/`Open(fmt)` as genuinely parallel states, not sequential ones. Add an explicit, testable
+budget to the spec (e.g. under 500 ms warm, under 1.5 s cold).
+
+## 18. Bundle vs. system GStreamer — three options
+
+Two hard version floors exist: >= 1.26.10 for FLAC-in-DASH, >= 1.28 for `wasapi2sink exclusive`
+(`decoding-and-codecs.md` §1, §4 above). Debian/Raspberry Pi OS ships 1.26.2 — below both. That only
+forces the §12 rank-demotion workaround if streamboat links the **system** GStreamer; Windows/macOS
+must bundle regardless (§14), so the floors are free there. Three options: **(1) system GStreamer on
+Linux, bundled elsewhere** — cheapest Linux packaging, forces §12's workaround, gives Linux the worst
+FLAC-in-DASH story of the three desktop platforms. **(2) bundled GStreamer everywhere** (Flatpak with
+a pinned `org.freedesktop.Platform` + GStreamer module, or an AppImage) — uniform behaviour, meets
+both floors, costs ~20 MB per platform (§14) plus owning security updates for a media stack.
+**(3) libmpv (Design B)** — the whole question collapses: FFmpeg's DASH path has no 1.26.10-equivalent
+floor and `--audio-exclusive` needs no 1.28-equivalent floor, an argument for Design B worth weighing
+against Design A's version-floor cost. Flatpak makes option (2) cheap on Linux and is the same
+channel §15's PipeWire question may keep bit-perfect alive under — decide the two together.

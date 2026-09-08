@@ -13,6 +13,9 @@
 - §9 Mobile: the app crate must be a library from day one
 - §10 IPC has a large-library data-path trap
 - §11 WebKitGTK divergence catalog
+- §12 Binary size / RAM / startup: the levers, since the brief named this criterion
+- §13 Day-1 developer-environment cost, and one Windows trip hazard
+- §14 Workspace mechanics: `rust-toolchain.toml`, the pnpm+cargo coexistence, GStreamer version drift
 
 These are the facts an implementer hits in roughly the first week of a Tauri 2 + Rust + React
 project, gathered because `docs/research/tech-stack.md`'s original pass under-covered them (they
@@ -161,7 +164,7 @@ Source: `https://raw.githubusercontent.com/tauri-apps/tauri-docs/v2/src/content/
 ## §9 Mobile: the app crate must be a library from day one
 
 The concrete shape "do not preclude mobile" implies, and it is cheap now, expensive to retrofit after
-~85 components exist:
+~100 component files exist:
 
 ```toml
 [lib]
@@ -219,3 +222,70 @@ effects; treat `backdrop-filter`, heavy CSS animation, and SVG presentation attr
 add a manual three-webview visual pass to the release checklist, since `tauri-driver` cannot drive
 WKWebView on macOS (Windows+Linux only — no WebDriver tool exists for WKWebView; WebdriverIO's Tauri
 service covers macOS by running an embedded WebDriver server inside the app instead).
+
+## §12 Binary size / RAM / startup: the levers, since the brief named this criterion
+
+**Gap identified during fact-checking: the main report's scoring matrix drops this criterion
+entirely** — no candidate is scored on it beyond a disclaimer that circulating Tauri-vs-Electron
+numbers (75% less RAM, 20-50× smaller bundles, 3.7× faster startup) are SEO-blog sourced, not a
+reproducible benchmark. Direct artefact measurement was not possible in this research environment
+(`api.github.com` is blocked for repos outside this session). What can be stated without a benchmark:
+
+- **SONE ships no `[profile.release]` section and no `rust-toolchain.toml` at all**
+  (`ref:sone/src-tauri/Cargo.toml`, checked 2026-09-07) — its own release artefacts are unoptimised
+  defaults, not a size datum for a tuned build.
+- Tauri documents the actual `[profile.release]` levers:
+  `codegen-units = 1`, `lto = true`, `opt-level = "s"` (or `"3"` for a speed preference),
+  `panic = "abort"`, `strip = true`, `incremental = true`; on nightly additionally
+  `trim-paths = "all"` and `rustflags = ["-Cdebuginfo=0", "-Zthreads=8"]`
+  (`https://raw.githubusercontent.com/tauri-apps/tauri-docs/v2/src/content/docs/concept/size.mdx`,
+  fetched 2026-09-08). **`panic = "abort"` needs a deliberate decision for a long-running daemon** that
+  may want to catch a panicking decoder thread rather than take the whole process down — do not adopt
+  it mechanically.
+- The size levers this skill already documents but never totals: WebView2 `fixedVersion` (+~180 MB)
+  vs. `downloadBootstrapper` (+0 MB, §5 above), `appimage.bundleMediaFramework: true` pulling all of
+  GStreamer into the AppImage, and shipping the GStreamer runtime as an MSI on Windows. In practice
+  **the GStreamer runtime, not the UI toolkit, likely dominates installed size on Windows/macOS.**
+
+If the owner wants real numbers, measure SONE/Museeks/tidal-hifi release assets on a machine with
+GitHub access, and add this as a scored criterion (even 3-5 points, redistributed from Effort or
+Cross-platform) rather than leaving it dropped.
+
+## §13 Day-1 developer-environment cost, and one Windows trip hazard
+
+**Gap identified during fact-checking: "Effort to MVP" never prices getting the toolchain running on
+three OSes.** From Tauri's own prerequisites page
+(`https://raw.githubusercontent.com/tauri-apps/tauri-docs/v2/src/content/docs/start/prerequisites.mdx`,
+fetched 2026-09-08):
+
+- **Linux**: `libwebkit2gtk-4.1-dev` plus `build-essential`, `curl`, `wget`, `file`, `libxdo-dev`,
+  `libssl-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev` (Arch: `webkit2gtk-4.1`,
+  `appmenu-gtk-module`, `libappindicator-gtk3`, `librsvg`, `xdotool`; Fedora: `webkit2gtk4.1-devel`,
+  `libappindicator-gtk3-devel`, `libxdo-devel`, plus the C-development group). This confirms Tauri 2
+  on Linux hosts a **GTK3** window (`libayatana-appindicator3`, `libgtk-3-0` also in SONE's deb
+  `depends`) with **WebKitGTK 4.1**, not GTK4 — worth remembering wherever HiDPI/fractional scaling or
+  Linux look-and-feel comes up.
+- **Windows**: Microsoft C++ Build Tools with "Desktop development with C++", WebView2 (preinstalled
+  on Windows 10 1803+), **and the VBSCRIPT optional Windows feature, which is "only required for MSI
+  installer packages"** — an easy silent-failure point on a hardened image or a CI runner building the
+  `msi` target.
+- **macOS**: Xcode Command Line Tools for desktop-only work, but a **full Xcode install for iOS
+  development**.
+
+Add the GStreamer devel packages on top of all three (see `references/packaging-and-policy.md` §1).
+
+## §14 Workspace mechanics: `rust-toolchain.toml`, the pnpm+cargo coexistence, GStreamer version drift
+
+**Gap identified during fact-checking: `references/architecture-shapes.md` §1's layout stops at
+directory names.** Before ~100 component files exist, pin the mechanics:
+
+- Decide explicitly whether `desktop/src-tauri` is a member of the root Cargo workspace or a nested
+  one.
+- SONE has a root `pnpm-workspace.yaml` sitting next to `src-tauri/` with **no `rust-toolchain.toml`
+  at all** — a reproducibility gap worth avoiding, not a pattern to copy. It matters concretely here
+  because the recommended `gstreamer` 0.25.3 needs MSRV 1.92/edition 2024 while `tauri` 2.11.x
+  declares MSRV 1.77.2: **pin the toolchain explicitly in `rust-toolchain.toml` from day one.**
+- Corpus consequence of picking `gstreamer` 0.25 over SONE's pinned 0.23: SONE is the codebase an
+  agent will most often be asked to imitate, so expect agent-suggested GStreamer code to target the
+  slightly older 0.23 API even once the project is on 0.25 — see
+  `references/audio-engine-comparison.md` §3, item 3.

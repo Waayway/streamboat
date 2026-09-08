@@ -42,10 +42,23 @@ licenses, and clone context: `references/sources.md`.
   `references/daemon-architecture.md` §1.
 - **Every listener defaults to loopback.** LAN exposure is a deliberate, logged, token-protected
   choice, never the default. A URL-path token is for machine/script clients only; a browser-facing
-  remote gets a cookie exchange instead. `references/daemon-architecture.md` §3.
+  remote gets a cookie exchange instead. Loopback binding alone does not stop DNS rebinding — pair it
+  with Host-header allowlisting. `references/daemon-architecture.md` §3.
 - **Never redistribute a vendor's proprietary binary or device certificate, and never decrypt or
   circumvent DRM/security tech** — consistent with the `tidal-api` skill's DRM-refusal rule. This
   covers the Connect binary/certificate specifically, but is the same policy line.
+- **One TIDAL account = one concurrent stream, enforced by Pushkin — this decides the multiroom
+  architecture, not just a login detail.** Multiroom cannot be "one streamboat daemon per room": it
+  must be one daemon holding the single stream and fanning decoded PCM out to many endpoints
+  (Snapcast today, a Sendspin source later). A multi-subscriber household runs multiple independent
+  daemon *instances* (one per account), never one daemon switching accounts per connection.
+  `references/daemon-architecture.md` §6; `references/mpd-and-multiroom.md` §2.
+- **"One binary with subcommands" describes the command surface, not the build.** Compile it as two
+  Cargo artifacts from one workspace: a GUI binary that links the webview, and a `streamboatd` that
+  must not — enforced by a CI job building the daemon crate alone in a GTK/WebKit-free container. See
+  `docs/research/tech-stack.md:122,505-508` (the `tech-stack-evaluation` skill owns this decision; this
+  skill only flags that a headless implementer must not accidentally pull in Tauri/WebKitGTK).
+  `references/daemon-architecture.md` §1.
 
 ## Facts that cause silent bugs or bad defaults if you get them wrong
 
@@ -65,6 +78,19 @@ licenses, and clone context: `references/sources.md`.
 | 12 | python-tidal's refresh token is **never rotated** on `token_refresh()` — only `access_token`/`expiry_time`/`token_type` change. Two processes (a GUI and a daemon) holding the same refresh token do not invalidate each other. | Decide explicitly whether the GUI and daemon share one token file (with an advisory lock) or log in separately with distinct `client_id`s — don't leave it to accident. `references/daemon-architecture.md` §5. |
 | 13 | Google Cast's own FLAC ceiling (≤96 kHz/24-bit; 24-bit at 176.4/192 kHz can hang a Chromecast Audio) settles the "build a Cast sender" question on quality grounds alone, independent of the URL/DRM argument already in the report. | Don't reopen "should we build a Chromecast sender" without this fact — it caps streamboat *below* its own headless daemon, the same problem as Connect. `references/mpd-and-multiroom.md` §5. |
 | 14 | mopidy-tidal's headless-login "login hack" QR code is rendered by a **third-party remote service** (`api.qrserver.com`), which fails offline/firewalled — exactly the deployment the feature exists for. | Generate any login QR locally (terminal or in-band), following `ref:tidalt`'s `qrterminal/v3` approach, not mopidy-tidal's hotlink. `references/headless-daemon-precedents.md` §1. |
+| 15 | **TIDAL has an officially documented server-side play queue** — `/playQueues` on `openapi.tidal.com/v2`, in all three official SDKs — that earlier research wrongly called "undocumented, absent from every SDK". | Do not build a custom cloud-queue mechanism without checking this first. It maps closely onto the desktop client's `cloudQueue` model, but lives behind PKCE `r_usr`/`w_usr` scopes — a different auth stack from the unofficial v1 API the rest of streamboat uses. The `cloudConnect` wire *transport* is still genuinely undocumented; only the queue *resource* is not. `references/tidal-connect.md` §4; `references/daemon-architecture.md` §7. |
+| 16 | Pushkin's reference client (the official web SDK) reconnects with **no backoff, no jitter, no cap**, re-`POST`ing `/rt/connect` every time — copying it verbatim into a long-running daemon will hot-loop authenticated API calls while offline. | Add exponential backoff with jitter and a ceiling; trigger a Pushkin reconnect explicitly on token refresh (`Pushkin.refresh()`); never auto-retry `USER_ACTION` after a `PRIVILEGED_SESSION_NOTIFICATION` displacement. `references/daemon-architecture.md` §6. |
+| 17 | MPRIS and D-Bus device reservation (`ReserveDevice1`) both need a D-Bus **session** bus, which a true headless deployment (system unit, no login session) does not have — both silently fail, not error. | `systemd --user` + `loginctl enable-linger` gets a session bus even headless; otherwise use `--dbus-type system`-style config with a D-Bus policy file, or make MPRIS/reservation registration non-fatal. `references/daemon-architecture.md` §2. |
+| 18 | tidal-hifi — the precedent this project's own API naming is modelled on — ships its control API **enabled by default, on `127.0.0.1:47836`, with no authentication of any kind**. Copying the naming without rejecting the posture ships an unauthenticated control surface by default. | streamboat's control API must be disabled by default, or enabled with a token required from first boot — never open-and-unauthenticated. `references/daemon-architecture.md` §3. |
+| 19 | ncspot's same-host IPC socket is **Unix-only** — no Windows named-pipe variant exists in the reference implementation, contrary to an earlier draft of this research. | Cite ncspot only for the Unix-socket half; the Windows named-pipe half (via the `interprocess` crate) is unvalidated and needs its own testing, not an assumed-equivalent precedent. `references/daemon-architecture.md` §2. |
+| 20 | An MPD-subset listener bound loopback-only cannot deliver the headline benefit ("MALP/phone clients work day one") — a phone needs LAN reach, and loopback plus a Unix socket don't provide it. | Pick one default deliberately: loopback/`local_permissions` (hardened, no phone control) or LAN-bound `host_permissions "<CIDR> read,control"` (no shared password, but MPD traffic is always unencrypted — a lower trust tier than the token-authenticated HTTP API). Don't present both as "the default" at once. `references/mpd-and-multiroom.md` §1. |
+| 21 | macOS 15+ requires `NSLocalNetworkUsageDescription` for any mDNS/LAN-connection code, or discovery silently returns nothing with no error — easily misread as "streamboat's discovery is broken". | Wire the key into the Tauri macOS bundle's `Info.plist`; render an explicit "local network permission denied" UI state; the future iOS app needs the same key plus `NSBonjourServices`. `references/daemon-architecture.md` §3. |
+| 22 | A Windows service (session 0) has no default audio session — and there is **no precedent anywhere in the reference set** for a Windows service that opens an audio device; even snapclient (widely deployed) ships no Windows service mode at all, only a foreground app / third-party tray app. | Treat "headless" as a Linux/server story; on Windows/macOS ship a GUI with a background/tray autostart mode, not a true service, unless the WASAPI-in-session-0 spike proves otherwise. `references/daemon-architecture.md` §1. |
+| 23 | A `systemd --user` unit template copied from a desktop precedent (e.g. tidalt's) is `graphical-session.target`-bound and has no `RuntimeDirectory`/`StateDirectory`/hardening — it will not start as a headless system service, and `PrivateTmp=yes` hardening silently breaks a classic `/tmp/snapfifo` Snapcast pipe. | For a system unit: `RuntimeDirectory=streamboat` (socket), `StateDirectory=streamboat` (queue/tokens), `ConfigurationDirectory=streamboat`, `SupplementaryGroups=audio`, `After=network-online.target time-sync.target`; document the `PrivateTmp`/pipe interaction explicitly rather than let a packager discover it. `references/daemon-architecture.md` §4. |
+| 24 | A bit-perfect output policy means no resampling and no software attenuation — but MPRIS `Volume`, MPD `setvol`/`getvol`, and `PUT /player/volume` all still expose a slider. An implementer not told what the slider does in that mode will either silently break bit-perfection or silently no-op the remote. | Expose a `volume: hardware \| software \| none` capability in `GET /health` and make every surface (MPRIS `CanControl`, MPD's `volume: -1`/`getvol`, the HTTP endpoint) derive from that one value instead of guessing independently. `references/daemon-architecture.md` §3; `references/mpd-and-multiroom.md` §1. |
+| 25 | `streamboat play <url>` does nothing when clicked from a browser or another app until the OS URL scheme is registered — this is a separate step from the deep-link *forwarding* code. | Linux: a `.desktop` file with `MimeType=x-scheme-handler/tidal;` + `xdg-mime default … x-scheme-handler/tidal`. Windows: `HKCU\Software\Classes\tidal` + `shell\open\command`. macOS: `CFBundleURLTypes`. Decide separately, and default to **off**, whether streamboat also claims `https://tidal.com/...` (it steals ordinary web links from the browser if it does). `references/daemon-architecture.md` §2. |
+| 26 | `tidal-cli`'s manifest-format list (`formats: […]`) is not a fixed 4-element array — it is a quality-dependent cascade (`LOW`→1 value … `HI_RES`→4 values). Treating it as fixed produces silent quality-selection bugs if the shape is copied for streamboat's own manifest calls. | Model streamboat's own quality→format mapping as an explicit per-tier list, not a single constant array. `references/headless-daemon-precedents.md` §6. |
+| 27 | Raspberry Pi Wi-Fi defaults to `power_save` on, a documented cause of audio dropouts; USB DAC dropouts on Pi are a known kernel/USB-scheduling issue class, not necessarily a streamboat bug. | `streamboat doctor` should check `iw dev wlan0 get power_save` and warn; document `raspberrypi/linux#2215` as a known external issue class; fall back to a larger ALSA period size on repeated USB dropouts. `references/raspberry-pi-deployment.md` §1. |
 
 ## Where to go for depth
 
@@ -83,7 +109,11 @@ Build the daemon protocol once, expose it through as many pre-existing client ec
 as possible, and never touch TIDAL Connect. In order:
 
 1. **Core split**: `streamboat-core` (auth, catalogue, queue, player engine, output backends
-   including a **pipe** backend, Pushkin client). No UI, no server.
+   including a **pipe** backend, Pushkin client). No UI, no server. Evaluate `ref:tidalrs`
+   (a maintained Rust TIDAL client crate with device-code OAuth2 and an
+   `on_authz_refresh_callback` hook) as a reference for the token-refresh loop before writing one
+   from scratch. Compile as two Cargo build artifacts (GUI-linked, and a webview-free
+   `streamboatd`), not one — see the build-artifact note in Owner decisions above.
 2. **One binary, two modes**: `streamboat`, `streamboat daemon`, `streamboat play <url>`,
    `streamboat service install`; single-instance detection, second invocation becomes a client.
 3. **OS media integration**: MPRIS2 on Linux (now including `TrackList`/`Playlists`), SMTC/Now
@@ -145,6 +175,22 @@ Only the owner (thijs) can resolve these — do not assume an answer when writin
    ship vendor credentials" stance. `references/tidal-connect.md` §5.
 9. **Additive-and-tolerant (MPD-style `commands`/`protocol enable`) vs. exact-match (Sendspin-style)
    versioning** for streamboat's own control API. `references/daemon-architecture.md` §4.
+10. **Does the desktop GUI itself host the control API**, so a phone can control the desktop app
+    directly (not only a headless daemon)? Falls out for free from "the GUI has no private path into
+    the engine" if yes — but the desktop build then inherits the token, loopback-default,
+    connection-cap and macOS Local Network requirements a pure daemon needs.
+    `references/daemon-architecture.md` §3.
+11. **Remote control from outside the LAN**: LAN-only + a documented tunnel (WireGuard/Tailscale/SSH),
+    a NAT-traversing peer connection (WebRTC, Music Assistant's choice for Sendspin remote), or a
+    hosted relay. Every pairing/token design in this skill currently assumes "never needed" by
+    omission, not by decision. `references/daemon-architecture.md` §3.
+12. **Does streamboat report plays back to TIDAL** ("Recently Played", My Mixes, artist payouts) from
+    the headless daemon? No headless precedent in the reference set does this — silently empty
+    listening history is the default outcome if this isn't decided. Cross-reference the `tidal-api`
+    and `tidal-client-features` skills. `references/daemon-architecture.md` §6.
+13. **Whether a `/playQueues` queue written through the official PKCE API is visible to the
+    unofficial-API session the rest of streamboat uses**, and whether the two logins can be merged
+    into one UX. `references/tidal-connect.md` §4.
 
 ## Unverified — do not present these as settled fact in specs or code comments
 
@@ -154,8 +200,17 @@ Only the owner (thijs) can resolve these — do not assume an answer when writin
 - **Whether the Connect control channel really is JSON-over-WebSocket** resembling the Cast media
   namespace — inferred from `websocketpp` in the binary's licence folder plus Cast-shaped client
   types, with no wire capture. `references/tidal-connect.md` §4.
-- **`cloudQueue`/`cloudConnect` endpoints** — present in the desktop client's action set, absent
-  from every official SDK and every open client. `references/tidal-connect.md` §4.
+- **The `cloudConnect` wire *transport* and the desktop client's `etag`/`itemsEtag` concurrency
+  fields.** Still genuinely undocumented. **Not unverified**: the underlying server-side queue
+  *resource* — `/playQueues` — is officially documented (trap #15 above); don't re-flag that half as
+  a gap. `references/tidal-connect.md` §4.
+- **Google Cast's exact FLAC quality ceiling** (≤96 kHz/24-bit, cited elsewhere in this project's
+  research). Sourced only via a search-index summary of `developers.google.com`, which is blocked
+  from this research environment — re-verify before quoting a specific number; it does not change the
+  recommendation to skip a Cast sender in v1. `references/mpd-and-multiroom.md` §5.
+- **Whether a Windows service can open WASAPI output in session 0**, and whether `streamboat service
+  install` should exist on Windows at all — `references/daemon-architecture.md` §1 now also carries
+  the concrete non-service fallback (snapclient's tray-app precedent) to use while this stays open.
 - **The exact MPD command list Nuclear implements** — its docs site is blocked from this
   environment; port-fallback behaviour (6600→6601-6609) came from a search-index summary and needs
   re-verification. (The core MPD *protocol* facts are separately confirmed against the primary spec

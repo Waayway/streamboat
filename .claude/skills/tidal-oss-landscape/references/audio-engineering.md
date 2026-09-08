@@ -89,6 +89,19 @@ attempted — prototype it before it becomes a design commitment, because there 
 either way for how cleanly `concat` and a raw ALSA writer negotiate a format change across a
 track boundary.
 
+**Seeking is the transport operation most likely to break gapless — not covered above, and not
+covered anywhere in the original version of this file.** On GStreamer 1.24.2, a
+`seek_simple(FLUSH|KEY_UNIT)` forwards `FLUSH_START`/`FLUSH_STOP` and the new `SEGMENT` only to
+`concat`'s **active** sink pad — the inactive prerolled next-track branch sees no flush events,
+stays linked and `PLAYING`, and `concat` still switches to it correctly at the active branch's
+EOS (`ref:sone/src-tauri/src/audio.rs:2307-2365`). **A seek must not detach the armed next-track
+slot** — Sone tried that once and it destroyed a valid preroll on every seek. On the `DirectAlsa`
+path a seek also bumps generation counters (dropping in-flight stale PCM chunks) and re-bases
+`frames_written` from `position_secs * current_sample_rate` — position on the bit-perfect path is
+derived from frames actually written to the PCM device, not a GStreamer position query. Full
+detail and the frontend gapless-*arming* policy (a separate, entirely undocumented-elsewhere
+problem — when to call into this machinery at all) are in `sone-deep-dive.md` §3a/§3b.
+
 ## 3. DASH-specific caps handling in the bit-perfect path
 
 Source: `ref:sone/src-tauri/src/audio.rs:2844-3000` (appsink pipeline construction).
@@ -175,8 +188,13 @@ Source: `ref:tidalt/internal/player/{mpv.go,alsa_fallback_test.go}`. Sone does n
 these; both are worth adding on top of Sone's negotiation logic (§1) if streamboat ports it:
 
 1. **PipeWire device reservation**: acquire `org.freedesktop.ReserveDevice1.Audio<N>` over D-Bus
-   before opening `hw:` exclusively, and release it on stop. Without this, streamboat and any
-   PipeWire-routed application fight over the same device with no coordination.
+   before opening `hw:` exclusively, and **release it on pause, not only on stop**
+   (`ref:tidalt/README.md:12`: "holds exclusive access to the audio device only while a track is
+   actually playing — releasing it on pause so other applications can use it freely" — an earlier
+   draft of this file said "release on stop," which is the less cooperative, incorrect version).
+   Without this, streamboat and any PipeWire-routed application fight over the same device with no
+   coordination, and "release on stop only" makes exclusive mode annoying to run on a
+   general-purpose desktop where pausing to let something else make a sound is routine.
 2. **Distinguish two ALSA failure modes, and memoize the verdict per device**: a
    format-negotiation refusal (fall back to `plughw:`, and honestly report the session as *not*
    bit-perfect) is a fundamentally different failure from a device-busy error (keep retrying
@@ -184,6 +202,15 @@ these; both are worth adding on top of Sone's negotiation logic (§1) if streamb
    permanently drop to `plughw:` on a transient busy error. tidalt's format preference is also
    source-dependent: for 16-bit sources, prefer `S32_LE > S16_LE > S24_3LE > S24_LE` (S32 first
    because of a specific Hidizs USB DAC issue); for 24-bit sources, `S24_3LE > S24_LE > S32_LE`.
+
+**Combine with device hot-plug/busy/lost handling from the other two GUI clients — no single
+project has the complete policy.** Sone has a device-busy retry loop on the exclusive path (its
+own comment: `isPlaying` "flickers false during device-busy retries", which is why gapless-arming
+must not gate on it — `sone-deep-dive.md` §3b) and caches the device list in `AppState` with no
+documented hot-plug invalidation. High Tide toasts "ALSA Audio Device is not available" and pauses
+on a `"disconnected"` bus error, and restarts the pipeline on the same track for a `"not-linked"`
+bus error. Combine Sone's retry-don't-fail-on-busy, High Tide's restart-on-not-linked, and
+tidalt's release-on-pause into one policy before shipping exclusive mode.
 
 ## 8. Volume curves
 

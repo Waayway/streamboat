@@ -4,14 +4,21 @@ Research date: 2026-09-07. All "verified" claims below were read from the read-o
 checkouts under `ref:<project>/<path>` (shallow clones taken 2026-09-07) or from cited URLs.
 Claims marked *(unverified)* could not be confirmed from source or reachable documentation.
 
-This report has been through one independent fact-check pass (two reviewers, 2026-09-07): every
-numbered/quoted claim was checked against the reference checkouts, the GitHub API, or a direct
-fetch, and each was marked confirmed, refuted, or uncertain. All refuted claims below have been
-corrected in place (the wrong figure is not left standing anywhere); corrections are also
-collected in **§18 Verification-pass corrections and new findings** for a single audit trail.
-Facts the fact-check turned up that the original pass missed ("gaps") have been folded into the
-relevant sections and are cross-referenced from §18 too. Items that remain genuinely unresolved
-are marked **uncertain** where they occur and are collected in *Open questions*.
+This report has been through **two** independent fact-check passes: the first (two reviewers,
+2026-09-07) and a second (2026-09-08) that re-checked the first pass's own corrections against
+source, GitHub's contributors/API data and two more headless-precedent projects (Music Assistant,
+lms-plugin-tidal) fetched directly from GitHub. Every numbered/quoted claim was checked against
+the reference checkouts, the GitHub API, or a direct fetch, and each was marked confirmed,
+refuted, or uncertain — including a handful of claims the *first* pass itself introduced
+incorrectly while "correcting" the original survey (the `track-advanced` event, the Strawberry
+line-count denominator, the DASH-strategy count, and others; see §18 items L-Q and the inline
+corrections marked "second fact-check pass"). All refuted claims have been corrected in place (the
+wrong figure is not left standing anywhere); corrections are collected in **§18 Verification-pass
+corrections and new findings** for a single audit trail, with second-pass items appended at the
+end of that section (items L-Q) rather than renumbered. Facts either pass turned up that the prior
+pass missed ("gaps") have been folded into the relevant sections and are cross-referenced from
+§18 too. Items that remain genuinely unresolved are marked **uncertain** where they occur and are
+collected in *Open questions*.
 
 **The entire `tidal.com` domain is blocked by this environment's egress proxy — not only
 `developer.tidal.com` and `support.tidal.com`.** `https://tidal.com/content-guidelines` returns
@@ -123,14 +130,24 @@ unproxied network, before they go into user-facing legal/README text.
     playback source — is client-side `jotai` atoms in the React webview
     (`ref:sone/src/atoms/playback.ts:54-109`); the Rust side only persists a snapshot
     (`save_playback_queue`/`load_playback_queue`) and receives *mirrors* of frontend state for its
-    MCP/overlay/miniplayer surfaces (`ref:sone/src-tauri/src/mcp/state_mirror.rs`). Position is
-    polled by the frontend on a timer, not pushed by an event — there is no `track-advanced` event
-    in Sone's Rust source (an error in the original pass); the real event set is `audio-error`,
-    `audio-resampled`, `signal-path-changed`, `track-finished`, plus `mpris:*`/`tray:*` input
-    events forwarded *up* to the webview. This inversion is why sone-windows is a fork rather than
-    a headless-capable port: a webview-resident queue cannot serve a CLI or MPRIS client as a
-    first-class citizen. **streamboat's core must own session, queue and transport; every UI
-    (desktop, CLI, MPRIS, HTTP) is a thin subscriber** — the opposite of Sone's shape.
+    MCP/overlay/miniplayer surfaces (`ref:sone/src-tauri/src/mcp/state_mirror.rs`). **Correction
+    (second fact-check pass, 2026-09-08): Sone does emit a `track-advanced` event** —
+    `app_handle.emit("track-advanced", json!({"trackId":…, "qid":…, "replayGain":…,
+    "peakAmplitude":…}))` fires from the audio thread on every gapless advance
+    (`ref:sone/src-tauri/src/audio.rs:2671-2682`) and is consumed in Rust itself for scrobbling
+    (`ref:sone/src-tauri/src/lib.rs:705-712`) — the first fact-check pass's claim that no such
+    event exists was itself wrong and has been removed. The narrower true statement survives:
+    **there is no periodic position/state-tick event.** `track-advanced` is a discrete
+    track-boundary event, not a position stream; position is still polled by the frontend on a
+    500 ms timer (see §2.4). The full emitted-event set is `audio-error` (payload `kind` ∈
+    `{device_disconnected, device_changed, format_change_failed}` — these are payload values, not
+    separate event names), `audio-resampled`, `audio-bit-depth-changed`, `signal-path-changed`,
+    `track-finished`, `track-advanced`, `pkce-login-success`/`-error`/`-cancelled`,
+    `scrobble-auth-error`, plus `mpris:*`/`tray:*` input events forwarded *up* into the webview
+    for it to act on. This inversion is why sone-windows is a fork rather than a headless-capable
+    port: a webview-resident queue cannot serve a CLI or MPRIS client as a first-class citizen.
+    **streamboat's core must own session, queue and transport; every UI (desktop, CLI, MPRIS,
+    HTTP) is a thin subscriber** — the opposite of Sone's shape.
 22. **A pure-Rust audio stack does have a precedent — just not for TIDAL.** librespot
     (github.com/librespot-org/librespot, MIT, ~7.1k★) is the same problem shape for
     Spotify-Premium-only playback: a core library plus thin frontend clients (spotifyd, ncspot),
@@ -177,6 +194,13 @@ Corroborating evidence from source and issues:
   auth returned `Token is missing required scope. Required scopes: r_usr playback`.
 - `tidal-music` discussion #179: original poster requested third-party app review >6 months
   before 2025-06-03; as of April 2026 reports "nothing has moved" and no replies.
+- **The strongest corroboration is in TIDAL's own SDK code, not a forum thread (gap added by the
+  second fact-check pass):** the official SDK's manifest resolver defaults `assetPresentation` to
+  `'PREVIEW'` when the response omits the field —
+  `assetPresentation: response.data?.data.attributes?.trackPresentation ?? 'PREVIEW'`
+  (`ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts:395-405`).
+  TIDAL's own client library's fallback for "what did we just get" is "a preview," not "a full
+  track" — this is first-party evidence, not second-hand.
 
 **Conclusion:** the owner's stated stance (do what High Tide and Sone do) is not merely a
 convenience choice — it is currently the *only* way to build a full-quality TIDAL player as an
@@ -200,6 +224,19 @@ POST https://auth.tidal.com/v1/oauth2/token
 ```
 Source: `ref:sone/src-tauri/src/tidal_api.rs:1550-1642`,
 `ref:python-tidal/tidalapi/session.py:609-716`, `ref:tidalt/internal/tidal/client.go`.
+
+**Do not copy python-tidal's poll loop as "the" RFC 8628 implementation — gap added by the
+second fact-check pass.** The pending/slow_down contract above is Sone's; python-tidal's
+`_check_link_login` (`ref:python-tidal/tidalapi/session.py:679-716`) posts `client_id +
+client_secret + device_code + grant_type + scope` in a loop, returns as soon as the request is
+`.ok`, breaks only when `result['error'] == 'expired_token'`, and otherwise just sleeps
+`link_login.interval` — **it never inspects `authorization_pending` or `slow_down` at all**, so
+porting it verbatim busy-polls on a fixed interval and treats every other non-ok response as a
+generic failure. There is also a request-shape asymmetry worth copying deliberately rather than
+by accident: python-tidal's `device_authorization` call (`session.py:617`) sends only `client_id +
+scope`, no `client_secret`, while its token-poll call always sends the secret — Sone's device flow
+does the same. Implement the pending/slow_down handling (Sone's contract) but keep the
+secret-only-on-poll asymmetry (both implementations agree on that part).
 
 **PKCE authorization code (needed for Hi-Res)** — used by High Tide, Strawberry, Sone
 (alternative), python-tidal:
@@ -269,16 +306,34 @@ are mutually exclusive. libopenTIDAL additionally knows a `playbackinfoprepaywal
 - **BTS** (`application/vnd.tidal.bts`): base64 → JSON `{ urls: [...], codecs, mimeType,
   encryptionType, keyId }`. Take `urls[0]`, feed straight to the player. Codec is
   `codecs.toUpperCase().split('.')[0]` (`ref:python-tidal/tidalapi/media.py:662-675`,
-  `ref:sone/src-tauri/src/tidal_api.rs:3706-3730`).
-- **DASH** (`application/dash+xml`): base64 → MPD XML. Two consumption strategies observed:
-  - Wrap as `data:application/dash+xml;base64,<b64>` and hand to GStreamer's `dashdemux`
-    (Sone `ref:sone/src-tauri/src/commands/playback.rs:117-125`; Strawberry
-    `ref:strawberry/src/tidal/tidalstreamurlrequest.cpp:228-232`; High Tide on GStreamer < 1.26).
-  - Write the MPD to a file and pass `file://` (mopidy-tidal
-    `ref:mopidy-tidal/mopidy_tidal/playback.py:40-49`; High Tide on GStreamer ≥ 1.26
-    `ref:high-tide/src/lib/player_object.py:494-506`).
-  - Parse segments manually and concatenate: `initialization="…"`, `media="…$Number$…"`,
-    `<S d= r=>` repeat counts (`ref:tidal-cli/src/playback.ts:118-167`).
+  `ref:sone/src-tauri/src/tidal_api.rs:3706-3730`). **Nuance (second fact-check pass): Sone's own
+  `BtsManifest` struct does not parse `keyId` at all** — it is `{urls, codecs, mime_type,
+  encryption_type}` with no key field (`ref:sone/src-tauri/src/tidal_api.rs:3706-3720`; a
+  repo-wide `grep -n 'key_id\|keyId'` over `tidal_api.rs` returns nothing). Only python-tidal
+  reads `keyId` (`media.py:673-676`), and it stores it without ever using it to decrypt anything —
+  the field is inert everywhere in the reference set except TidaLuna's decryptor (§7), which
+  streamboat must not copy. Do not treat "parse `keyId`" as something every BTS client does; it is
+  optional, and *not* parsing it is itself the correct posture for a never-decrypt client.
+- **DASH** (`application/dash+xml`): base64 → MPD XML. **Four consumption strategies observed
+  (corrected from "two" — the second fact-check pass found a fourth, from Music Assistant, and
+  the original text mislabeled its own three-bullet list "two")**, in order of how commonly used:
+  1. Wrap as `data:application/dash+xml;base64,<b64>` and hand to GStreamer's `dashdemux` (Sone
+     `ref:sone/src-tauri/src/commands/playback.rs:117-125`; Strawberry
+     `ref:strawberry/src/tidal/tidalstreamurlrequest.cpp:228-232`; High Tide on GStreamer < 1.26).
+  2. Write the MPD to a file and pass `file://` (mopidy-tidal
+     `ref:mopidy-tidal/mopidy_tidal/playback.py:40-49`; High Tide on GStreamer ≥ 1.26
+     `ref:high-tide/src/lib/player_object.py:494-506`).
+  3. Serve the MPD from an ephemeral local HTTP route with a bounded lifetime (Music Assistant's
+     TIDAL provider, `music_assistant/providers/tidal/streaming.py`, fetched 2026-09-08 — base64
+     decodes the manifest and registers it as a local route kept alive for
+     `track.duration + 300s`, explicitly because ffmpeg cannot re-fetch a `data:` URI mid-stream).
+  4. Parse segments manually and concatenate: `initialization="…"`, `media="…$Number$…"`,
+     `<S d= r=>` repeat counts (`ref:tidal-cli/src/playback.ts:118-167`; python-tidal's `DashInfo`
+     can do the same).
+
+  **Selection rule**: if the media layer may re-open or range-request the manifest source
+  (seeking, a restart, or an external decoder like ffmpeg), strategy 1 is unsafe — use 2 or 3.
+  Strategy 4 is needed only when there is no DASH-capable demuxer available at all.
 - **EMU** (`application/vnd.tidal.emu`) and **HLS** (`application/vnd.apple.mpegurl`) appear only
   in the official SDKs (`ref:tidal-sdk-android/player/streaming-api/.../ManifestMimeType.kt`).
 
@@ -297,6 +352,25 @@ are mutually exclusive. libopenTIDAL additionally knows a `playbackinfoprepaywal
 This table is the single most valuable piece of operational knowledge in the whole landscape and
 appears nowhere else. `1002` in particular is what a web-player client ID returns to the
 device-code endpoint (`ref:sone/src-tauri/src/tidal_api.rs:1576-1588`).
+
+**How the official client actually learns about `4006` (streaming-privileges revoked) — gap added
+by the second fact-check pass.** Every subscriber will hit this: start playback on a phone and any
+other active stream must stop. TidaLuna's dump of the official Redux action namespace (§7) names
+`player/STREAMING_PRIVILEGES_REVOKED` and `player/ENSURE_PLAYBACK_PRIVILEGES` — i.e. the official
+client pre-checks privileges before playing and *receives a real-time revocation event*, it does
+not merely discover the loss from a failed HTTP request. **No project in this reference set
+implements a real-time channel for this**: a grep for `wss://`, `websocket`, `pushkin` or
+`"privileges"` across `ref:sone/src-tauri/src`, `ref:high-tide/src`,
+`ref:python-tidal/tidalapi` and `ref:tidal-sdk-web` returns nothing beyond Sone's `4006` comment
+and TidaLuna's action names. streamboat's two options: (a) treat `subStatus 4006` as a
+pause-and-explain condition discovered on the next request (Sone's approach — and Sone
+deliberately does **not** treat it as terminal, §1.5); (b) reverse-engineer TIDAL's real-time
+privileges channel, which nobody in this reference set has done. The full mechanics of that
+channel (where it has been identified) belong in `docs/research/headless-connect.md`, not here —
+this report's job is only to flag that the official client has one and the open-source set does
+not. Source: `ref:TidaLuna/plugins/lib/src/redux/types/actions/actionTypes.ts`
+(`player/STREAMING_PRIVILEGES_REVOKED`, `player/ENSURE_PLAYBACK_PRIVILEGES`);
+`ref:sone/src-tauri/src/tidal_api.rs:11-43`; negative grep across the other checkouts.
 
 #### 1.6 Loudness normalization (verified, two different formulas)
 
@@ -464,9 +538,14 @@ generation}`, `FormatHint(PcmFormat)`, `Resampling{from,to}`, `PendingPromotion{
 - **IPC design**: **177** `#[tauri::command(rename_all = "camelCase")]` functions (corrected from
   an original-pass "≈150"; verified by both the `generate_handler!` block and a repo-wide
   `#[tauri::command` grep) registered in one `generate_handler!` block spanning `lib.rs:866-1070`,
-  grouped by domain. **There is no `track-advanced` event and no position/state-tick event at
-  all** — that was the original pass's guess, not a real emitted event. The actual emitted-event
-  set is `audio-error`, `audio-resampled`, `signal-path-changed`, `track-finished`,
+  grouped by domain. **Corrected (second fact-check pass): Sone does emit `track-advanced`**
+  (`{trackId, qid, replayGain, peakAmplitude}`, from `audio.rs:2671-2682` on every gapless
+  advance) — the first pass's claim that it did not exist was wrong. What is still true: there is
+  **no periodic position/state-tick event**; `track-advanced` marks a track boundary, it is not a
+  position stream. The full emitted-event set is `audio-error` (payload `kind` ∈
+  `{device_disconnected, device_changed, format_change_failed}` — values of one event, not
+  separate events), `audio-resampled`, `audio-bit-depth-changed` (emitted by the ALSA writer on a
+  bit-depth promotion, `audio.rs:852`), `signal-path-changed`, `track-finished`, `track-advanced`,
   `pkce-login-success`/`-error`/`-cancelled`, `scrobble-auth-error`, `tray:*` (toggle-play/
   next-track/prev-track) and `mpris:*` (play/pause/stop/seek/set-position/set-volume/set-shuffle/
   set-loop-status/set-fullscreen/open-uri) — the `tray:*`/`mpris:*` events flow *up* into the
@@ -476,6 +555,42 @@ generation}`, `FormatHint(PcmFormat)`, `Resampling{from,to}`, `PendingPromotion{
   IPC protocol streamboat designs should make an explicit push-vs-poll choice for position rather
   than reproducing this ad hoc per-consumer polling. Bridges for the miniplayer window, MCP and
   the overlay: `useMiniplayerBridge`, `useMcpBridge`, `useOverlayBridge`.
+
+**Seeking** (gap filled by the second fact-check pass; not mentioned in the first pass at all,
+despite being the transport operation most likely to break both `concat` gapless and the ALSA
+writer). `AudioCommand::Seek` (`ref:sone/src-tauri/src/audio.rs:2307-2365`) carries an empirical
+comment from testing on GStreamer 1.24.2: a `seek_simple(FLUSH|KEY_UNIT)` on the pipeline forwards
+`FLUSH_START`/`FLUSH_STOP` and the new `SEGMENT` only to `concat`'s **active** sink pad; the
+inactive prerolled next-track branch on the other pad sees no flush events, stays linked and
+`PLAYING`, and `concat` still switches to it correctly at the active branch's EOS. **A seek must
+not detach the armed next-track slot** — Sone tried that and it destroyed a valid preroll on every
+seek, producing an audible gap at the next track boundary. On the `DirectAlsa` path a seek
+additionally bumps `track_generation`/`writer_gen` (so in-flight stale PCM chunks are dropped),
+sends `WriterCommand::Flush`, and re-bases `frames_written = position_secs * current_sample_rate`
+— i.e. **position on the bit-perfect path is derived from frames actually written to the PCM
+device, not from a GStreamer position query**, and paused state is saved/restored around the seek.
+Port this behaviour, not just the ALSA negotiation, if streamboat copies Sone's bit-perfect path.
+
+**Gapless prefetch/arming policy** (gap filled by the second fact-check pass — the first pass
+documented only the Rust-side `concat` plumbing, not the policy that decides *when* to arm it,
+which is entirely frontend logic an implementer has to design from scratch).
+`ref:sone/src/hooks/useGaplessPrefetch.ts` (~180 lines) is the whole policy: (1) gapless
+capability is cached once via `invoke("get_gapless_supported")`; (2) arming requires `gapless &&
+!exclusiveMode && !bitPerfect && !currentVideo && currentTrack` — note **exclusive mode**, not
+just the `DirectAlsa` backend, disables it, and a **video** as the current item disables audio
+gapless too; (3) it deliberately does **not** gate on `isPlaying`, because "isPlaying flickers
+false during device-busy retries and on every pause" — i.e. Sone has an ALSA device-busy retry
+loop this report otherwise never mentions, and a paused track keeps its slot armed because
+`concat` cannot switch an inactive pad while paused; (4) it dedups on `(trackId, qid)` before
+calling into Rust, because the predicted next track is stable for a whole track and a naive
+debounce would otherwise re-run the backend's full quality cascade repeatedly; (5) a negative
+cache `failedRef {trackId, qid, until}` stops a track that failed to resolve from being retried on
+every queue mutation; (6) in-flight refreshes are **coalesced, not dropped** (with shuffle on, the
+prediction genuinely changes mid-flight); (7) a generation counter discards superseded responses.
+Backend side: `commands/playback.rs:209` `set_next_track(trackId, qid, useTrackGain)` →
+`audio_player.set_next_track(uri, gain, track_id, qid, rg, peak, is_dash)`, plus
+`clear_next_track`. Prediction itself is `ref:sone/src/lib/gaplessPredict.ts::pickGaplessNext`;
+post-advance bookkeeping is `ref:sone/src/hooks/usePlaybackActions.ts:494-540`.
 
 #### 2.5 Caching, settings, secrets
 
@@ -564,7 +679,36 @@ deliberately misleading.
   loopback the way the MCP server is; document that distinction if streamboat copies the pattern.
 - **Play reporting** (`tidal_report/`): reports plays back to TIDAL so "Recently Played" works,
   capturing the *actually served* `audioQuality`/`audioMode`/`assetPresentation` from the
-  playbackinfo response. User-disableable via `report_plays`.
+  playbackinfo response. User-disableable via `report_plays`. **Wire format (gap added by the
+  second fact-check pass — the first pass named the capability with no endpoint or payload, and
+  Implication 6 asks the owner to decide this without giving them anything to cost it against)**:
+  Sone posts to `https://ec.tidal.com/api/event-batch`
+  (`ref:sone/src-tauri/src/tidal_report/event.rs:6`). Its `SessionEvent` carries `session_id`,
+  `requested_product_id`, `actual_product_id`, `quality`, `audio_mode`, `presentation`, `source`
+  (type + id), `start_ts_ms`, `end_ts_ms`, `end_asset_pos` (`event.rs:89-100`), serialized into a
+  "mobile-shaped" JSON body with `playbackSessionId`, `isPostPaywall: true`,
+  `productType: "TRACK"`, `requestedProductId`, `actualProductId` (`event.rs:103-115`) — note
+  **requested vs actual** product id and quality are both reported, mirroring the distinction
+  streamboat's quality cascade already needs to track. There is a retry/offline queue
+  (`ref:sone/src-tauri/src/tidal_report/queue.rs`). The `playbackSessionId` is the same identifier
+  the official SDK sends as the `x-playback-session-id` header on its manifest request
+  (§10.1) — **mint it at stream-resolution time, not at report time**, so one id spans
+  resolve → play → report; minting it late is an easy design mistake to make once auth and
+  playback are built as separate modules (Implication 10).
+- **Music videos are not a footnote — gap added by the second fact-check pass; the first pass
+  never treats video anywhere, despite the brief's "everything the native client does" and video
+  being the one content type incompatible with the ALSA-writer/bit-perfect architecture this
+  report otherwise recommends.** Sone supports them: `GET /videos/{id}/playbackinfopostpaywall`
+  (`ref:sone/src-tauri/src/tidal_api.rs:3816`) and `GET /videos/{id}` (`:3871`); favourites via
+  `/users/{id}/favorites/videos/{id}` (`:2655`). Playback is **not** in the Rust/GStreamer/ALSA
+  engine at all — it is `hls.js 1.6.16` running inside the webview (`ref:sone/package.json`), a
+  completely separate media path, and `ref:sone/src/hooks/useGaplessPrefetch.ts:65` disables
+  gapless arming outright whenever the current queue item is a video. High Tide has no video
+  playback (its `video-covers` GSetting is about animated cover art only, not video content).
+  **Decision for the owner**: a headless/daemon core cannot render video, so music videos are
+  either a desktop-UI-only feature on a second, browser-based media path (Sone's answer) or
+  explicitly out of scope — decide which and say so, rather than discovering the gap when a video
+  row shows up in a playlist and crashes the audio pipeline.
 - **Idle inhibit**: three implementations — D-Bus, Wayland (`idle-inhibit` protocol via
   `wayland-protocols`), X11 (`x11rb` screensaver/dpms).
 
@@ -889,9 +1033,11 @@ all-or-nothing pipeline when you want signal-path control; assuming `playbin3` e
 mature and most actively maintained codebase in the set, and the only one that is a general music
 player with TIDAL as one of several streaming backends.
 
-TIDAL code is ~2,709 lines across 12 files in `ref:strawberry/src/tidal/`:
-`tidalservice`, `tidalbaserequest`, `tidalrequest`, `tidalstreamurlrequest`,
-`tidalfavoriterequest`, `tidalurlhandler`.
+TIDAL code is ~2,709 lines of `.cpp` across the 6 implementation files in
+`ref:strawberry/src/tidal/` (3,429 lines including the matching 6 headers, 12 files total —
+**corrected: the original "2,709 lines across 12 files" mismatched its own denominators, per the
+second fact-check pass**): `tidalservice`, `tidalbaserequest`, `tidalrequest`,
+`tidalstreamurlrequest`, `tidalfavoriterequest`, `tidalurlhandler`.
 
 **Auth** (`ref:strawberry/src/tidal/tidalservice.cpp:70-136`): a shared `OAuthenticator` set to
 `Type::Authorization_Code` with `set_use_pkce(true)`, `authorize_url =
@@ -1072,6 +1218,55 @@ injects a bundle into the render process.
   &deviceType=DESKTOP` and the tracklist is dug out of `rows[].modules[]` where
   `type === "ALBUM_ITEMS"` — i.e. TIDAL's "pages" API returns a CMS-style module tree, which is
   also what Sone's `commands/pages.rs` deals with.
+- **Quality/immersive-format handling is real here, and it is the thing to copy for Atmos —
+  gap added by the second fact-check pass, which refutes this report's own earlier "Atmos
+  handling is undefined everywhere in the reference set" (§18-F) as too broad.**
+  `ref:TidaLuna/plugins/lib/src/classes/Quality.ts` defines a seven-level ladder that includes
+  `Quality.Atmos` (metadata tag `DOLBY_ATMOS`) and `Quality.Sony630` (tag `SONY_360RA`) alongside
+  MQA, with explicit lookup tables mapping metadata tags to `audioQuality` values and back.
+  `ref:TidaLuna/plugins/lib/src/classes/MediaItem/MediaItem.ts:348-375` implements the actual
+  policy: filter Atmos/Sony630 out of the displayable quality tags, and — because a spatial
+  track's `mediaMetadata` tags do not reveal its *real* delivered quality — issue a live
+  `playbackInfo()` call for a spatial-only track and read `cache.actualAudioQuality` back before
+  labelling it in the UI. `SONY_360RA` also appears in the official SDK
+  (`ref:tidal-sdk-web/packages/player/src/internal/types.ts`). **Narrow the original claim
+  correctly: no project in the set verifiably *decodes* an Atmos/360RA stream end to end — that
+  much of §18-F stands — but metadata/quality handling for spatial content is implemented, in
+  TidaLuna, and python-tidal's three-value `MediaMetadataTags` enum (`HIRES_LOSSLESS`, `LOSSLESS`,
+  `DOLBY_ATMOS`) is an incomplete subset, not authoritative.** Add `SONY_360RA` to any tag set
+  streamboat builds, and add the operational rule: for a spatial-only track, the tags alone cannot
+  tell you the real quality — issue a `playbackinfo` call and read `audioQuality` back.
+- **The rest of the Redux action dump is largely untapped free product intelligence — gap added
+  by the second fact-check pass; the first pass used this file only for four host/endpoint facts
+  and the store-slice names above.**
+  `ref:TidaLuna/plugins/lib/src/redux/types/actions/actionTypes.ts` is a ~700-line sorted dump of
+  the official desktop client's entire action namespace (provenance comment: *"Exported from Tidal
+  using `Object.keys(luna.core.buildActions).sort()`"*), with 1,762 lines of payload types in
+  `index.ts`. Worth mining directly against streamboat's own transport-control and queue design:
+  - `playbackControls/*` is a complete transport contract — `PLAY`, `PAUSE`, `TOGGLE_PLAYBACK`,
+    `SEEK`, `SEEK_FORWARDS`/`SEEK_BACKWARDS`, `START_AT`, `SKIP_NEXT`/`SKIP_PREVIOUS`,
+    `SET_DESIRED_PAUSE_STATE` (modelled *separately* from the actual playback state — worth
+    copying: "the user asked to pause" and "the pipeline is paused" are different facts),
+    `SET_PLAYBACK_STATE`, `TIME_UPDATE`, `SET_DURATION`, `MEDIA_PRODUCT_TRANSITION` and
+    `PREFILL_MEDIA_PRODUCT_TRANSITION` (track transition is a first-class *prefilled* event, not
+    an afterthought), `UPDATE_PLAYBACK_CONTEXT`, `ENDED`.
+  - `playQueue/*` shows queue semantics worth matching: `ADD_NOW`/`ADD_NEXT`/`ADD_LAST`/
+    `ADD_AT_INDEX`/`ADD_NOW_REST_OF_TRACK_LIST`, `MOVE_TRACK`, `SET_CURRENT_INDEX`,
+    `ENABLE_SHUFFLE_MODE` vs `ENABLE_SHUFFLE_MODE_AND_SHUFFLE_ITEMS` (two distinct actions —
+    turning shuffle on is not the same action as reshuffling), `SET_REPEAT_MODE`,
+    `SET_SOURCE_PROPERTIES`/`UPDATE_ORIGINAL_SOURCE` (the "Playing from" chip),
+    `FETCH_FIRST_PAGE_AND_ADD_TO_QUEUE` + `FETCH_REST_OF_THE_TRACKS_AND_ADD_TO_QUEUE` (paginated
+    queue fill from a playlist/album, split explicitly so playback can start before the whole list
+    loads), `LOAD_PLAY_QUEUE_FROM_LOCAL_STORAGE_SUCCESS` (session restore).
+  - `player/*` reveals `PRELOAD_ITEM`/`PRELOAD_NEXT_ITEM`/`PRELOAD_SUCCESS` — the official client
+    prefetches the next item too, corroborating Sone's gapless-arming design above — plus
+    `SET_ACTIVE_DEVICE`/`SET_AVAILABLE_DEVICES`/`SET_DEVICE_MODE` (TIDAL Connect device switching
+    is store-level state in the official client) and a `chromeCast/*` namespace (Cast is a
+    first-class output target, alongside Connect).
+  - Also worth noting: `blocks/*` (block an artist/track), `artistPicker/*`,
+    `accumulatedPlaybackTime/*`, and a separate TS-side DASH parser at
+    `ref:TidaLuna/plugins/lib/src/helpers/getPlaybackInfo.dasha.native.ts`, independent of the
+    browser demuxer path.
 
 **The hard boundary.** `ref:TidaLuna/plugins/lib.native/src/request/decrypt.ts` ships a hardcoded
 master key and uses it to decrypt streams whose manifest reports `encryptionType: "OLD_AES"`
@@ -1147,6 +1342,69 @@ writing a whole file first, and it is directly reusable for streamboat's headles
 capable caching proxy; the pre-flight `media_metadata_tags` quality check. **Avoid:** coupling to
 Mopidy's provider API if streamboat wants its own daemon protocol; the hardcoded
 `lgf.audio.tidal.com` host (CDN hostnames change).
+
+---
+
+### 8a. Music Assistant — a second, actively-maintained headless precedent (added by the second
+fact-check pass)
+
+`music-assistant/server` — the first pass listed Music Assistant's TIDAL provider as *"encountered
+but not read"* (see the old §16 note, now corrected below); its source is public on GitHub and was
+fetched directly (`music_assistant/providers/tidal/streaming.py`,
+`tests/providers/tidal/test_streaming.py`, both 2026-09-08) even though the project's own docs
+site (`music-assistant.io`) is egress-blocked from this environment like the rest of `tidal.com`.
+It matters for the same reason mopidy-tidal does — a real, actively developed headless-server TIDAL
+integration — and it contributes two things mopidy-tidal does not:
+
+- **A fourth DASH delivery strategy** (folded into §1.4 above): it calls the unofficial
+  `tracks/{id}/playbackinfopostpaywall` with `playbackmode=STREAM`, `assetpresentation=FULL` and
+  the configured `audioquality`, base64-decodes the DASH manifest, and **registers it as an
+  ephemeral local HTTP route** rather than a `data:` URI or a temp file — with the explicit reason
+  in-source that ffmpeg cannot re-fetch a `data:` URI mid-playback. The route stays alive for
+  `track.duration + 300s` so seeks and queue transitions do not land on an expired route. For BTS
+  it takes `urls[0]`. `StreamDetails` sets `can_seek`/`allow_seek` true.
+- **TIDAL track-ID churn is a real operational hazard streamboat must handle, and Music Assistant
+  is the only project in the set that visibly deals with it.** Track lookups are cached for days,
+  so a churned ID passes the cached lookup and the 404 first surfaces on the `playbackinfo` call
+  itself. Music Assistant's rule: that 404 must trigger `resolve_live_track_id(item_id)` and
+  exactly one retry with the healed ID, rather than failing playback outright. Any client that
+  caches catalog IDs long-term (this report's own §2.5 cache-tier table, `StaticMeta` at 7 days
+  TTL / 30 days SWR, is exactly the kind of cache this would hit) needs this retry path or it will
+  intermittently and silently fail to play tracks that TIDAL has re-IDed.
+- It also has real provider-level tests with a mocked API client
+  (`tests/providers/tidal/test_streaming.py`) — more automated coverage of the streaming path than
+  any project examined in §2.8's test-setup review below.
+
+Source: https://raw.githubusercontent.com/music-assistant/server/dev/music_assistant/providers/
+tidal/streaming.py; https://github.com/music-assistant/server/blob/dev/tests/providers/tidal/
+test_streaming.py (both fetched 2026-09-08).
+
+### 8b. lms-plugin-tidal (Lyrion/Logitech Media Server) — a second server-side precedent (added by
+the second fact-check pass)
+
+`michaelherger/lms-plugin-tidal` — another server-side TIDAL integration the first pass listed as
+*"encountered but not read"*; its Perl source was fetched directly
+(`API/Async.pm`, raw GitHub, 2026-09-08). Two transferable points:
+
+- **A per-request cache-TTL flag, independently corroborating this report's own Implication 19
+  ("never cache manifests or stream URLs across restarts").** Its generic `_get()` helper takes a
+  per-call `$params->{_ttl}`, and the playback call explicitly opts out with
+  `$params->{_nocache} = 1` — the same rule this report already recommends, expressed as an
+  explicit per-request flag rather than a policy note. Worth copying the *mechanism*, not just the
+  rule: make "do not cache this response" a parameter of the request layer, not a convention
+  developers have to remember.
+- **An anti-pattern to avoid, paired with Sone's `subStatus` table (§1.5).** Its error path
+  collapses rate limiting into an authentication failure: `$error = 'NO_ACCESS_TOKEN' if $error !~
+  /429/` — so a `429` is treated as "your credentials are bad" with no backoff at all. Sone's
+  `subStatus` taxonomy is the opposite failure mode done right (a 4xxx sub-status must not trigger
+  a token refresh, §1.5) — the general lesson two independent projects have now gotten wrong in
+  opposite directions is: **classify TIDAL's failure modes (auth vs. rate-limit vs.
+  content-unavailable) before acting on them**, and never infer a failure category from a
+  substring match on an error message.
+
+Source: https://raw.githubusercontent.com/michaelherger/lms-plugin-tidal/main/API/Async.pm
+(fetched 2026-09-08); `ref:sone/src-tauri/src/rate_gate.rs`; `ref:sone/src-tauri/src/tidal_api.rs:
+11-43`.
 
 ---
 
@@ -1405,9 +1663,36 @@ the exclusive device lock and registers both `org.mpris.MediaPlayer2` and a priv
 D-Bus. That is *exactly* the desktop-plus-headless shape streamboat needs, and it is the only
 implementation of it in the set (`ref:tidalt/docs/client-server.md`).
 
+**The actual mechanics, not just the shape (gap filled by the second fact-check pass — the
+document was cited but never read for this report's biggest single architectural
+recommendation).** There is no separate always-running daemon binary by default: **whichever
+process claims the D-Bus name `org.mpris.MediaPlayer2.tidalt` first becomes the server**; any
+later invocation gets `ErrAlreadyRunning` and switches itself into client mode. Name-claiming is
+simultaneously the mutex and the discovery mechanism, justified because ALSA `hw:` devices cannot
+be shared between processes — exactly one process may own the DAC. Invocation modes:
+`tidalt` (TUI; server if first, client if not), `tidalt daemon` (headless server only),
+`tidalt play <url>` (a one-shot client that forwards a `tidal://` URL over D-Bus in milliseconds
+and exits — this is what a browser's registered URL handler actually invokes, and is why a
+one-shot client mode exists at all), `tidalt setup` (registers the XDG URL handler), and
+`tidalt setup --daemon` (installs a systemd `--user` service). Control surfaces are MPRIS2 (bus
+`org.mpris.MediaPlayer2.tidalt`, path `/org/mpris/MediaPlayer2`, `SupportedUriSchemes: ["tidal"]`,
+`CanQuit`/`CanRaise`/`HasTrackList` false) plus the private `io.tidalt.App` interface for
+everything MPRIS cannot express. `ref:tidalt/docs/phone-control.md` adds a free partial answer to
+remote control while mobile is out of scope: KDE Connect / GSConnect already bridge MPRIS2 to an
+existing Android/iOS companion app with zero app-specific code. **Portability caveat for
+streamboat**: the D-Bus name-claim trick is Linux-only; Windows/macOS need an equivalent
+single-instance mutex plus a local transport (a lock file plus a named pipe or Unix domain socket,
+similar to Sone's `tauri-plugin-single-instance`). Source: `ref:tidalt/docs/client-server.md`,
+`ref:tidalt/docs/mpris2.md`, `ref:tidalt/docs/phone-control.md`.
+
 Two more transferable audio findings:
 - **PipeWire device reservation**: acquire `org.freedesktop.ReserveDevice1.Audio<N>` over D-Bus
-  before opening `hw:` exclusively, and release on stop. Sone does not do this; tidalt does.
+  before opening `hw:` exclusively. **Correction (second fact-check pass): tidalt releases the
+  device on *pause*, not only on stop** — `ref:tidalt/README.md:12`: "The daemon holds exclusive
+  access to the audio device only while a track is actually playing — releasing it on pause so
+  other applications can use it freely." That is the more cooperative policy and is what makes
+  exclusive mode tolerable to run on a general-purpose desktop; copy "release on pause," not
+  "release on stop." Sone does not reserve the device via D-Bus at all; tidalt does.
 - **Distinguish two ALSA failure modes**: a format-negotiation refusal (an `errFormatRefused`
   sentinel → fall back to `plughw:` and mark the session as *not* bit-perfect) versus a
   device-busy error (keep retrying `hw:`). Memoize the verdict per device. Conflating them is why
@@ -1483,9 +1768,11 @@ for a long time", which is a useful reminder that long-lived-session refresh is 
 
 Also encountered but not in the reference set: `pauljhdrake/low-tide` (a terminal UI TIDAL
 client), `yaronzz/Tidal-Media-Downloader` (a downloader — explicitly out of scope, cited here only
-for its 2026-03-21 API-key breakage report), `michaelherger/lms-plugin-tidal`,
-`GioF71/upmpdcli-docker` TIDAL plugin, and Music Assistant's TIDAL provider — all *(unverified,
-not read)*.
+for its 2026-03-21 API-key breakage report), and `GioF71/upmpdcli-docker` TIDAL plugin — all
+*(unverified, not read)*. **`michaelherger/lms-plugin-tidal` and Music Assistant's TIDAL provider
+were subsequently fetched and read by the second fact-check pass — see §8a and §8b** (their own
+docs sites, `music-assistant.io` and similar, remain unreachable from this environment, but their
+GitHub source is not).
 
 ---
 
@@ -1607,12 +1894,28 @@ FFmpeg-derived and covers TIDAL's AAC (HIGH/LOW tier) and Atmos-adjacent (AC-4/E
 paths. A dynamic distro dependency (Sone's Linux packages) puts the obligation on the distro; a
 *bundled* copy (`ref:sone-windows/scripts/prepare-gstreamer.js` copying DLLs into the NSIS/WiX
 payload, or `appimage.bundleMediaFramework: true`) puts LGPL relinking/notice obligations on
-streamboat directly. **This is undecided and flagged as work to do, not resolved here**: does the
-Windows/AppImage bundle include the `libav` plugin, or only `base`/`good`/`bad` (FLAC + the
-ISOBMFF/DASH demuxers + the AAC decoder that lives in `gst-plugins-bad`, no FFmpeg)? Excluding
-`libav` shrinks both the licence surface and the installer size. Source: `ref:sone/src-tauri/
-tauri.conf.json` (deb/rpm depends lists, `appimage.bundleMediaFramework`);
-`ref:sone-windows/scripts/prepare-gstreamer.js`.
+streamboat directly. **Partially resolved by the second fact-check pass, with a concrete cost attached — sone-windows
+already ships a real answer, and it has a feature consequence the first pass did not draw.**
+`ref:sone-windows/src-tauri/tauri.conf.json` `bundle.windows.wix.componentRefs` enumerates the
+whole bundled Windows runtime: 47 components, of which 16 are GStreamer plugins —
+`gstadaptivedemux2`, `gstasio`, `gstaudioconvert`, `gstaudioparsers`, `gstaudioresample`,
+`gstcoreelements`, `gstdash`, `gstdecklink`, `gstflac`, `gstisomp4`, `gstplayback`, `gstsoup`,
+`gsttypefindfunctions`, `gstvolume`, `gstwasapi2`, `gstwinks` — plus core DLLs (glib/gobject/gio,
+libssl/libcrypto, nghttp2, soup, xml2, orc, sqlite3, FLAC, ogg). **There is no `gstlibav` and no
+AAC decoder of any kind in this bundle.** So: (a) yes, an LGPL-clean bundle without FFmpeg is
+achievable, and this is the exact plugin list to copy; (b) but that bundle can only play
+FLAC-in-fMP4/DASH — **TIDAL's `HIGH` and `LOW` tiers are AAC (`mp4a.40.2`/`mp4a.40.5`) and would
+fail to decode on it.** GStreamer's AAC decoder options are `avdec_aac` (libav/FFmpeg — the thing
+just excluded), `faad` (`gst-plugins-bad`, GPL-encumbered), and `fdkaacdec` (Fraunhofer FDK
+licence) — **there is no LGPL-clean AAC decoder option**, so "exclude libav" in practice means
+"drop the lossy quality tiers on Windows, or ship a differently-licensed decoder and price that
+separately." Note also that the *same* file's `bundle.linux.deb.depends`/`bundle.linux.rpm.depends`
+**do** include `gstreamer1.0-libav`/`gstreamer1-plugin-libav` — so Sone's Linux packages get AAC
+today and its Windows bundle does not, an untracked platform behaviour difference streamboat
+should not inherit silently. Source: `ref:sone-windows/src-tauri/tauri.conf.json`
+(`bundle.windows.wix.componentRefs`, `bundle.linux.deb.depends`, `bundle.linux.rpm.depends`);
+`ref:sone-windows/scripts/prepare-gstreamer.js`; `ref:sone/src-tauri/tauri.conf.json`
+(deb/rpm depends lists, `appimage.bundleMediaFramework`).
 
 **F. Dolby Atmos handling is undefined everywhere in the reference set — a real user-facing
 failure mode with no plan.** python-tidal models `AudioMode = STEREO | DOLBY_ATMOS` and
@@ -1670,16 +1973,29 @@ feature-level treatment this report does not attempt to duplicate. Source: `rg` 
 `ref:sone/src-tauri/src/commands/{pages,feed,library}.rs`; `ref:TidaLuna/plugins/lib/src/classes/
 TidalApi/index.ts`; `ref:high-tide/src/pages/`, `ref:high-tide/src/widgets/auto_load_widget.py`.
 
-**J. Contributor counts (explicitly asked for, left as Open question 18) are not obtainable from
-this environment** — the reference checkouts are `--depth 1` shallow clones (`git log --format=
-%an | sort -u` returns exactly one author per repo, which is an artifact of the clone depth, not
-a fact about the project), and unauthenticated GitHub API contributor endpoints are refused by
-this session's proxy. The method to get them, for whoever runs this next: `GET /repos/{owner}/
-{repo}/contributors?per_page=100&anon=1` after attaching each repo, or read each repo's Insights →
-Contributors page directly. Until then, treat the qualitative signals already gathered as the
-best available proxy: Sone — single primary author (`lullabyX`), no CI (§2.8), 64 open issues;
-High Tide — community project with a public Matrix channel and 8 community-supplied locales;
-Strawberry — 341 forks, 21 open issues, near-daily commit activity.
+**J. Contributor counts — resolved by the second fact-check pass (2026-09-08); Open question 18 is
+answered below, not still open.** The first pass's environment refused unauthenticated GitHub
+contributor-endpoint calls; a later session succeeded with
+`GET /repos/{owner}/{repo}/contributors?per_page=100&anon=1` (one call needed `&anon=true` retry
+after a transient 403) for every project with a checkout in this set. Real numbers: **Sone** 18
+contributors, `lullabyX` 1,046 of ~1,081 commits (~97%); **High Tide** 45 contributors, `Nokse22`
+546, then `Plamper` 64, `drafolin` 62, `nilathedragon` 25, `p0ryae` 13, `janbrummer` 11 (~68% by
+the top author, but a real long tail); **mopidy-tidal** 12 contributors, `2e0byo` 372 /
+`tehkillerbee` 191 / `blacklight` 89 — a genuine three-person history, the only one in the set;
+**Strawberry** 5 significant entries: `jonaski` 5,678, `strawbsbot` 553 (a bot), `dependabot` 88,
+`LebedevRI` 28, `mzilinski` 11; **tidalrs** 4 contributors, `phayes` 60 of 67.
+
+**Bus-factor finding this reveals, worth stating explicitly because it cuts against how the
+comparison table below reads Strawberry's "very mature, very active" rating**: every project in
+this landscape except High Tide (45 contributors, ~68% top author) and mopidy-tidal (3 substantial
+human authors) has a **bus factor of 1**. Strawberry's own numbers make this concrete —
+`jonaski` at 5,678 commits vs. the next *human* contributor at 28 (`LebedevRI`); the #2 entry by
+commit count is Strawberry's own bot. Sone is `lullabyX` at 1,046 vs. a 14-commit dependabot and a
+long tail of 1-4-commit contributors. **Strawberry's bus factor is not better than Sone's — in
+relative terms it is worse.** This is a dependency-risk fact for streamboat, not a maturity
+signal: "mature" in the comparison table below should be read as age + release cadence + CI, not
+as community size, and it applies equally to tidalrs (already flagged, §14) and to Strawberry,
+Sone, tidal-hifi and TidaLuna alike. Source: GitHub contributors API, fetched 2026-09-08.
 
 **K. Minor numeric corrections not already folded inline**: Strawberry's star/fork/issue count
 drifted by one between the original pass and this one (3,947→3,948 stars, 340→341 forks — cite
@@ -1687,12 +2003,120 @@ whichever count is current at read time, the drift itself is not significant); "
 Downloader #1213" (§17-adjacent, cited for the 2026-03-21 unofficial-client-ID breakage) is a
 **single reply-less GitHub issue about one public gist of keys**, not a "widely-reported"
 breakage as an earlier draft phrased it — cite it as exactly that, one data point, not a trend.
-Separately, Sone's own source comment claims `legacy_auth_notice_count` "never resets"
-(`lib.rs:164-167`) but the code itself resets it to `0` in two places
-(`ref:sone/src-tauri/src/commands/auth.rs:395,561`) — another instance of the pattern in finding
-"C" of the original pass (§2.3's corrected buffer-duration): **a comment in Sone's source is not
-proof of Sone's behaviour; read the expression, not the docstring, before porting a number or a
-claim.**
+Separately, Sone's own source comment claims `legacy_auth_notice_count` "never resets" and caps at
+5 (`lib.rs:164-167`), but **both halves of that comment are wrong, per the second fact-check
+pass**: the actual cap is `const LEGACY_AUTH_NOTICE_LIMIT: u8 = 3` (`auth.rs:484`), the gate is
+`>= LEGACY_AUTH_NOTICE_LIMIT` (`auth.rs:493`), and the counter *is* reset to `0` — at
+`auth.rs:395` and `auth.rs:561`. Read `commands/auth.rs:395,484,493,561`, not the `lib.rs`
+docstring, if streamboat copies this "nudge users off device-code auth after repeated legacy-flow
+failures" pattern. This is another instance of the pattern in finding "C" of the original pass
+(§2.3's corrected buffer-duration): **a comment in Sone's source is not proof of Sone's behaviour;
+read the expression, not the docstring, before porting a number or a claim.**
+
+**L. Code signing and notarization are absent from the entire report — added by the second
+fact-check pass.** On Windows an unsigned installer triggers SmartScreen; on macOS an
+unsigned/unnotarized `.app` is refused by Gatekeeper with no obvious user recovery. Since the
+owner requires Windows and macOS now, this is a hard prerequisite with a recurring cash cost and a
+CI-secrets design, and it was invisible in a packaging section (§2.7, §3) that otherwise reads as
+complete. **No project in the reference set signs anything**: a grep for
+`notariz|codesign|CSC_LINK|signtool|hardenedRuntime` across `ref:tidal-hifi/build/*.yml`,
+`ref:tidal-hifi/.github/workflows/*.yml` and `ref:sone-windows/src-tauri/tauri.conf.json` returns
+nothing; tidal-hifi's release workflow builds mac/win artifacts and just uploads them
+(`actions/upload-artifact`), and its only build script is `electron-builder --publish=never`.
+Strawberry sidesteps the problem by making its macOS/Windows binaries sponsor-only
+(`ref:strawberry/README.md:85`). There is no precedent to copy; the owner must decide and fund
+this: an Apple Developer Program membership plus `notarytool` in CI for the macOS DMG, and a
+Windows code-signing certificate or Azure Trusted Signing for the MSI/NSIS. This is the same
+decision surface as item M below — Tauri's own updater needs its own signing keypair, separate
+again from OS code signing.
+
+**M. No project in the reference set ships an in-app download-and-install updater — generalized
+from a single-project observation to a landscape finding by the second fact-check pass.** §2.7
+and Implication 30 already establish that *Sone* has no auto-updater (check-and-notify against the
+GitHub releases API only); the first pass never checked whether that was an outlier. It is not.
+`tidal-hifi` — the project with the best release CI in this set — also ships no updater:
+`package.json:33` is `"builder": "electron-builder --publish=never"`, there is no
+`electron-updater` dependency, and the release workflow only uploads artifacts. High Tide and
+Sone's Flathub build delegate updates to the package manager entirely. tidalt ships distro
+packages plus a Docker image, no self-updater. **Conclusion: zero of the fourteen-plus projects
+examined implement a signed in-app download-and-install updater.** This makes Implication 30's
+"check-and-notify is the safe default" a landscape-wide finding, not a stated preference with
+nothing behind it. Source: `ref:tidal-hifi/package.json:33`; `ref:tidal-hifi/.github/workflows/
+release.yml`; `ref:sone/src-tauri/src/commands/updates.rs`; `ref:sone/.github/` (six files, one
+workflow).
+
+**N. Accessibility is never mentioned in this report, despite i18n (§18-G) already being flagged
+as a comparable day-one decision — added by the second fact-check pass.** It is the same class of
+decision with the same retrofit cost, and it interacts directly with the stack choice: a
+GTK4/libadwaita UI (High Tide) or a Qt UI (Strawberry) inherits AT-SPI/UI-Automation accessibility
+from the toolkit for free; a Tauri/React webview UI (Sone, and the architecture this report
+recommends, Implication 9) inherits only what the webview itself exposes and needs an explicit
+ARIA pass, focus management, and full keyboard-only navigation. Sone's ~85 React components have
+had no such pass (no `aria-live`/`role` audit present in `ref:sone/src/components/`). Not
+independently researched further here beyond the toolkit-level framing — flagged as a decision the
+owner must put next to i18n, not resolved. One partial mitigation worth noting: if streamboat
+builds the daemon/client split (Implication 7) with MPRIS and a CLI as first-class clients, every
+transport action is already reachable without the GUI at all, which is itself a (partial)
+accessibility surface. Source: `ref:sone/src/components/` (no audit present);
+`ref:high-tide/data/ui/**/*.blp` (toolkit-provided a11y); report §18-G (the parallel i18n finding).
+
+**O. Device hot-plug, device-busy, and device-lost recovery is covered only in fragments — combine
+them into one policy, added by the second fact-check pass.** USB DACs get unplugged, sleep, and
+get grabbed by other apps; on an exclusive `hw:` path these are routine events, not edge cases,
+and the recovery behaviour has to be designed into the audio command loop from the start. Three
+partial answers exist across the set and no single project has the complete policy: **Sone** has a
+device-busy retry loop on the exclusive path — its own source comment
+(`ref:sone/src/hooks/useGaplessPrefetch.ts:57-59`) says `isPlaying` "flickers false during
+device-busy retries", which is why gapless arming must not gate on it (see the prefetch-policy
+addition to §2.4 above) — and caches the device list in `AppState`
+(`cached_audio_devices: Mutex<Option<Vec<AudioDevice>>>`, `ref:sone/src-tauri/src/lib.rs:238`),
+which raises an invalidation-on-hot-plug question the source never answers. **High Tide** toasts
+"ALSA Audio Device is not available" and pauses on an `"Error outputting to audio device" +
+"disconnected"` bus error, and restarts the pipeline on the same track for `"Internal data stream
+error" + "not-linked"` (§4.3). **tidalt** distinguishes `errFormatRefused` (fall back to
+`plughw:`, mark the session not bit-perfect, memoize per device) from a device-busy error (keep
+retrying `hw:`), and acquires/releases both the ALSA device and the `ReserveDevice1` reservation
+only around actual playback, releasing on pause (§13, corrected above). Combining these three
+gives streamboat a workable policy; building it requires synthesizing across three codebases,
+because no one project has it. Source: `ref:sone/src/hooks/useGaplessPrefetch.ts:57-59`;
+`ref:sone/src-tauri/src/lib.rs:222-252`; `ref:high-tide/src/lib/player_object.py` (bus error
+handling, §4.3); `ref:tidalt/docs/client-server.md` (lazy device acquisition/release, §13).
+
+**P. "Sone has 151 tests" implies a test harness that does not exist — the honest test-setup
+picture, added by the second fact-check pass.** The first question an implementer asks about a
+client for an undocumented, credential-gated API is "how do I test this in CI without a live
+account?" §2.8 gives counts (151 Rust tests, 46 frontend test files, one Python probe) and
+correctly says CI runs none of them, but reads as "Sone has a test harness for this," which it
+does not. `ref:sone/src-tauri/Cargo.toml` `[dev-dependencies]` is exactly one line —
+`tempfile = "3"`. There is no `mockito`, `wiremock`, `httpmock`, or recorded-response fixture
+anywhere in the crate; all 151 tests are inline `#[cfg(test)]` modules covering **pure functions
+only** — the HTTP layer, the manifest parsers against real payloads, and the whole ALSA path have
+zero automated coverage. The frontend uses Vitest + `@testing-library/react` + jsdom with
+hand-written `invoke` stubs (`ref:sone/src/hooks/useGaplessPrefetch.test.ts:36-39`), not a
+request-mocking library like MSW. Contrast: `ref:tidalrs/Cargo.toml` ships `mockito` as a
+dev-dependency, and Music Assistant's TIDAL provider has real mocked-API provider tests (§8a). The
+transferable rule for streamboat is the parser/transport split plus captured request/response
+fixtures (a live TIDAL account, recorded once, checked into fixtures, replayed in CI) — **no
+project in this reference set demonstrates that pattern**, so it is work streamboat must design,
+not code to port. See `docs/research/engineering-baseline.md` for the CI/fixture-strategy
+treatment this report does not attempt to duplicate. Source: `ref:sone/src-tauri/Cargo.toml:76-77`;
+`grep` of `#[cfg(test)]` across `ref:sone/src-tauri/src`; `ref:sone/src-tauri/tests/`;
+`ref:sone/package.json` (vitest, jsdom, `@testing-library`); `ref:sone/src/hooks/
+useGaplessPrefetch.test.ts:36-39`; `ref:tidalrs/Cargo.toml`.
+
+**Q. Ranked lessons for streamboat — this report ends with 33 (now 38, see the additional
+implications above) implications grouped by category, in no order of importance; added by the
+second fact-check pass because a flat list of that length does not tell an implementer where to
+spend the first month.** The document is over 2,300 lines; a top tier, in order, from this
+report's own evidence: **(1) never decrypt** — Strawberry's refuse-and-explain (§5, Implication
+3); **(2) the core owns session/queue/transport and every UI is a subscriber** — the inversion of
+Sone's actual shape (§21, Implication 28); **(3) the platform audio split behind a trait from
+commit one** — sone-windows exists because Sone did not do this (§3, Implication 8); **(4) the
+unofficial v1 API is the only viable playback path**, with the official v2 request shape kept as
+the internal interface (§1.1, Implication 2); **(5) client IDs and secrets are user-replaceable
+settings, not baked-in constants** (§17, Implication 4); **(6) exclusive/bit-perfect output is a
+non-Flathub tier**, decided alongside the sandbox/confinement story from the start, not after
+(§18-A, Implication 26). Everything else in the implications list ranks below these six.
 
 ---
 
@@ -1934,10 +2358,44 @@ claim.**
     Decide whether the bundle needs `libav` at all, or whether `base`/`good`/`bad` (FLAC + DASH
     demux + AAC decode, no FFmpeg) is sufficient for TIDAL's actual codec set.
 33. **Define an explicit Dolby Atmos policy rather than letting it fall out of the quality
-    cascade by accident.** No reference project verifiably handles an Atmos-tagged track
-    correctly end to end. Default to requesting/preferring stereo; if an Atmos-only manifest
-    arrives, fail with a specific, honest message instead of GStreamer's generic
-    "Internal data stream error."
+    cascade by accident.** No reference project verifiably *decodes* an Atmos-tagged track end to
+    end, but TidaLuna does implement real metadata/quality handling for spatial tracks (§18-F,
+    corrected by the second fact-check pass): add `SONY_360RA` to the tag set, and for a
+    spatial-only track issue a `playbackinfo` call and read `audioQuality` back rather than
+    trusting the metadata tags alone. Default to requesting/preferring stereo; if an Atmos-only
+    manifest arrives and cannot be decoded, fail with a specific, honest message instead of
+    GStreamer's generic "Internal data stream error."
+
+### Additional implications (from the second fact-check pass, §18 items L-P)
+
+34. **Budget code signing and notarization from day one, not as a packaging afterthought.** No
+    project in the reference set signs anything (§18-L); it is not a "copy from Sone" item. Line
+    up an Apple Developer Program membership + `notarytool` CI step for macOS and a Windows
+    code-signing certificate (or Azure Trusted Signing) before the first Windows/macOS installer
+    ships, since the owner requires both platforms now.
+35. **Treat "no in-app updater" as the validated default, not an open question.** Zero of the
+    projects examined — including tidal-hifi, which has the best release CI in the set — ship a
+    signed download-and-install updater (§18-M). Check-and-notify (Sone's pattern) is sufficient
+    for v1; build a signed updater only for self-contained bundle channels (AppImage, a Windows/
+    macOS installer) and never for Flatpak/Snap/AUR, whose package manager already owns updates.
+36. **Put accessibility on the same decision list as i18n, before the component count grows.**
+    A GTK4/Qt UI gets AT-SPI/UIA for free; a Tauri/webview UI (the recommended stack) needs an
+    explicit ARIA and keyboard-navigation pass (§18-N). The daemon/client split (Implication 7)
+    gives MPRIS/CLI-driven access as a partial accessibility surface for free — use it, but do not
+    treat it as sufficient on its own.
+37. **Write one combined device hot-plug/busy/lost policy before shipping exclusive mode**,
+    synthesized from three partial answers in the set: retry (not fail) on a busy device without
+    gating gapless-arming on transient `isPlaying` flicker (Sone); a restart-same-track recovery
+    for a "not-linked" bus error and a clear disconnected-device toast (High Tide); and
+    acquire/release the exclusive reservation only around actual playback, releasing on pause, not
+    only on stop (tidalt, §18-O).
+38. **Design the test strategy — parser/transport split plus captured fixtures — as new work, not
+    something to port.** No project in the reference set demonstrates it: Sone's 151 tests cover
+    pure functions only with zero HTTP or ALSA mocking (§18-P); tidalrs and Music Assistant are
+    the only two with any request-mocking dependency at all. Capture real
+    `playbackinfopostpaywall`/manifest responses from a live account once, check them in as
+    fixtures, and replay them in CI — see `docs/research/engineering-baseline.md` for the
+    CI/fixture-strategy detail this report does not duplicate.
 
 ---
 
@@ -1963,6 +2421,8 @@ claim.**
 - `ref:sone/src-tauri/src/tidal_api.rs` — the richest single implementation (GPL; read for the sub-status table, header set, cascade).
 - `ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts` — the official request shape and quality→formats mapping (Apache-2.0).
 - `ref:tidal-sdk-android/player/streaming-api/.../ManifestMimeType.kt` — canonical manifest MIME enum (Apache-2.0).
+- `ref:TidaLuna/plugins/lib/src/redux/types/actions/actionTypes.ts` + `index.ts` — a ~700-line dump of the official desktop client's entire Redux action namespace (transport, queue, preload, device-switching, Cast); read for product design, not for code (MS-PL, and it lives inside a client mod — §7).
+- https://raw.githubusercontent.com/music-assistant/server/dev/music_assistant/providers/tidal/streaming.py — a fourth DASH-delivery strategy (local ephemeral HTTP route) and track-ID-churn recovery (§8a).
 
 **Audio**
 - `ref:sone/src-tauri/src/audio.rs:190-215,483-568,569-751` — ALSA format/rate negotiation and the S24 naming inversion.
@@ -2092,14 +2552,12 @@ pass)**
     intended) — tidalt comes closest (a daemon plus a TUI client, no GUI, Linux-only).
 17. TIDAL Connect: no open-source receiver or controller implementation exists. Whether the
     protocol is even approachable is unknown.
-18. **Current contributor counts per project — still not obtainable from this environment**,
-    confirmed by the fact-check pass: the checkouts are shallow (`--depth 1`) clones, so
-    `git log` gives exactly one author per repo regardless of the real number, and this session's
-    proxy refuses unauthenticated GitHub contributor-endpoint calls. Method for whoever runs this
-    next: `GET /repos/{owner}/{repo}/contributors?per_page=100&anon=1` after attaching each repo
-    via the GitHub connector, or each repo's Insights → Contributors page. Until then, use the
-    qualitative proxy in §18-J (Sone: 1 author, no CI, 64 open issues; High Tide: community +
-    Matrix channel + 8 translator locales; Strawberry: 341 forks, daily commits).
+18. ~~Current contributor counts per project~~ **— answered by the second fact-check pass, see
+    §18-J.** Sone 18 contributors (97% one author); High Tide 45 (68% one author, real long
+    tail); mopidy-tidal 12 (a genuine 3-person history); Strawberry effectively 5 (jonaski at
+    5,678 vs. the next human at 28); tidalrs 4 (phayes 60/67). The resulting bus-factor finding
+    (every project but High Tide and mopidy-tidal is bus-factor 1, Strawberry included) is now a
+    landscape-level fact, not a per-project caveat — see §18-J.
 
 ---
 
@@ -2185,7 +2643,9 @@ pass)**
 - https://github.com/yaronzz/Tidal-Media-Downloader/issues/1213 — unofficial client-ID breakage reported 2026-03-21, no resolution in-thread.
 - https://tidal-music.github.io/tidal-api-reference/ — official OpenAPI reference *(not fetched; listed for follow-up)*.
 - https://tidalapi.netlify.app/ — python-tidal documentation *(not fetched; listed for follow-up)*.
-- https://www.music-assistant.io/music-providers/tidal/ — Music Assistant's TIDAL provider *(not fetched; a further headless precedent worth reviewing)*.
+- https://www.music-assistant.io/music-providers/tidal/ — Music Assistant's docs site; unreachable from this environment (egress-blocked like `tidal.com`), but its source was fetched directly from GitHub — see §8a.
+- https://raw.githubusercontent.com/music-assistant/server/dev/music_assistant/providers/tidal/streaming.py and https://github.com/music-assistant/server/blob/dev/tests/providers/tidal/test_streaming.py — Music Assistant's TIDAL streaming provider and its tests, fetched 2026-09-08 (§8a).
+- https://raw.githubusercontent.com/michaelherger/lms-plugin-tidal/main/API/Async.pm — Lyrion/Logitech Media Server's TIDAL plugin, fetched 2026-09-08 (§8b).
 
 **Fact-check-pass additions (2026-09-07, external — not `ref:` checkouts, see §18)**
 

@@ -35,6 +35,13 @@ uncorrected originals and the reasoning behind each fix. Per-project narrative i
 | **tidalgo** | Go | any | LOSSLESS | n/a | Minimal | none | 1 | Dead (2018) | Historical |
 | **dotnet-tidal-usdk** | C#/.NET Core | any | HIGH | n/a | Minimal | MIT + anti-piracy clause | 0 | Dead (2020) | Licence-clause precedent |
 
+**Read the "Maturity" column as age + release cadence + CI, not community size.** Contributor data
+(`sone-deep-dive.md` §10) shows Strawberry's "very mature, very active" rating is not a better bus
+factor than Sone's — `jonaski` has 5,678 commits vs. the next *human* contributor at 28; the #2
+entry by commit count is Strawberry's own bot. Of every project examined, only High Tide (45
+contributors) and mopidy-tidal (12, a genuine 3-person history) are not effectively
+single-maintainer.
+
 ## 2. Table B — auth and secrets
 
 | Project | Flow(s) | Client credentials | Token storage |

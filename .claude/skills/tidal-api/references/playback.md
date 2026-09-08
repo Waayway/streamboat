@@ -51,15 +51,15 @@ Response fields worth knowing:
 | Field | Notes |
 |---|---|
 | `trackId` (or `videoId`) | may not match the request — track substitution is real, Strawberry logs the mismatch |
-| `assetPresentation` | `FULL` \| `PREVIEW` |
-| `previewReason` | only on previews |
+| `assetPresentation` | `FULL` \| `PREVIEW` — web SDK / TidaLuna types; python-tidal's `Stream.parse` does not read this |
+| `previewReason` | only on previews — same web-SDK-only caveat |
 | `audioMode` | `STEREO` \| `DOLBY_ATMOS` \| `SONY_360RA` (python-tidal's own enum only models the first two — a value it doesn't model can still arrive on the wire) |
 | `audioQuality` | **what you actually got** — may be lower than requested |
 | `manifestMimeType`, `manifest` (base64), `manifestHash` | see §2 |
-| `bitDepth`, `sampleRate` | **null for LOW/HIGH tiers** — the web SDK annotates this explicitly; default to 16/44100 only for display purposes, don't invent real values |
+| `bitDepth`, `sampleRate` | **correction: not established which tiers actually return null.** python-tidal's comment says LOW and legacy HI_RES (not LOW/HIGH), defaulting both to 16/44100; the web SDK types both `number \| null` with *no* tier qualification at all. Treat as optional at every tier; prefer the DASH `Representation@id` triple (e.g. `id="FLAC,44100,16"`) when a manifest is present, over trusting these two fields blindly. |
 | `albumReplayGain`, `albumPeakAmplitude`, `trackReplayGain`, `trackPeakAmplitude` | dB and linear peak — see §8 |
-| `licenseSecurityToken` | present on DRM'd assets |
-| `streamingSessionId` | echoed from `x-tidal-streamingsessionid` |
+| `licenseSecurityToken` | present on DRM'd assets — web SDK only, not read by python-tidal |
+| `streamingSessionId` | echoed from `x-tidal-streamingsessionid` — web SDK only; see `references/transport.md` §2 for whether it's required for Recently Played |
 
 **Critical**: over-requesting quality returns **HTTP 200 with a downgraded `audioQuality`, not an
 error**. The cascade in §4 exists to handle *errors*; `audioQuality` in the response is what you
@@ -165,10 +165,27 @@ codec}`. Likely dead or degraded — status not independently confirmed.
 GET https://api.tidal.com/v1/videos/{id}/playbackinfopostpaywall
     ?videoquality=HIGH&playbackmode=STREAM&assetpresentation=FULL&countryCode=XX
 ```
-→ `{videoId, videoQuality, manifestMimeType, manifest}`, manifest decodes to `{urls: [...]}`, URL is
-an HLS `.m3u8`. `GET videos/{id}/urlpostpaywall?urlusagemode=STREAM&videoquality=&assetpresentation=FULL`
-is the shortcut. Sone plays video through hls.js in its webview, separate from the audio pipeline —
-a reasonable pattern to copy if streamboat has a webview at all.
+→ `{videoId, videoQuality, manifestMimeType, manifest}`, manifest decodes to a `{urls: [...]}` EMU
+JSON body (Sone takes `urls[0]` without checking its extension). **That `urls[0]` is specifically an
+HLS `.m3u8` is an inference, not confirmed for this EMU path** — the only direct evidence for `.m3u8`
+is python-tidal's docstring on the *separate* `urlpostpaywall` shortcut, not on this manifest path.
+Assume `.m3u8` but verify against a live response before hardcoding a parser that requires it.
+`GET videos/{id}/urlpostpaywall?urlusagemode=STREAM&videoquality=&assetpresentation=FULL` is the
+shortcut. Sone plays video through hls.js in its webview, separate from the audio pipeline — a
+reasonable pattern to copy if streamboat has a webview at all.
+
+**Concrete per-tier codec/resolution/bitrate data** (libopenTIDAL's manual, dated 2021 — indicative,
+not a contract; actual values may vary by client id):
+
+| `videoquality` | Codecs | Resolution / framerate / bitrate |
+|---|---|---|
+| `AUDIO_ONLY` | HE-AAC (`mp4a.40.5`) | no video — **reusable by the existing audio pipeline, no video surface needed** |
+| `LOW` | AAC-LC `mp4a.40.2` + H.264 `avc1.42001e` | 320x180 @ 25 fps |
+| `MEDIUM` | AAC-LC `mp4a.40.2` + H.264 `avc1.4d001f` | 640x360 @ 25 fps |
+| `HIGH` | HLS, multiple renditions | adaptive ladder, 1920x1080 @ 25 fps (~10173 kbps) down to 320x180 @ 12.5 fps (~318 kbps) — **needs a real ABR-capable player, not a single URL** |
+
+`AUDIO_ONLY` is a cheap partial answer to "video in or out for v1" — no new pipeline needed — while
+`HIGH` is genuinely a second pipeline. `ref:libopentidal/Docs/OTQuality.7`.
 
 ## 7. Audio modes and codecs
 
@@ -176,7 +193,7 @@ a reasonable pattern to copy if streamboat has a webview at all.
 |---|---|---|
 | `STEREO` | `mp4a.40.5`/HE-AAC (LOW), `mp4a.40.2`/AAC-LC (HIGH), `flac` (LOSSLESS, HI_RES_LOSSLESS) | current |
 | `DOLBY_ATMOS` | E-AC-3 JOC — `EAC3` unofficial, `EAC3_JOC` official. iOS SDK: "Dolby Atmos is delivered in the E-AC-3 (JOC) codec; the quality tier is irrelevant." | current |
-| `SONY_360RA` | `mha1` (MPEG-H). iOS SDK: "has no codec the client needs, so it is unsupported here." | **removed from TIDAL 2024-07-24** |
+| `SONY_360RA` | `mha1` (MPEG-H) is a plausible but **unconfirmed** codec — the iOS SDK declares `mha1`/`mhm1` constants but its `init?` returns `nil` for `SONY_360RA` rather than selecting a codec, with the comment: "has no codec the client needs, so it is unsupported here." | **removed from TIDAL 2024-07-24** |
 | MQA (`HI_RES` tier) | `mqa` | **removed from TIDAL 2024-07-24** |
 
 MQA and Sony 360 Reality Audio were removed 2024-07-24, replaced by FLAC and Dolby Atmos (TIDAL's own
@@ -240,8 +257,11 @@ within the offered set):
 | LOW | `HEAACV1` |
 | HIGH | `HEAACV1, AACLC` |
 | LOSSLESS | `HEAACV1, AACLC, FLAC` |
-| HI_RES / HI_RES_LOSSLESS | `HEAACV1, AACLC, FLAC, FLAC_HIRES` |
-| immersive audio (any tier) | append `EAC3_JOC` |
+| HI_RES / HI_RES_LOSSLESS (web SDK grouping); **HI_RES_LOSSLESS only** (Android SDK, equality check — `HI_RES` gets no `FLAC_HIRES` there) | `HEAACV1, AACLC, FLAC, FLAC_HIRES` |
+| immersive audio (any tier) | append `EAC3_JOC` — **Android SDK only**; `rg EAC3_JOC` over `tidal-sdk-web/packages/player` and `tidal-cli` returns nothing |
+
+If streamboat calls `/trackManifests/{id}` directly, follow the web SDK's more-permissive grouping
+(don't special-case `HI_RES`) and don't assume `EAC3_JOC` is sent by the web player.
 
 Whether a newly registered third-party client actually receives full-track manifests here, or only
 30-second previews, is **unresolved** — `tidal-music` Discussion #179 raises exactly this doubt with

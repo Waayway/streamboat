@@ -9,7 +9,7 @@ always clone drift, not an error; prefer the named function/constant when both a
 
 | `ref:<project>` | GitHub URL | Commit read | What it is |
 | --- | --- | --- | --- |
-| `python-tidal` | https://github.com/tamland/python-tidal | `9c41fbe` | The de-facto reference unofficial-API client (Python, LGPL-3.0-or-later, v0.8.11). Nearly every endpoint in this skill was first confirmed here. |
+| `python-tidal` | https://github.com/EbbLabs/python-tidal (current home; the README still links `tamland/python-tidal`, the project's earlier home) | `9c41fbe` | The de-facto reference unofficial-API client (Python, LGPL-3.0-or-later, v0.8.11). Nearly every endpoint in this skill was first confirmed here. |
 | `high-tide` | https://github.com/Nokse22/high-tide | `49f2472` | GTK4/libadwaita Linux client built on python-tidal. PKCE-only login, libsecret storage, Flatpak packaging. |
 | `sone` | https://github.com/lullabyX/sone | `21494b9` | Tauri (Rust) native client — the most defensively-engineered TIDAL API layer reviewed (rate gate, sub-status classification, play reporting). Primary source for request-hardening patterns. |
 | `sone-windows` | https://github.com/lvllaby/sone-windows | `f2009f2` | Windows port of Sone; same API layer, WASAPI/SMTC specifics. |
@@ -40,3 +40,18 @@ hosts whose content is second-hand (search-result excerpts / third-party mirrors
 fetch): `developer.tidal.com`, `support.tidal.com`, `tidal.com`, `flathub.org`,
 `tidal-music.github.io`, `forum.strawberrymusicplayer.org`, `torrentfreak.com`. Re-verify anything
 quoted from those hosts before treating it as a direct quotation in a public-facing document.
+
+Two gists carrying credential-shaped values are cited across this skill and are easy to confuse —
+**they are not the same thing**:
+
+- `gist.github.com/riad-uk/3003fa0183b464a0b0d2ca2e77afe477` — the **legacy pre-OAuth
+  `x-tidal-token`** family (browser/android/ios/native/audirvana/amarra), from the
+  `POST /v1/login/username` era. `references/auth.md` §4.
+- `gist.github.com/yaronzz/48d01f5a24b4b7b37f19443977c22cd6` — **OAuth `clientId`/`clientSecret`**
+  pairs per platform (Fire TV, Android TV, Android Auto, TV), linked from
+  `github.com/yaronzz/Tidal-Media-Downloader/issues/1213` (the March 2026 "broken keys" report).
+  `references/legal-and-landscape.md` §2.
+
+Also directly readable (unlike the blocked hosts above): the 2016 TiDown DMCA takedown notice at
+`github.com/github/dmca/blob/master/2016/2016-08-31-Tidal.md` — prefer this over TorrentFreak
+coverage as the primary source.

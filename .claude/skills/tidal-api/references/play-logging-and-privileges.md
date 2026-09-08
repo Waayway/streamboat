@@ -10,6 +10,7 @@ Sone do" runs into an honest tradeoff — read the "impersonation" note below be
 3. Sone's play-logging rules
 4. Server-anchored timestamps (`@tidal-music/true-time`, `GET /v1/ping`)
 5. Streaming privileges (`rt/connect`)
+6. A separate offline-plays channel exists, and `/v1/users/{id}/activity` does not
 
 ---
 
@@ -130,3 +131,14 @@ lost) will occasionally appear instead of proactively yielding. That is graceful
 blocker — reasonable to defer past v1. The web SDK's message types
 (`USER_ACTION` out; `PRIVILEGED_SESSION_NOTIFICATION` in, carrying `clientDisplayName`/`endsAt`/
 `sessionId`) are the cheapest starting point if streamboat ever implements it.
+
+## 6. A separate offline-plays channel exists, and `/v1/users/{id}/activity` does not
+
+Answers a question worth stating explicitly rather than leaving as "not found."
+`https://api.tidal.com/v1/report/offlineplays` is a **second, separate** reporting channel used by
+TIDAL's own iOS SDK for offline plays, posted from its own on-disk queue, distinct from the
+`ec.tidal.com` channel above. No OSS client uses it, and it's irrelevant if `playbackmode=OFFLINE` is
+ruled out by policy (`references/playback.md` §11 recommends exactly that) — worth confirming as
+absent-by-design rather than an open question. Separately: `/v1/users/{id}/activity` does **not**
+exist in any checkout (grepped across all 22) — the only activity surface is the v2
+`feed/activities` endpoint documented in `references/catalog-and-library.md` §5.

@@ -10,12 +10,13 @@ verbatim, corrected. `ref:<project>/<path>` points at a shallow clone — see `s
 3. Layer 2 — transport-level tests (in-process server or stubbed transport)
 4. Layer 3 — contract tests against the published spec
 5. Layer 4 — opt-in live tests ("canary")
-6. Fuzzing manifest and response parsing
+6. Fuzzing manifest and response parsing (incl. sanitizers/memory safety)
 7. Audio pipeline tests
 8. UI tests **[STACK]**
 9. The non-negotiable CI rule
+9a. Test determinism: clock, timezone and locale
 10. Coverage strategy
-11. Fixture and golden-file size policy
+11. Fixture and golden-file size policy (incl. `.gitattributes`)
 
 ## 1. The architectural precondition
 
@@ -49,7 +50,18 @@ live outside it. This one rule is what makes the rest of this section cheap.
   `userId`, email, or a real subscriber's playlist contents. Write a `scripts/scrub-fixture` that
   runs over every capture and fails CI if a token-shaped string survives.
 - Record the capture date and the endpoint+params at the top of each fixture (a sibling
-  `.meta.json`), so a future failure can be attributed to drift rather than to a bug.
+  `.meta.json`): capture date (UTC), method, path template and query params (values redacted), the
+  streamboat version and client-id variant used to capture it, response status, and the TIDAL
+  response headers that matter for drift (`x-tidal-*`, `content-type`, any `Retry-After`) — the
+  last of these is what lets a later failure be attributed to server drift rather than a bug.
+- **Capture mechanism**: build the recorder as a decorator on the same transport seam §3 below
+  recommends for stubbing (tidalt's `roundTripFunc`, tidal-sdk-ios's
+  `JsonEncodedResponseURLProtocol`), not a separate tool. A `STREAMBOAT_RECORD_FIXTURES=<dir>` mode
+  wraps the real transport and writes the scrubbed request+response as each call completes — scrub
+  in the write path so an unredacted body never touches disk, even transiently. Do **not** use
+  mitmproxy or a browser HAR export: both capture TLS traffic outside the scrubber and leave an
+  unredacted file on disk that must be cleaned up after the fact — exactly the failure mode this
+  pipeline exists to prevent.
 
 ## 3. Layer 2 — transport-level tests (in-process server or stubbed transport)
 
@@ -79,9 +91,11 @@ Retry-After then success", and "5xx, 5xx, success" backoff sequences determinist
    seconds with a 5-second default when the header is absent or in HTTP-date form, and stores an
    absolute deadline via `fetch_max` so concurrent 429s can only lengthen it
    (ref:sone/src-tauri/src/rate_gate.rs).
-3. Terminal playback sub-statuses are not retried. The survey records sone treating 4005, 4010 and
-   4030–4035 as terminal; **unverified in this pass** — verify the exact list against the
-   streaming-topic research before encoding it.
+3. Terminal playback sub-statuses are not retried. **Verified at source, not contiguous**:
+   `TERMINAL_SUB_STATUSES = [4005, 4010, 4030, 4031, 4032, 4034, 4035]` — `4006` ("streaming
+   privileges lost — recovers") and `4033` ("subscription up-sell") are deliberately excluded as
+   recoverable (ref:sone/src-tauri/src/tidal_api.rs:16-18, tests at lines 6746, 6755-6756). Do not
+   write this as the range `4030–4035`.
 4. The quality fallback cascade stops at the first success and does not cascade past a rate-limit
    or terminal error.
 5. Token refresh persists the new tokens to storage exactly once and does not lose the refresh
@@ -144,7 +158,15 @@ Recommended shape for streamboat: `streamboat-test --live` (or `cargo test --fea
    segment's HTTP headers.
 4. Emits a machine-readable report (`live-report.json`) with per-endpoint pass/fail plus the
    observed audioQuality/bitDepth/sampleRate, so the maintainer can diff two runs.
-5. Runs from a maintainer's machine or a self-hosted runner on a schedule, never from a fork PR.
+5. Runs from a maintainer's machine on a schedule, never from a fork PR. **Do not use a
+   GitHub-hosted "self-hosted runner" for this on the public repo**: a self-hosted runner on a
+   public repository is a known code-execution risk (a fork PR reaching any workflow with that
+   runner label executes attacker code on the machine holding the runner token — and here that
+   machine also holds a live TIDAL refresh token). No reference project uses a self-hosted runner
+   or `pull_request_target` (zero hits across all 21 checkouts), so there is no precedent to copy.
+   Prefer a maintainer-local cron pushing only `live-report.json` to a private repo/gist. If a
+   self-hosted runner is used anyway, it must be ephemeral, on a *separate private* repo, never
+   labeled for a public workflow. Also: never use `pull_request_target` in this repo.
 
 Add a second, credential-free canary that hits only the unauthenticated surfaces
 (`/v1/oauth2/device_authorization` returns a device code without an account). mopidy-tidal proves
@@ -198,6 +220,16 @@ Independent of the fuzzer: **set hard limits** — reject a manifest over N byte
 disable XML external entities and DTD processing outright, cap segment count, and cap total
 decoded size.
 
+**Run fuzz targets under a sanitizer, not just a plain build.** A fuzzer without ASan/UBSan is only
+as good as its oracle — a heap overflow or use-after-free in a demuxer/decoder path shows up as a
+pass, not a crash. No reference project runs any sanitizer, Valgrind, Miri or CodeQL (grep for
+`fsanitize|ASAN|UBSAN|valgrind|miri` across all 21 checkouts hits only a false positive in a
+Strawberry translation file; zero CodeQL/OpenSSF-Scorecard workflows exist) — this is a
+no-precedent addition, not a copyable pattern. Run the fuzz targets under ASan+UBSan (add TSan for
+gapless/queue scheduling code, which is inherently multi-threaded) nightly given the runtime cost;
+if the stack is Rust, also run the pure-parser suite under Miri and require review on every
+`unsafe` block; run the committed fuzz-crasher regression corpus under the sanitizer build too.
+
 ## 7. Audio pipeline tests
 
 What the references do:
@@ -220,8 +252,9 @@ What the references do:
 Recommended layers for streamboat:
 
 1. **Pure logic, no device.** Sample-rate/bit-depth negotiation table, ReplayGain gain computation
-   (sone's formula is `0.8 * min(10^((rg+4)/20), 1/peak)`, per the prior survey — **unverified in
-   this pass**, confirm against ref:sone/src-tauri/src/commands/playback.rs before encoding),
+   — **verified at source**: `gain = 0.8 * min(10^((replay_gain + 4) / 20), 1 / peak)`, i.e.
+   pre-amp `4.0` dB, headroom factor `0.8`, `peak` defaulted to `1.0` when absent/non-positive, and
+   `gain = 1.0` when `replay_gain` is `None` (ref:sone/src-tauri/src/commands/playback.rs:9-20) —
    quality-ladder mapping, the ALSA/WASAPI fallback state machine, queue/gapless scheduling
    decisions. These run everywhere, including CI, and should be the majority of audio tests.
 2. **Golden decode.** Decode a committed 5-second FLAC and a 5-second AAC to PCM and compare
@@ -279,6 +312,24 @@ a second net. Everything credentialed goes in a separate workflow gated on
 `github.event.pull_request.head.repo.full_name == github.repository`, the pattern Strawberry uses
 for its signing/notarizing steps (ref:strawberry/.github/workflows/build.yaml:1178, 1253).
 
+## 9a. Test determinism: clock, timezone and locale
+
+Three sources of non-determinism are specific to this app and untested by every reference project
+(grep for `TZ:|LC_ALL|LANG:` across all 21 checkouts' workflow YAML returns nothing):
+
+- **Wall clock.** Token expiry, cache TTL/SWR staleness, and the `Fresh`/`Stale`/`Miss` tri-state
+  all read the clock. Inject it as an interface everywhere expiry/TTL logic reads it so §3's tests
+  1, 2 and 6 can *drive* the clock deterministically, not merely avoid it (tidalt's test harness
+  only avoids the problem, by pinning a token's expiry an hour into the future so refresh never
+  fires, ref:tidalt/internal/tidal/api_test.go:19-48).
+- **Timezone.** Release dates, "recently added" and relative-time display are timezone-sensitive.
+  Set `TZ=UTC` in the CI test environment, **and** add at least one matrix leg with a non-UTC,
+  non-English locale (e.g. `TZ=Pacific/Chatham LC_ALL=de_DE.UTF-8`) so formatting is exercised
+  rather than accidentally passing because every runner happens to be UTC/en-US.
+- **Random nonces.** Seed any RNG the tests exercise (AEAD nonces in `secrets-and-tokens.md` §3,
+  retry-backoff jitter) from an injectable source, so an encrypted-file round-trip test is
+  byte-reproducible.
+
 ## 10. Coverage strategy
 
 No reference project names a coverage target except mopidy-tidal, which states plainly:
@@ -298,6 +349,18 @@ one lands, because it grows without bound otherwise: a byte cap per fixture (aud
 <200 KB per §7; extend the cap to JSON captures, gzip large ones), generate audio goldens from a
 tone/sweep at test time where determinism allows and commit only the SHA-256 rather than the PCM,
 keep fuzz crashers minimised before committing, and decide explicitly for or against Git LFS now
-because switching later rewrites history. No reference project uses LFS, and Strawberry's
-12-format audio corpus (ref:strawberry/tests/data/audio/) is small enough to live in plain git —
-treat that as the working default, but record it as a decision.
+because switching later rewrites history. Only 1 of 21 checkouts uses LFS: tidalswift's
+`.gitattributes` routes `*.jpg|*.png|*.pdf|*.zip|*.tar|*.gz` through `filter=lfs`, and only for
+README screenshots, not test data (ref:tidalswift/.gitattributes). Strawberry's 12-format audio
+corpus (ref:strawberry/tests/data/audio/) stays in plain git with no `.gitattributes` at all. Plain
+git for small fixtures is still the right default; the corrected precedent is "one of 21 uses LFS,
+for marketing screenshots only" rather than "nobody uses it".
+
+**Commit a `.gitattributes` at repo creation regardless of the LFS decision** — line-ending
+normalisation is the trap, not LFS. §7 recommends golden PCM/FLAC/AAC fixtures compared by SHA-256
+and CI runs unit tests on `windows-latest`; without a `.gitattributes`, git's `autocrlf` can rewrite
+a fixture file on a Windows checkout and a byte-compare fails only on that leg, reading as a
+mysterious platform bug. Commit at minimum: `* text=auto eol=lf`; `*.sh text eol=lf`; `*.bat text
+eol=crlf`; `tests/fixtures/** binary`; `*.flac`, `*.m4a`, `*.pcm`, `*.wav binary`; and mark
+generated packaging fragments (`*.wxs`, `*.nsi` — see `packaging-and-distribution.md` on
+sone-windows) `linguist-generated`.

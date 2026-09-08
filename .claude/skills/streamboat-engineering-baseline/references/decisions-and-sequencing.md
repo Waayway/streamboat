@@ -106,6 +106,24 @@ low cost, because the API surface is JSON in / typed structs out.
 24. **Record the EU CRA scope determination in `docs/legal.md`** (`licensing-and-legal.md` §5) —
     a five-minute decision today, and a compliance-timeline problem if left implicit past
     2026-09-11.
+25. **Write every persisted secret/settings/state file atomically** (temp file in the same
+    directory → write → fsync → rename → fsync the directory) from the first commit
+    (`secrets-and-tokens.md` §3) — sone itself only does this for theme files, not
+    settings/tokens, and retrofitting after real users have on-disk state is expensive.
+26. **Implement `logout` in the sone ordering, and ship a separate `streamboat purge`**
+    (`secrets-and-tokens.md` §8) that also removes the keyring entry, key file and logs — decide
+    this alongside item 19's multi-process token model, since both concern the same on-disk state.
+27. **Decide the app ID / GitHub owner before the first commit** (`packaging-and-distribution.md`
+    §2) — baked into the Flatpak ID, D-Bus name, macOS bundle identifier, and the Windows
+    AppUserModelID; moving it later costs a Flathub `end-of-life-rebase` plus a data migration.
+28. **Budget the Windows/macOS media-runtime bundling problem as a first-week line item**
+    (`packaging-and-distribution.md` §4a): neither OS ships GStreamer/FFmpeg, so the installer must
+    bundle the runtime and the app needs a bundled-vs-system plugin-path code path — the largest
+    Windows-specific fact in the reference set (`sone-windows`), easy to discover only late.
+29. **Add a package-install smoke test to CI on release-candidate tags**
+    (`ci-and-repo-governance.md` §1, `packaging-and-distribution.md` §4): copy sone's
+    Docker-per-distro harness rather than relying on a build-only job to catch a missing runtime
+    dependency.
 
 ## 3. Sequence the packaging work
 
@@ -157,8 +175,11 @@ Only the owner can settle these:
    its side, and reserves the right to reject on the extent of generated material. Is Flathub a
    required distribution channel? If yes, what is the project's disclosure statement, and what
    process keeps commit messages and submission PRs human-authored?
-2. **License split.** GPL-3.0-only everywhere, or permissive/LGPL `core` + GPL apps? The second is
-   recommended but is effectively irreversible without contributor consent.
+2. **License split.** GPL-3.0-only everywhere, or Apache-2.0 `core` + GPL-3.0-only apps? The second
+   is recommended and is effectively irreversible without contributor consent — **and it is now
+   also the mobile decision**: GPL-3.0-only on the app is incompatible in practice with Apple App
+   Store distribution, so an Apache-2.0 `core` is what keeps a future iOS app possible at all
+   (`licensing-and-legal.md` §2).
 3. **Contributor agreement.** DCO sign-off, a CLA, or neither? Without one, relicensing later is
    impossible in practice.
 4. **Play reporting to TIDAL.** On by default (so Recently Played works, as sone does) or off by
@@ -196,24 +217,32 @@ Items that must be checked before anything is published:
   as unconfirmed until read directly. The ToS was reported as effective 2026-06-29. See
   `licensing-and-legal.md` §4 for the scope distinction (developer terms vs consumer ToS) that
   matters regardless of how this verification lands.
-- **The exact `Retry-After` handling and terminal playback sub-status list** cited here come from
-  the prior survey plus sone's `rate_gate.rs`; the sub-status numbers (4005, 4010, 4030–4035) were
-  not re-verified against sone's source in this pass.
-- **The ReplayGain formula** `0.8 * min(10^((rg+4)/20), 1/peak)` comes from the prior survey, not
-  from a line read in this pass.
+**Two items previously listed here are now resolved, not unverified** — see `testing-strategy.md`
+§3 item 3 and §7 item 1 for the exact source: the terminal playback sub-status list is
+`[4005, 4010, 4030, 4031, 4032, 4034, 4035]` (non-contiguous — `4033` and `4006` are deliberately
+excluded as recoverable, ref:sone/src-tauri/src/tidal_api.rs:16-18), and the ReplayGain formula is
+`0.8 * min(10^((replay_gain + 4) / 20), 1 / peak)` verbatim
+(ref:sone/src-tauri/src/commands/playback.rs:9-20).
 - **Windows Credential Manager blob limit**: `CRED_MAX_CREDENTIAL_BLOB_SIZE` is documented as
-  `5*512` = 2560 bytes on Windows 7+, but reports differ on whether `CRED_TYPE_GENERIC` is further
-  limited to 512 bytes. Measure with a real token before designing around it (see
-  `secrets-and-tokens.md` §2 for the "store a key, not the payload" design that sidesteps this).
+  `5*512` = 2560 bytes on Windows 7+ per Microsoft's own docs source, but reports differ on
+  whether `CRED_TYPE_GENERIC` is further limited to 512 bytes, **and mingw-w64's own header
+  disagrees outright** (bare `512`, no version guard) — a real toolchain-specific trap for a
+  MinGW-targeted Windows build. Measure with a real token before designing around it (see
+  `secrets-and-tokens.md` §2 for the "store a key, not the payload" design that sidesteps this,
+  and for the corrected source attribution — an earlier draft of this document mis-cited the
+  mingw-w64 header as the *verification* source for the 2560-byte figure, which is backwards).
 - **The set of locales TIDAL accepts** for the `locale` parameter is not documented anywhere in the
   reference checkouts; every project hardcodes `en_US`. Determine empirically.
 - **Qt 6 module-by-module licensing** (which modules are GPL-2.0-only vs GPL-3.0-only) needs a
   per-module check against https://doc.qt.io/qt-6/licensing.html if Qt is chosen — this
   environment could reach it only via a search index, not a direct fetch.
-- **Flathub's Generative AI policy text is a dated snapshot** (repository HEAD 2026-09-07); the
-  policy already flipped once (commit `992f57b`, 2026-05-29, briefly an outright ban) before
-  reverting to the disclosure regime quoted in `packaging-and-distribution.md` §1. Re-read the live
-  page immediately before submitting, not just once during research.
+- **Flathub's Generative AI policy text is a dated snapshot** (repository HEAD 2026-09-07, re-read
+  directly and matches verbatim). A separate claim that it already flipped once (commit `992f57b`,
+  2026-05-29, briefly an outright ban) before reverting to the disclosure regime quoted in
+  `packaging-and-distribution.md` §1 **could not be independently re-verified in this pass**
+  (GitHub API access to that repo's commit history is not enabled here) — do not repeat the
+  specific commit/date as settled fact without checking it directly. Re-read the live page
+  immediately before submitting, not just once during research, regardless.
 - **Azure Trusted Signing / Artifact Signing pricing and eligibility** ($9.99/$99.99 per month,
   signature caps, and the "US/Canada individuals, EU/UK organisations" eligibility wording) come
   from secondary sources, not the primary Microsoft pricing page — both `azure.microsoft.com` and

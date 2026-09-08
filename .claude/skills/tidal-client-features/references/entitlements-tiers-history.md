@@ -95,7 +95,10 @@ desktop-only assumptions — see Implication 12 in the main report.
 
 ## 4. Streaming-privileges enforcement
 
-One stream at a time per account; a second device kicks the first. `player/STREAMING_PRIVILEGES_REVOKED`
+One stream at a time — per subscription slot. The Family plan carries 6 simultaneous online
+streams (one per member), same source as §3, so revocation may not reproduce on a Family account
+during testing; still handle it, since Individual/Student accounts hit it constantly. A second
+device on the same slot kicks the first. `player/STREAMING_PRIVILEGES_REVOKED`
 in the desktop client, plus a whole `streaming-privileges` module in the official Android SDK
 (`ref:tidal-sdk-android/player/streaming-privileges/` — acquire/connect websocket protocol,
 `AcquireRunnable`, `IncomingWebSocketMessageParser`, `SocketConnectionState`). This is
@@ -167,11 +170,17 @@ to scope MVP auth work without opening that file.
 link.tidal.com and enters a code; the only flow that works headless/CLI/TV) and OAuth
 **authorization-code + PKCE** (browser redirect). **PKCE is required to unlock
 `HI_RES_LOSSLESS`** — python-tidal's own `login_pkce` docstring calls it "the only way" to get
-Hi-Res, and ties `get_url()` (the `urlpostpaywall` shortcut) being disabled to non-PKCE sessions.
-Practical consequence: a CLI/headless mode built device-code-only is capped below the top quality
-tier by construction, not by any server-side headless restriction — ship both flows in MVP if
-Max-tier quality is an MVP requirement (SKILL.md "Feature-matrix quick reference" already lists
-both as MVP).
+Hi-Res — but PKCE *costs* you the direct-URL shortcut: `Track.get_url()` (the `urlpostpaywall`
+shortcut) raises `URLNotAvailable` whenever `session.is_pkce` is true, not the other way around
+(`ref:python-tidal/tidalapi/media.py:410-421`). A PKCE session must always go through
+`playbackinfopostpaywall` + manifest parsing; it can never take the cheap `urlpostpaywall` path.
+Device-code sessions *can* use `urlpostpaywall`, but are capped below Max quality. Practical
+consequence: a CLI/headless mode built device-code-only is capped below the top quality tier by
+construction, not by any server-side headless restriction — ship both flows in MVP if Max-tier
+quality is an MVP requirement (SKILL.md "Feature-matrix quick reference" already lists both as
+MVP). This also strengthens the case for building the `playbackinfopostpaywall` + manifest-parsing
+path first: every PKCE session needs it regardless of whether the device-code-only
+`urlpostpaywall` shortcut is ever implemented.
 
 **`GET sessions` (or the OAuth token response, for Strawberry) supplies `countryCode`**, and
 `countryCode` is mandatory on essentially every subsequent catalogue call — python-tidal injects it

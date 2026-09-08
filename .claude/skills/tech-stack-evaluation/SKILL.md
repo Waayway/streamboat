@@ -1,15 +1,15 @@
 ---
 name: tech-stack-evaluation
-description: The researched, fact-checked answer to "what should streamboat be built in" — language, UI toolkit, audio engine, process architecture, and packaging path — covering Tauri 2 + Rust + React (the recommendation), Slint, Flutter/flutter_rust_bridge, GStreamer/libmpv/cpal/FFmpeg audio engines, GTK4, Qt/QML, Electron, Kotlin Multiplatform, Avalonia, Wails, Fyne, and SwiftUI, plus the weighted scoring matrix, effort-to-MVP estimates, Tauri-specific engineering facts (capabilities ACL, CSP, plugins, OAuth redirect, window chrome, auto-update coverage, WebView2 install mode, cross-compilation reality, Flathub packaging generators, mobile crate shape, IPC data-path limits), and licensing/policy constraints (Flathub's AI-disclosure policy, Apple App Store 5.2.2/5.2.1/2.5.6). Use this whenever choosing or reconsidering any part of the stack; writing or reviewing `Cargo.toml`, `package.json`, `tauri.conf.json`, `src-tauri/capabilities/*.json`, a CI workflow, or a packaging script (deb/rpm/AppImage/Snap/Flatpak/AUR/Nix/MSI/NSIS/DMG); adding a Tauri plugin, deciding a CSP, or wiring the OAuth redirect; picking or comparing an audio engine (GStreamer, libmpv, cpal, symphonia, FFmpeg/ffmpeg-next, wasapi, alsa, coreaudio-rs); estimating effort or writing a project plan/roadmap; evaluating whether a dependency or approach blocks headless/server/CLI, cross-platform desktop parity, or the future mobile path; or whenever the task or a file mentions Tauri, WebView2, WebKitGTK, WKWebView, bit-perfect, exclusive mode, wasapi2sink, GStreamer, libmpv, Slint, egui, iced, GPUI, Relm4/GTK4, Qt/QML, cxx-qt, Flutter, UniFFI, Kotlin Multiplatform/Compose, Avalonia, Wails, Fyne, SwiftUI, scoring matrix, MVP estimate, Flathub AI policy, App Store review guidelines, or "which stack"/"what language"/"what framework" for any part of streamboat. Do not answer a stack question from general "pick a cross-platform framework" knowledge — this decision has already been researched and fact-checked against 20+ reference projects' actual source, and several plausible-but-wrong claims (Strawberry's real size, cpal's changelog attributions, which project actually verified wasapi2sink, tidalt's own docs contradicting its own code) are traps this skill exists to prevent.
+description: The researched, fact-checked answer to "what should streamboat be built in" — language, UI toolkit, audio engine, process architecture, and packaging path — covering Tauri 2 + Rust + React (the recommendation), Slint, Flutter/flutter_rust_bridge, GStreamer/libmpv/cpal/FFmpeg audio engines, GTK4, Qt/QML, Electron, Kotlin Multiplatform, Avalonia, Wails, Fyne, and SwiftUI, plus the weighted scoring matrix, effort-to-MVP estimates, Tauri-specific engineering facts (capabilities ACL, CSP, plugins, OAuth redirect, window chrome, auto-update coverage, WebView2 install mode, cross-compilation reality, Flathub packaging generators, mobile crate shape, IPC data-path limits), and licensing/policy constraints (Flathub's AI-disclosure policy, Apple App Store 5.2.2/5.2.1/2.5.6). Use this whenever choosing or reconsidering any part of the stack; writing or reviewing `Cargo.toml`, `package.json`, `tauri.conf.json`, `src-tauri/capabilities/*.json`, a CI workflow, or a packaging script (deb/rpm/AppImage/Snap/Flatpak/AUR/Nix/MSI/NSIS/DMG); adding a Tauri plugin, deciding a CSP, or wiring the OAuth redirect; picking or comparing an audio engine (GStreamer, libmpv, cpal, symphonia, FFmpeg/ffmpeg-next, wasapi, alsa, coreaudio-rs); designing the daemon/GUI device-ownership handoff or the account-wide "who is allowed to play" rule (TIDAL's own streaming-privileges/"Pushkin" websocket, device warm-up/PLL-lock delay); estimating effort or writing a project plan/roadmap; evaluating whether a dependency or approach blocks headless/server/CLI, cross-platform desktop parity, or the future mobile path; or whenever the task or a file mentions Tauri, WebView2, WebKitGTK, WKWebView, bit-perfect, exclusive mode, wasapi2sink, GStreamer, libmpv, Slint, egui, iced, GPUI, Relm4/GTK4, Qt/QML, cxx-qt, Flutter, UniFFI, Kotlin Multiplatform/Compose, Avalonia, Wails, Fyne, SwiftUI, scoring matrix, MVP estimate, Flathub AI policy, App Store review guidelines, or "which stack"/"what language"/"what framework" for any part of streamboat. Do not answer a stack question from general "pick a cross-platform framework" knowledge — this decision has already been researched and fact-checked against 20+ reference projects' actual source, and several plausible-but-wrong claims (Strawberry's real size, cpal's changelog attributions, which project actually verified wasapi2sink, tidalt's own docs contradicting its own code) are traps this skill exists to prevent.
 ---
 
 # Tech stack evaluation for streamboat
 
 Source of truth: `docs/research/tech-stack.md` (the full research report — fact-checked and
-corrected against two independent passes, ~1,430 lines). This skill is the load-on-demand
-distillation for coding agents: the facts, tables, and pitfalls needed while making or acting on the
-stack decision, without re-reading the whole report every time. Read the report itself for full
-narrative depth, every citation, and the complete source list.
+corrected against **two rounds** of independent passes, ~1,800 lines). This skill is the
+load-on-demand distillation for coding agents: the facts, tables, and pitfalls needed while making or
+acting on the stack decision, without re-reading the whole report every time. Read the report itself
+for full narrative depth, every citation, and the complete source list.
 
 `ref:<project>/<path>` throughout this skill and its references means a shallow, read-only git clone
 of a named open-source project held in the research environment (e.g.
@@ -41,7 +41,7 @@ exist in a later session. Project→URL mapping, licences, and the web-source li
 | --- | --- | --- |
 | 1 | Strawberry's `src/` "is 14,708 lines" — a number from a earlier miscount (an `xargs wc -l \| tail -1` batching bug). | It is **~166,100 lines** — the largest codebase in the whole survey by a wide margin, not comparable in scope to a solo MVP. Never recount a large tree with `wc -l \| tail -1`; use `find ... -print0 \| xargs -0 cat \| wc -l`. `references/verification-notes.md` §1-2. |
 | 2 | `sone-windows`'s Windows port looks like proof that "a sink swap is all a Windows port costs." | It forks an **older** SONE release (v0.16.0 vs. current v0.21.0, ~59% of upstream's size, five minor releases behind) — a stale fork, not a thin per-OS delta. Budget cross-OS parity as a standing maintenance cost. `references/sources.md`, `real-world-players.md`. |
-| 3 | "`wasapi2sink exclusive=true` is verified working" reads as a settled Windows audio answer. | Strawberry's own GStreamer startup code **demotes `wasapi2sink`** and ranks `directsoundsink` primary on Windows, citing device-switching problems (issue #1227) — direct counter-evidence in a checkout this report already had open. Budget a hardware-verification pass before shipping the claim. `references/audio-engine-comparison.md` §4. |
+| 3 | "`wasapi2sink exclusive=true` is verified working" reads as a settled Windows audio answer. | Strawberry's own GStreamer startup code **demotes both `wasapisink` AND `wasapi2sink`** (not `wasapi2sink` alone) and ranks `directsoundsink` primary on Windows, citing device-switching problems (issue #1227) — direct counter-evidence in a checkout this report already had open. Budget a hardware-verification pass before shipping the claim. `references/audio-engine-comparison.md` §4. |
 | 4 | cpal's changelog: "0.17.2 added resampling, 0.18.0 stopped rejecting resampler-convertible formats, 0.17.0 added `hw:0,0` acceptance." | Wrong on two of three: 0.17.2 (**yanked**) added the resampling change; **0.18.2** (not 0.18.0) stopped rejecting formats; **0.18.0** (not 0.17.0) added ALSA-shorthand device-ID acceptance. `references/audio-engine-comparison.md` §3. |
 | 5 | tidalt's ALSA format-preference order — which file is authoritative? | `internal/player/alsa.c`/`CLAUDE.md`, **not** `README.md` (doesn't cover it) and **not** `docs/architecture.md` (states a different, stale order). A project's own docs can contradict its own code — cite the source. `references/audio-engine-comparison.md` §7. |
 | 6 | Tauri capability/command calls "just don't do anything" with no error. | Every window/command permission must be listed in `src-tauri/capabilities/*.json` or the call **silently fails**. `references/tauri-engineering-facts.md` §1. |
@@ -51,15 +51,19 @@ exist in a later session. Project→URL mapping, licences, and the web-source li
 | 10 | Flathub's AI policy is quoted as a disclosure regime with no downside for a disclosed submission. | The live doc's next sentence after "evaluated at reviewer discretion" is **"Disclosure does not create a presumption of acceptance."** Don't drop it when summarizing. `references/packaging-and-policy.md` §3. |
 | 11 | "No reference project has cracked macOS bit-perfect" reads like a research gap to close before v1. | It's a structural gap in *every* engine surveyed (GStreamer's `osxaudiosink` has no hog-mode control; mpv's `coreaudio_exclusive` is undocumented-on-hardware and one user reports DAC/HDMI misrouting) — scope macOS v1 without exclusive mode and treat it as its own research spike, not a checkbox. `references/audio-engine-comparison.md` §8. |
 | 12 | A version/date/licence claim sourced from a blog post or cached number. | Both version-staleness errors caught here (Wails `beta.9`→`beta.17`, Masonry `0.2.0`→`0.4.0`) were one `crates.io`/`github.com/.../releases` request away from being right. Prefer the registry API. `references/verification-notes.md` §2. |
+| 13 | "Strawberry proves Qt/GStreamer can hit bit-perfect on all three desktop OSes" — a plausible reading of "the only tri-platform GStreamer client in the survey." | Strawberry's `ExclusiveModeSupport()` covers only `wasapisink`/`wasapi2sink` — **Linux and Windows only**; its CoreAudio use is device enumeration, no hog-mode code anywhere. It is *additional* evidence macOS bit-perfect is unproven everywhere, not a counterexample. `references/audio-engine-comparison.md` §8. |
+| 14 | "SONE notes gapless needs GStreamer ≥1.24" — SONE's own README says so. | SONE's **code** contradicts its README: `gapless_supported()` checks for `concat` (in `coreelements` since forever) and its own comments say the design "works on GStreamer < 1.24." The 1.24 floor applies only to the alternative `playbin3`/`about-to-finish` design (High Tide's). Cite the code, not the README. `references/audio-engine-comparison.md` §3, §6. |
+| 15 | **TIDAL allows only one privileged (playing) session per account — enforced over a websocket, not just by who holds the local sound device.** Easy to miss entirely, since the local device-ownership rule (§3/§4 of `architecture-shapes.md`) looks sufficient on its own. | It is not: a headless daemon and a desktop GUI **on the same account** revoke each other even on different machines with different sound cards. TIDAL's own SDKs implement this as the "Pushkin" websocket (`rt/connect`, `PRIVILEGED_SESSION_NOTIFICATION`); SONE classifies `playbackinfo` `subStatus` 4006 as this exact condition. `streamboat-proto` needs a `PlaybackRevoked` event or this fails silently. `references/architecture-shapes.md` §4a. |
+| 16 | "A `wasm32-unknown-unknown` CI build proves `streamboat-core` has no UI-toolkit dependency." | It doesn't build at all — `rusqlite`/`sqlx` need a real filesystem and `tokio` on that target lacks `net`/`fs`. Use `aarch64-linux-android`/`aarch64-apple-ios` builds plus a `cargo-deny` dependency-graph gate instead. `references/mobile-path.md`. |
 
 ## Where to go for depth
 
 | Question | Reference file |
 | --- | --- |
 | Full weighted scoring matrix, every candidate stack (4.1–4.14) evaluated with corrections, the three ranked recommendations and their sub-decision tables, "honest why not" for everything not chosen, the MVP-effort breakdown by workstream | `references/scoring-and-candidates.md` |
-| Concrete Tauri 2 engineering facts an implementer hits immediately: capabilities ACL/CSP, plugins + the two-mechanism OAuth redirect, window-chrome cost, auto-update coverage, Windows WebView2 install-mode sizes, cross-compilation/CI reality, Flathub's two offline-source generators, macOS `bundle.macOS.frameworks` packaging hook, the mobile `crate-type` shape, the IPC large-payload trap, the full WebKitGTK divergence catalog | `references/tauri-engineering-facts.md` |
-| Bit-perfect requirements, SONE's ALSA/GStreamer format-naming trap, the full candidate-engine comparison table (GStreamer/libmpv/cpal/hand-rolled/FFmpeg), the `wasapi2sink` controversy, tidalt's format-order table and its own doc's contradiction, why gapless and bit-perfect conflict in every engine, why macOS has no verified path anywhere | `references/audio-engine-comparison.md` |
-| The three architecture shapes (single workspace / FFI-bound core / daemon-over-WebSocket) and the recommended hybrid, MPRIS/SMTC registration rules, the headless-container Docker recipe, the audio-test-harness-in-CI problem | `references/architecture-shapes.md` |
+| Concrete Tauri 2 engineering facts an implementer hits immediately: capabilities ACL/CSP, plugins + the two-mechanism OAuth redirect, window-chrome cost, auto-update coverage, Windows WebView2 install-mode sizes, cross-compilation/CI reality, Flathub's two offline-source generators, macOS `bundle.macOS.frameworks` packaging hook, the mobile `crate-type` shape, the IPC large-payload trap, the full WebKitGTK divergence catalog, binary-size/RAM release-profile levers, day-1 developer-environment prerequisites, workspace/toolchain-pinning mechanics | `references/tauri-engineering-facts.md` |
+| Bit-perfect requirements, SONE's ALSA/GStreamer format-naming trap, the full candidate-engine comparison table (GStreamer/libmpv/cpal/hand-rolled/FFmpeg), the `wasapi2sink` controversy, tidalt's format-order table and its own doc's contradiction, why gapless and bit-perfect conflict in every engine, the concrete macOS CoreAudio hog-mode mechanism, device warm-up/PLL-lock delay, why macOS has no verified path anywhere | `references/audio-engine-comparison.md` |
+| The three architecture shapes (single workspace / FFI-bound core / daemon-over-WebSocket) and the recommended hybrid, **TIDAL's account-wide streaming-privileges constraint (Pushkin) and why device ownership alone is not enough**, the remote-GUI-is-control-only invariant, MPRIS/SMTC registration rules, the headless-container Docker recipe and the arm64/Raspberry Pi build-pipeline gap, the audio-test-harness-in-CI problem | `references/architecture-shapes.md` |
 | The three mobile paths ranked, the Tauri-mobile/UniFFI/Flutter tradeoffs, the core-must-not-depend-on-UI invariant, comparanda this research didn't reach | `references/mobile-path.md` |
 | Packaging per platform (deb/rpm/AppImage/Snap/Flathub/AUR/Nix/MSI/NSIS/DMG/TestFlight/APK), toolkit and reference-project licences, Flathub's AI-disclosure policy quoted verbatim and corrected, Apple App Store guidelines quoted verbatim, the trademark rule | `references/packaging-and-policy.md` |
 | What real music players in each candidate stack actually look like, corrected (Museeks reclassified) | `references/real-world-players.md` |
@@ -92,10 +96,19 @@ plain Electron path can reach — that disqualifies everything except a native/s
 core, whatever the UI ends up being. SONE (Tauri 2 + Rust + React + GStreamer) is the closest
 existing proof this works, but it is Linux-only in practice — its Windows story is a stale AI-ported
 fork, and its own GStreamer Windows sink choice is directly contradicted by Strawberry's engineering,
-and **no reference project anywhere has verified macOS bit-perfect**. Plan a per-OS `AudioEngine`
-backend, plan macOS as a research spike with its own hardware-verification step, and keep the core
-(`streamboat-core`/`streamboat-player`) free of any UI-toolkit dependency from day one so the mobile
-path stays open without a rewrite.
+and **no reference project anywhere has verified macOS bit-perfect** (not even Strawberry, the only
+genuinely tri-platform reference — it proves Linux and Windows only). Plan a per-OS `AudioEngine`
+backend, plan macOS as a research spike with its own hardware-verification step (the mechanism is
+CoreAudio hog mode + `kAudioStreamPropertyPhysicalFormat`, see `references/audio-engine-comparison.md`
+§8), and keep the core (`streamboat-core`/`streamboat-player`) free of any UI-toolkit dependency from
+day one so the mobile path stays open without a rewrite.
+
+**Device ownership is not the only "who's allowed to play" rule — TIDAL enforces its own, at the
+account level.** Only one privileged session per account is allowed, enforced over a websocket
+("Pushkin" in TIDAL's own SDKs); it revokes playback across *machines*, not just across processes on
+one machine. This is easy to miss because the local device-ownership design (first process claims
+the sound device/D-Bus name) looks self-sufficient — it isn't. See
+`references/architecture-shapes.md` §4a before building the daemon/GUI handoff.
 
 ## Open decisions
 
@@ -111,7 +124,10 @@ Only the owner can decide these — do not assume an answer when writing code or
 4. **Is mobile 2027-or-later, or 2026?** If near-term, Recommendation 3 (Flutter) or a UniFFI plan
    changes the desktop architecture now.
 5. **Frontend framework**: React 19 (max agent reliability, more boilerplate) vs. Svelte 5 (less
-   code, smaller corpus) — reversible for ~2-3 weeks early, irreversible after ~85 components.
+   code, smaller corpus) vs. Solid vs. Vue (named in the brief, never evaluated) — reversible for
+   ~2-3 weeks early, irreversible after ~100 component files. Dioxus and Leptos/Sycamore-under-Tauri
+   are the direct answer to Recommendation 1's own "two languages means two agent contexts" risk;
+   named, not silently rejected. `references/agent-friendliness-and-testing.md`.
 6. **GStreamer everywhere vs. libmpv on Windows/macOS** — trades a large packaging burden and a
    macOS unknown against a second engine implementation and mpv's licence/dependency footprint.
 7. **Does streamboat want the SONE-style extras** (MCP server, OBS overlay, Discord presence,
@@ -140,6 +156,17 @@ Only the owner can decide these — do not assume an answer when writing code or
     the Apple Developer Program and Windows signing costs `engineering-baseline.md` prices.
 18. **Accessibility and i18n mechanism** — both tagged `[STACK]` in `engineering-baseline.md` and
     unanswered by any research pass so far. `references/agent-friendliness-and-testing.md`.
+19. **What should streamboat look like?** "Beautiful" carries 18/100 in the scoring matrix but no
+    question asks what it means: native-per-OS (pushes toward Qt/Avalonia/native chrome), one
+    distinctive look everywhere (CSS/Slint/Flutter — what SONE/Feishin/Supersonic actually ship), or
+    best-in-class GNOME citizen first (the only branch where GTK4/libadwaita's weakness stops
+    mattering)? Answer before, not after, the toolkit decision — answering late risks reopening
+    Recommendation 1. `references/scoring-and-candidates.md` §6 (real-world-players.md screenshots).
+20. **Is v1 headless scope Linux/systemd + Docker only, or all three OSes?** No reference project
+    answers a macOS launchd plist driving CoreAudio from a non-GUI process, or a Windows service
+    (souvlaki's SMTC needs an HWND, so a Windows service gets no now-playing integration). The owner
+    said "headless…now" — decide explicitly what that means given these costs.
+    `references/architecture-shapes.md` §6.
 
 ## Unverified
 
@@ -162,3 +189,19 @@ Flagged so downstream agents do not treat these as settled fact:
   `references/verification-notes.md` §4.
 - Effort estimates are calibrated against reference-project line counts, not the owner's actual
   velocity — see the workstream breakdown in `references/scoring-and-candidates.md` §5.
+- GTK 4.22.4's "partial support" wording for macOS/Windows and the X11/Broadway-deprecated-for-GTK-5
+  claim; libadwaita's XDG-portal reliance — version confirmed, exact wording not read from a primary
+  source (`docs.gtk.org`/GNOME Discourse blocked). `references/verification-notes.md` §4.
+- The minimum GStreamer version exposing `wasapi2sink`'s `exclusive` property, and which Rust crate
+  would drive libmpv as backend #2 — both unresolved, not guessed at.
+  `references/audio-engine-comparison.md` §4, §10.
+- Whether Flathub's automation ban reaches an already-published app's automated release bot (SONE's
+  own pattern), and whether GPLv3 independently closes the App Store beyond guideline 5.2.2 — both
+  unresolved. `references/packaging-and-policy.md` §3, §4.
+- Every "Mobile" score in the scoring matrix rests on framework documentation, not a shipped
+  precedent — no shipped Tauri 2 Android/iOS app or Flutter-with-Rust-core music player was found.
+  `references/mobile-path.md`.
+- Whether the unofficial `api.tidal.com` surface exposes the Pushkin streaming-privileges websocket
+  in the same shape as the official SDKs — the protocol itself is high-confidence (read from the
+  official SDKs directly); the unofficial-API question needs a live-account check.
+  `references/architecture-shapes.md` §4a.

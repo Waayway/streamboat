@@ -10,9 +10,10 @@ and the decisions those facts force that the original research pass had not surf
 1. Reusable packaging scripts and configs (with paths)
 2. Sone's actual Flathub manifest — the Flatpak/bit-perfect conflict is real, not hypothetical
 3. The update-mechanism decision, per channel
-4. The GStreamer-bundling licensing decision
+4. The GStreamer-bundling licensing decision — now with a concrete Windows plugin list
 5. The i18n decision
 6. Licensing table
+7. Code signing and notarization — a hard prerequisite with no precedent to copy
 
 ## 1. Reusable packaging scripts and configs (with paths)
 
@@ -83,6 +84,14 @@ the latest GitHub release tag to the running version and links out to the releas
 download, no install, no signature check. Combined with having no build/test/lint CI either
 (§1 above), Sone's entire release process is manual.
 
+**This generalizes to the whole reference set, not just Sone — treat "no in-app updater" as the
+validated default, not an open question.** `tidal-hifi` — the project with the best release CI in
+this set — also ships no updater: `package.json`'s only build script is `electron-builder
+--publish=never`, there is no `electron-updater` dependency, and its release workflow only
+uploads artifacts. High Tide and Sone's own Flathub build delegate updates to the package manager
+entirely; tidalt ships distro packages plus a Docker image with no self-updater. **Zero of the
+projects examined implement a signed in-app download-and-install updater.**
+
 This forces an explicit, per-channel decision for streamboat, not a single yes/no:
 
 - **Flatpak, Snap, AUR, Nix, and any Linux distro package**: the package manager owns updates.
@@ -110,11 +119,21 @@ this choice), bundling it carries a licensing decision the original research pas
   NSIS/WiX Windows installer payload, or `appimage.bundleMediaFramework: true` on Linux — puts
   LGPL relinking/notice obligations on streamboat directly.
 
-**This is undecided and flagged as work to do, not resolved by this skill**: does the
-Windows/AppImage bundle need to include `libav`, or is `base`/`good`/`bad` (FLAC + the ISOBMFF/
-DASH demuxers + the AAC decoder that lives in `gst-plugins-bad`, no FFmpeg involved) sufficient
-for TIDAL's actual codec set? Excluding `libav` shrinks both the licence surface and the
-installer size — check this before finalizing the Windows/AppImage bundle contents.
+**Partially resolved: sone-windows already ships a real answer, with a concrete codec-coverage
+cost.** `ref:sone-windows/src-tauri/tauri.conf.json` `bundle.windows.wix.componentRefs` lists 47
+components, 16 of them GStreamer plugins: `gstadaptivedemux2`, `gstasio`, `gstaudioconvert`,
+`gstaudioparsers`, `gstaudioresample`, `gstcoreelements`, `gstdash`, `gstdecklink`, `gstflac`,
+`gstisomp4`, `gstplayback`, `gstsoup`, `gsttypefindfunctions`, `gstvolume`, `gstwasapi2`,
+`gstwinks`. **No `gstlibav`, no AAC decoder of any kind.** So an LGPL-clean Windows bundle without
+FFmpeg is achievable — this is the plugin list — but it can only play FLAC-in-fMP4/DASH; TIDAL's
+`HIGH`/`LOW` tiers are AAC (`mp4a.40.2`/`mp4a.40.5`) and would fail to decode. There is no
+LGPL-clean AAC decoder in GStreamer at all: `avdec_aac` is FFmpeg-derived, `faad`
+(`gst-plugins-bad`) is GPL-encumbered, `fdkaacdec` carries the Fraunhofer FDK licence. **"Exclude
+libav" in practice means "drop the lossy tiers on Windows, or ship a differently-licensed decoder
+and price that separately."** Note also: the same file's `bundle.linux.deb.depends`/
+`bundle.linux.rpm.depends` **do** include `gstreamer1.0-libav`, so Sone's Linux packages get AAC
+today and its Windows bundle silently does not — decide this platform difference on purpose
+rather than inheriting it.
 
 ## 5. The i18n decision
 
@@ -148,3 +167,23 @@ not:
 **If streamboat is GPL-3.0 itself, this mostly evaporates** for the GPL-licensed reference
 projects — a reason to seriously consider GPL-3.0 as streamboat's own licence, independent of any
 other factor.
+
+## 7. Code signing and notarization — a hard prerequisite with no precedent to copy
+
+Never mentioned in the original research pass despite being a hard blocker for the owner's
+Windows+macOS-now requirement. On Windows an unsigned installer triggers SmartScreen; on macOS an
+unsigned/unnotarized `.app` is refused by Gatekeeper with no obvious user recovery path.
+
+**No project in the reference set signs anything.** A grep for
+`notariz|codesign|CSC_LINK|signtool|hardenedRuntime` across `tidal-hifi`'s build configs and
+workflows and across `sone-windows/src-tauri/tauri.conf.json` returns nothing; tidal-hifi's
+release workflow builds mac/win artifacts and just uploads them
+(`actions/upload-artifact`), with `electron-builder --publish=never` as its only build script.
+Strawberry sidesteps the problem entirely by making its macOS/Windows binaries **sponsor-only**
+(`ref:strawberry/README.md:85`) rather than solving distribution for everyone.
+
+There is nothing to copy here — budget it as new work: an Apple Developer Program membership plus
+a `notarytool` CI step for the macOS DMG, and a Windows code-signing certificate (or Azure Trusted
+Signing) for the MSI/NSIS installer, before the first Windows/macOS build ships. This is the same
+decision surface as §3's updater question — Tauri's own updater needs its own signing keypair,
+separate again from OS-level code signing.

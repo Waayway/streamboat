@@ -58,6 +58,9 @@ rather than assuming this is the complete inventory:
 cross-reference against `browse-pages-screens.md` §2 if you build the v2 renderer),
 `/trackFiles/{id}`, `/trackManifests/{id}`, `/videoManifests/{id}` (manifest resources — see
 `quality-playback-queue.md` §3 for the query-param usage already covered),
+`GET /tracks?filter[isrc]=<isrc>` (ISRC → TIDAL track-id lookup, cursor-paginated like every other
+v2 list — useful for matching a locally-known or other-service track to a TIDAL id; TidaLuna's own
+client calls exactly this, `ref:TidaLuna/plugins/lib/src/classes/TidalApi/index.ts:96-97`),
 `/userDataExportRequests` (GDPR-style data export — relevant if streamboat ever handles account
 data on the user's behalf), `/terms`, `/acceptedTerms`, `/scopes`, `/temporaryUserTokens` (auth/
 consent bookkeeping — cross-reference `docs/research/tidal-api.md` §3 for the auth flows this

@@ -160,7 +160,7 @@ summary and points to `tidal-api.md` for the wire format.
     corroborated by the route loaders `LOADER_DATA__MY_COLLECTION_{ALBUMS,ARTISTS,MIXES,PLAYLISTS,TRACKS,VIDEOS}`.
     The client's route table actually names **28 distinct screens**, four of which (a standalone
     TRACK page, a standalone VIDEO page, the playlist FOLDER page, and another user's USER profile
-    page) are not reachable from the sidebar at all — see §4.1 and `references/screen-inventory.md`.
+    page) are not reachable from the sidebar at all — see §4.1 and `references/browse-pages-screens.md`.
     [verified-source]
 15. **Playlists support folders, collaboration, AI generation and reordering**:
     `folders/CREATE_FOLDER`, `folders/RENAME_FOLDER`, `folders/MOVE_ITEMS_TO_FOLDER`,
@@ -199,7 +199,7 @@ summary and points to `tidal-api.md` for the wire format.
     top-level `cursor`. Both schemas are live in 2026; python-tidal's `Session.home()` hits the v2
     endpoint and falls back to the legacy one. Module/section type vocabulary (`ALBUM_LIST`,
     `SHORTCUT_LIST`, `HORIZONTAL_LIST_WITH_CONTEXT`, etc.) and concrete category titles are
-    catalogued in `references/browse-and-pages.md`. Any client that wants to look like TIDAL
+    catalogued in `references/browse-pages-screens.md`. Any client that wants to look like TIDAL
     renders these module lists — defensively, with an unknown-module fallback — rather than
     hand-coding a home screen. [verified-source]
 
@@ -402,7 +402,7 @@ drop (`selection/START_DRAG`, `selection/END_DRAG`, `view.isDragging`). [verifie
 reachable from the sidebar at all: a standalone **TRACK** page, a standalone **VIDEO** page, a
 **FOLDER** page (playlist folders are a navigable route, not just a sidebar disclosure triangle),
 and **USER** (another person's public profile). The full list, and the generic `VIEW` route that
-serves Explore/genre/mood/editorial pages, is in `references/screen-inventory.md`.
+serves Explore/genre/mood/editorial pages, is in `references/browse-pages-screens.md`.
 [verified-source]
 
 #### 4.2 Home / For You
@@ -416,7 +416,7 @@ Home is a server-driven page of modules, not a hand-built screen. The client loa
 
 **Two incompatible backend schemas are both live, and Home has tabs plus pagination that the first
 draft omitted entirely.** Full detail, including the complete module/section type vocabulary and
-every observed category title, is in `references/browse-and-pages.md`; the essentials:
+every observed category title, is in `references/browse-pages-screens.md`; the essentials:
 
 - **Legacy (v1)**: `GET pages/home` → `{title, rows: [{modules: [{type, title, pagedList, ...}]}]}`.
   Also surfaced as `tidal:home` / `tidal:for_you` in `ref:mopidy-tidal/mopidy_tidal/library.py`.
@@ -678,7 +678,7 @@ sidebar tree.** `GET https://api.tidal.com/v2/my-collection/playlists/folders` t
 same cursor pagination (Sone caps its own loop at 40 pages of 50,
 ref:sone/src-tauri/src/tidal_api.rs:3313-3400). The folder screen has its own client route,
 `route/LOADER_DATA__FOLDER` — treat it as a screen in its own right (see
-`references/screen-inventory.md`), not merely a disclosure triangle in the sidebar tree.
+`references/browse-pages-screens.md`), not merely a disclosure triangle in the sidebar tree.
 [verified-source]
 
 #### 4.9 Mixes and radio
@@ -1500,7 +1500,7 @@ inside the official client — so the API column flags that.
     native app's categorisation rather than inventing streamboat's own.
 18. **The route table, not the sidebar, is the actual screen inventory.** 28 `route/LOADER_DATA__*`
     screens exist, four of them (standalone Track, standalone Video, Folder, another user's public
-    Profile) unreachable from the sidebar (§4.1, `references/screen-inventory.md`). Use the route
+    Profile) unreachable from the sidebar (§4.1, `references/browse-pages-screens.md`). Use the route
     table when scoping IA/routing work, not a DOM screenshot of the sidebar.
 19. **Pick a UI-generation target deliberately, not by accident.** Two TIDAL UIs coexist through
     2025–2026 (tidal-hifi's `OLD_UI_OVERRIDES` vs `NEW_UI_OVERRIDES`, §1). streamboat renders its own

@@ -16,6 +16,9 @@ Full narrative and every corroborating source: `docs/research/tidal-api.md` §3 
 9. The `client_unique_key` persistence rule (read this before you copy python-tidal)
 10. reCAPTCHA and why device code is the safer default
 11. Runtime client-id discovery as a revocation fallback
+12. Refresh-failure taxonomy — network vs fatal vs retryable
+13. Inbound deep links and the `tidal://` scheme collision
+14. Multi-account / profile switching — no reference client supports it
 
 ---
 
@@ -83,7 +86,8 @@ so the client must capture the URL. Four strategies in the wild:
 - **Embedded webview** watching for navigation to the redirect URI — Sone's approach (Tauri
   `WebviewWindow`).
 - **Custom URI scheme** — Strawberry registers `tidal://login/auth`, no local server
-  (`set_use_local_redirect_server(false)`).
+  (`set_use_local_redirect_server(false)`). **Do not reuse `tidal://` for streamboat — see §13, it
+  collides with content deep links and the official desktop app's own registration.**
 - **Local HTTP server** — mopidy-tidal on port 8989; tidal-cli (official API) on
   `http://localhost:17893/callback`.
 
@@ -172,12 +176,13 @@ Refresh triggers, worst to best:
 
 Guard concurrent refreshes with a single-flight lock — a page load fires a dozen parallel requests
 and you want exactly one refresh, not a stampede. The official web SDK does this with a
-`pending`/`pendingPromises` guard; tidalrs uses a `Semaphore` (its comment reads "Try to become the
-single refresher" — do not attribute the phrase "to avoid thundering herd" to it, that quote does
-not exist in its source).
+`pending`/`pendingPromises` guard; tidalrs serializes with `Semaphore::new(1)` + `try_acquire` (its
+comment reads "Try to become the single refresher" — do not attribute the phrase "to avoid thundering
+herd" to it, that quote does not exist in its source, `ref:tidalrs/src/lib.rs:750-751`).
 
 The official SDK also has `grant_type=update_client` ("token upgrade"), for adding a client secret to
-a previously public client. Not needed for the unofficial flow.
+a previously public client. Not needed for the unofficial flow. See §12 for what to do when the
+refresh call itself fails — that's the part missing above.
 
 ## 6. Session bootstrap: `GET /v1/sessions`
 
@@ -195,7 +200,28 @@ never sends it and works fine — but this is untested against endpoints python-
 Sone does not (`pages/*`, `genres`, `urlpostpaywall`). Treat "drop sessionId" as a reasonable default
 with a compatibility flag to send it if some endpoint ever misbehaves without it.
 
-Cheap login-validity check: `GET /v1/users/{userId}/subscription` — also tells you the tier.
+Cheap login-validity check: `GET /v1/users/{userId}/subscription` — also tells you the tier, and this
+is where the quality-cascade ceiling (`references/playback.md` §4) should actually come from:
+
+```json
+{
+  "startDate": "2022-09-23T04:52:14.568+0000",
+  "validUntil": "2025-06-09T04:52:11.406+0000",
+  "status": "<string>",
+  "subscription": { "type": "<string>", "offlineGracePeriod": 30 },
+  "highestSoundQuality": "LOW|HIGH|LOSSLESS|HI_RES_LOSSLESS",
+  "premiumAccess": true,
+  "canGetTrial": false,
+  "paymentType": "<string>",
+  "paymentOverdue": false
+}
+```
+Fetch once at login alongside `GET /v1/sessions`, cache it, and clamp the quality cascade to
+`min(user preference, highestSoundQuality)` instead of always starting at `HI_RES_LOSSLESS` — a
+non-Max subscriber otherwise burns 2-4 wasted `playbackinfopostpaywall` requests per track. Surface
+`status`/`validUntil`/`paymentOverdue` in the account UI. Note the timestamp format — no colon in the
+UTC offset (`+0000`, not `+00:00`); see the parser-trap warning in `references/transport.md` §8.
+(`ref:tidalswift/TidalSwiftLib/Sources/TidalSwiftLib/Codables/Users.swift:78-90`.)
 
 ## 7. Logout / token revocation
 
@@ -276,3 +302,70 @@ device-code flow (this is exactly the `sub_status":1002` failure in §1 above). 
 therefore only a fallback for the PKCE path. Recommendation: ship the ecosystem id as default, allow
 a user override, and consider runtime discovery as an explicitly opt-in recovery mode — not the
 default behavior.
+
+## 12. Refresh-failure taxonomy — network vs fatal vs retryable
+
+Missing above: what to do when the refresh call itself fails. Get this wrong and streamboat either
+logs users out on every flaky network blip, or spins forever on a genuinely revoked token. The
+official web SDK's classification of the token-endpoint response, worth copying wholesale:
+
+- HTTP status `0` (no response) → `NetworkError` — offline; do **not** wipe credentials or retry
+  aggressively.
+- HTTP `400`-`499` → `UnexpectedError` — fatal: `logout()` then rethrow. Wipe local credentials, force
+  re-login.
+- HTTP `500`-`599` → `RetryableError` — rethrown to the exponential-backoff wrapper
+  (`references/transport.md` §7).
+- otherwise, parse the body's `error` field into a `TokenResponseError`.
+
+Two more rules from the same module: a scope shrink or a `clientUniqueKey` mismatch is fatal
+**before any network call** —
+`if (state.credentials.clientUniqueKey !== accessToken.clientUniqueKey || (accessToken.userId &&
+newScopeIsSameOrSubset === false)) { logout(); throw new IllegalArgumentError(...) }` — so changing
+streamboat's requested scope set in a later release logs every existing user out; pick the scope set
+once. A refresh is forced even on an unexpired token when the last response carried a `subStatus` in
+`['11003','6001','11001','11002','11101']` (`references/transport.md` §6).
+
+**Correction of emphasis to §5's "refresh proactively" recommendation**: TIDAL's own SDK uses a
+**60-second** margin against server-anchored time, not a fat margin against the local clock —
+`accessToken.expires > trueTime.now() + oneMinute`. Either margin works; the official client leans on
+time-sync (`@tidal-music/true-time`, `references/play-logging-and-privileges.md` §2) rather than a
+big buffer to handle clock skew.
+(`ref:tidal-sdk-web/packages/auth/src/utils/fetchHandling.ts:10-23`;
+`ref:tidal-sdk-web/packages/auth/src/auth/auth.ts:577-637`.)
+
+## 13. Inbound deep links and the `tidal://` scheme collision
+
+Missing above entirely: "open this album in streamboat" from a browser or chat message is a day-one
+desktop feature, and it collides with the OAuth redirect strategy in §2. Sone and High Tide both
+register the custom scheme **`tidal://`** for *content* links — Sone parses `tidal://<type>/<id>` for
+`type ∈ {track, album, artist, playlist, mix}` (track/album/artist ids are integers, playlist ids are
+UUID strings, mix ids are strings; `track` triggers play, the rest navigate) via
+`tauri-plugin-deep-link` (`ref:sone/src/lib/tidalUrl.ts` `parseTidalUrl`, `ref:sone/src-tauri/src/lib.rs`).
+High Tide dispatches the same scheme to `HTAlbumPage`/`HTArtistPage`/`HTMixPage`/`HTPlaylistPage`
+(`ref:high-tide/src/lib/utils.py`).
+
+**That is the same scheme Strawberry claims for its OAuth redirect (§2) and the same scheme the
+official TIDAL desktop app itself registers on macOS and Windows.** Whichever app registered last
+wins the OS handler for the whole scheme — an OAuth redirect delivered to the official app instead of
+streamboat, or a content link swallowed by streamboat's login handler, is a real and hard-to-debug
+failure. **Register a distinct scheme for streamboat (e.g. `streamboat://`) for both the OAuth
+redirect and content deep links; never use `tidal://login/auth` as streamboat's own redirect URI.**
+Accept — but do not register — the web forms users will paste:
+`https://listen.tidal.com/{track,album,artist,playlist,video}/{id}`,
+`https://listen.tidal.com/album/{albumId}/track/{trackId}`, `https://tidal.com/browse/{type}/{id}`,
+`https://listen.tidal.com/folder/{folderId}` (`ref:python-tidal/tidalapi/media.py:211-214`,
+`album.py:76-79`, `artist.py:51-54`, `playlist.py:71-74,338`).
+
+## 14. Multi-account / profile switching — no reference client supports it
+
+Missing above entirely, and it constrains the storage schema in §8: `client_unique_key` is device
+identity (§9), so two TIDAL accounts used from one streamboat install probably need two separate
+keys, or TIDAL sees one device flipping between users — decide this in the schema, not as a later
+migration. **State the finding plainly: no reference client supports multi-account.** High Tide
+stores one libsecret item; Sone stores one settings blob with one master-key entry; python-tidal
+writes one `tidal-oauth.json`; tidal-cli writes one `~/.tidal-cli/session.json`. The household case
+(two people, two accounts, one machine) and the headless-daemon-vs-desktop-app case (different
+accounts on the same box) both break the single-slot assumption every reference project makes.
+Minimum forward-compatible move, free today: key credential storage by account id (e.g.
+`streamboat/account/<userId>`) with a separate `active-account` pointer, and store
+`client_unique_key` inside each account's blob rather than globally.

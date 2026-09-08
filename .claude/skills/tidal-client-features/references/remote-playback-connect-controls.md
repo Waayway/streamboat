@@ -4,7 +4,7 @@ Table of contents:
 1. Three remote transports
 2. TIDAL Connect: controller vs target
 3. TIDAL Live / DJ sessions
-4. OS media controls (MPRIS/SMTC/Now Playing) — no single crate covers all three
+4. OS media controls (MPRIS/SMTC/Now Playing) — `souvlaki` covers all three; reference clients split anyway
 5. `tidal://` deep-link grammar
 6. Keyboard shortcuts — evidence quality caveat
 7. Share links and cover-art URLs
@@ -86,22 +86,34 @@ stems), rekordbox, djay Pro, VirtualDJ, DJUCED. Item-level flags `djReady`/`stem
 gate this (**[inferred]**, not stated in source). This is third-party DJ-software integration, not
 an in-app feature.
 
-## 4. OS media controls (MPRIS/SMTC/Now Playing) — no single crate covers all three
+## 4. OS media controls (MPRIS/SMTC/Now Playing) — `souvlaki` covers all three; reference clients split anyway
 
-**Correction to a common misconception**: no single crate/library unifies Linux MPRIS + Windows
-SMTC + macOS Now Playing.
+**`souvlaki` 0.8.3 actually covers all three platforms in one crate.** Its resolved dependency tree
+(`ref:sone-windows/src-tauri/Cargo.lock:5041-5055`) pulls in `dbus`+`dbus-crossroads` (Linux MPRIS
+— crates.io also documents `use_dbus`/`use_zbus` feature-selectable Linux backends), `windows 0.44`
+(Windows SMTC), and `cocoa`/`objc`/`dispatch` (macOS `MPNowPlayingInfoCenter`). Do not repeat "no
+single crate unifies X" as fact here — it's contradicted by `souvlaki`'s own dependency graph. What
+*is* true is only that the reference clients chose not to use it everywhere:
 
-- sone-windows uses the `souvlaki` crate (`ref:sone-windows/src-tauri/Cargo.toml:64`) for
+- sone-windows (a third-party fork of Sone by a different author, not Sone's own Windows port —
+  `references/sources.md`) uses `souvlaki` (`ref:sone-windows/src-tauri/Cargo.toml:64`) for
   **Windows SMTC only** — its README (`ref:sone-windows/README.md:69`) describes only "Windows SMTC
   Integration," no MPRIS/Now Playing claim.
-- Sone on Linux uses `mpris-server = "0.9"` instead (`ref:sone/src-tauri/Cargo.toml:66`) — not
-  `souvlaki`.
+- Sone on Linux uses `mpris-server = "0.9"` instead (`ref:sone/src-tauri/Cargo.toml:66`) — a
+  richer, async-native MPRIS surface than `souvlaki` exposes; plausibly why Sone picked it over
+  `souvlaki` on Linux even though `souvlaki` can reach D-Bus there too.
 - High Tide implements MPRIS itself via Python D-Bus (`ref:high-tide/src/mpris.py`).
 - tidal-hifi (Node) has its own MPRIS service.
 
-**Budget three separate integrations** (or `souvlaki` for Windows+macOS plus a dedicated Linux
-MPRIS library), not one crate for everything. Hardware media keys come largely free once this
-integration exists.
+**Evaluate `souvlaki` for all three platforms before assuming a split is necessary** — compare its
+per-platform surface against a dedicated library (does it expose everything `mpris-server` does on
+Linux? what does its macOS backend actually cover?) rather than defaulting to three separate
+integrations. Hardware media keys come largely free once whichever integration is chosen exists —
+tidal-hifi binds exactly three OS-level key identifiers to its playback controls,
+`MediaPlayPause`, `MediaNextTrack`, `MediaPreviousTrack` (`ref:tidal-hifi/src/constants/mediaKeys.ts`),
+which is the standard Electron/OS media-key set; an MPRIS/SMTC/Now Playing integration typically
+maps these for free as part of registering with the OS, so budget them as part of that
+integration's cost, not a separate line item.
 
 ## 5. `tidal://` deep-link grammar
 
@@ -172,6 +184,11 @@ the official app.
   which doesn't use this convention).
 - Share context menus per entity: `ALBUM_SHARE`, `ARTIST_SHARE`, `PLAYLIST_SHARE`, `MIX_SHARE`,
   `USER_SHARE`, `CONTRIBUTOR_SHARE`.
+- TIDAL also publishes an official embed-widget product (developer.tidal.com embeds) for embedding
+  a track/album/playlist player on a third-party page — a distinct sharing surface from the
+  deep-link/universal-link grammar above. `[verified-web, unfetched]` — not read directly, since
+  developer.tidal.com is blocked to direct fetch in the research environment; see
+  `docs/research/tidal-client-features.md` §7.
 
 ## 8. Control surfaces for headless mode
 
@@ -184,13 +201,16 @@ playback-control contract, proven in production against the real client:
 `/player/seek/absolute`, `/player/seek/relative`, `/player/volume`, `/player/shuffle/toggle`,
 `/player/repeat/toggle`, `/player/favorite/toggle`, plus read endpoints `/current` and
 `/current/audio-quality` (`{quality, badgeText, bitDepth, sampleRate, codec}` — see
-`quality-playback-queue.md` §2). Non-player settings endpoints exist too:
+`quality-playback-queue.md` §2). The same handlers are also exposed unprefixed (`/play`, `/pause`,
+`/playpause`, `/next`, `/previous`, `/favorite/toggle`) as legacy aliases, plus `/image`,
+`/current/image` and `/health` — a worked example of versioning a local control surface without
+breaking existing clients (relevant to Open decision #7). Non-player settings endpoints exist too:
 `/settings/skipped-artists`, `/settings/skipped-tracks` (+ `/current`, `/delete` on each).
 
 **Sone's local services** (`ref:sone/src-tauri/src/lib.rs:49,51,212,215`, `ref:sone/README.md`) —
-two independent, off-by-default local servers: an **MCP server on port 5577** that lets external AI
-agents (Claude Code and similar) search the library, control playback, and manage
-playlists/favourites, with one-click token generation in Settings; and an **OBS browser-source
+two independent, off-by-default local servers: an **MCP server on port 5577** that lets any MCP
+client search the library, control playback, and manage playlists/favourites, with one-click token
+generation in Settings; and an **OBS browser-source
 overlay on port 5578** showing the currently-playing track (art, title, artist, quality badge,
 progress bar) for streaming software, at a documented 400×120px size.
 

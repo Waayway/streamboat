@@ -11,6 +11,7 @@ Full narrative: `docs/research/tidal-api.md` §2 and §4.
 5. Error body shapes
 6. The canonical sub-status table
 7. Rate limiting
+8. Deserialization pitfalls, consolidated — no fixtures exist, and the date format is a trap
 
 ---
 
@@ -66,8 +67,20 @@ low-risk recommendation: generate one UUID per playback, send it as `x-tidal-str
 ## 3. Common query parameters
 
 `countryCode` (required), `locale` (`en_US` — note: the **official** API uses BCP-47 hyphenated
-locale, `en-US`, a different format), `deviceType` (`BROWSER`|`DESKTOP`|`PHONE`), `platform` (`WEB`,
-only on v2 page endpoints), `limit`, `offset`, `order`, `orderDirection`.
+locale, `en-US`, a different format), `deviceType` — **only `BROWSER` and `DESKTOP` are attested in
+any unofficial-API checkout** (pages default to `BROWSER`, `PageLink.get()` uses `DESKTOP`); the
+official v2 schema types it `BROWSER|CAR|DESKTOP|PHONE|TABLET|TV` and the unofficial API plausibly
+accepts the same set, but `PHONE` specifically has no attestation anywhere in these checkouts — don't
+assume it works — `platform` (`WEB`, only on v2 page endpoints), `limit`, `offset`, `order`,
+`orderDirection`.
+
+**This baseline UA/deviceType choice is itself an impersonation posture and deserves a deliberate
+decision** (see `references/legal-and-landscape.md` for the disclaimer wording it sits next to).
+python-tidal's UA (an Android WebView string) is applied to every request unless overridden; Sone
+sends no distinctive UA at all. Recommendation: send an honest `streamboat/<version> (+<url>)` UA by
+default, keep the Android string behind a single settings toggle labelled as a compatibility
+workaround, default `deviceType=BROWSER`, and test the honest-UA path against a live account before
+shipping — nobody in this ecosystem has published whether TIDAL's servers care.
 
 ## 4. Pagination — cursor vs offset, and the real server-side caps
 
@@ -133,11 +146,11 @@ auth error. Watch for float-encoded sub-statuses (`4005.0`) in some responses.
 
 ## 7. Rate limiting
 
-No published numbers. Two independent developer questions to TIDAL are unanswered:
-`github.com/orgs/tidal-music/discussions/269` and `.../discussions/285` ("Limitations on requests
-that can be made consecutively" — a developer there says "I throttle for 500ms between every
-request" as their own practice; this is the only concrete community-sourced number available, not a
-documented limit).
+No published numbers. Two independent developer questions to TIDAL are **confirmed unanswered**
+(re-checked directly): `github.com/orgs/tidal-music/discussions/269` (0 comments, marked Unanswered)
+and `.../discussions/285` ("Limitations on requests that can be made consecutively" — a developer
+there says "I throttle for 500ms between every request" as their own practice; this is the only
+concrete community-sourced number available, not a documented limit).
 
 Observed handling to copy:
 
@@ -153,3 +166,30 @@ Observed handling to copy:
   web SDK's formula: `D = min(B * 2^n * j, M)`, `j ∈ [0.8, 1)`, with separate policies per failure
   class (network: base 1s/max 16s/10 retries; status: 500ms/16s/3; timeout: 8s/32s/3) and a 10s
   per-attempt read timeout. Never retry writes.
+
+## 8. Deserialization pitfalls, consolidated
+
+**No example response bodies or captured fixtures exist in any of the 22 reference checkouts.**
+python-tidal's own tests hit the *live* API with real credentials; there are no `.json` fixture files
+anywhere in the tree. streamboat cannot borrow fixtures from this ecosystem — capture your own
+against a live account, before writing parsers, as a concrete first-week task.
+
+**Date/timestamp format is a parser trap.** TIDAL emits `2022-09-23T04:52:14.568+0000` — ISO-8601
+*basic*-format offset (no colon), not RFC 3339 extended (`+00:00`). Python's `dateutil.isoparse`
+accepts both; Rust's `chrono::DateTime::parse_from_rfc3339` and Go's `time.RFC3339` **reject** the
+no-colon form. In Rust, use `chrono`'s `%Y-%m-%dT%H:%M:%S%.3f%z` format string or the `iso8601` crate.
+Some date fields arrive as bare `YYYY-MM-DD`. Treat every date field as nullable regardless.
+
+**Consolidated nullability/absence traps**, gathered from across every reference file so they aren't
+missed one at a time: `bitDepth`/`sampleRate` are optional at every tier (`references/playback.md`
+§1). `subStatus` can arrive float-encoded (`4005.0`), not just as an int (§6 above). A play-log
+event's `sourceType` is *omitted entirely*, not nulled, when the play has no known container
+(`references/play-logging-and-privileges.md`). A token-refresh response may omit `refresh_token`
+(`references/auth.md` §5). `keyId` in a BTS manifest is present only when
+`encryptionType != NONE` (`references/playback.md` §2). `GET .../favorites/ids` returns every id as
+a **string**, even for integer-id entity types (`references/catalog-and-library.md` §6).
+`audioMode` can carry values python-tidal's own enum doesn't model — don't fail closed on an
+unrecognised value. `playlistsAndFavoritePlaylists` items are `{playlist, created}` wrappers, not
+bare playlists (`references/catalog-and-library.md` §7). `PlaybackMode`/`AssetPresentation` are not
+modelled as enums anywhere in python-tidal — it only sends the literal strings `"STREAM"`/`"FULL"`;
+source `OFFLINE`/`PREVIEW` from the Android SDK instead.

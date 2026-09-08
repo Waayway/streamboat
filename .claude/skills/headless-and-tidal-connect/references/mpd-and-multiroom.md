@@ -53,6 +53,31 @@ spec source directly, not search summaries.
   `<n>` bytes, then the completion line; a client-settable `binarylimit SIZE` (since MPD 0.22.4)
   caps chunk size.
 - **Partitions**: one MPD process can present multiple frontends with separate queue/player/outputs.
+- **Commands real clients call on connect or on every screen, missing from the subset design
+  below in an earlier draft — an unimplemented one is an `ACK` a client renders as an error or a
+  blank pane**: `tagtypes` (+ `enable|disable|clear|all|available|reset`) — "an intersection of the
+  `metadata_to_use` setting and this client's tag mask", called first to learn what to display;
+  `outputs`/`enableoutput`/`disableoutput`/`toggleoutput`/`outputset` — `outputs` returns
+  `outputid`/`outputname`/`plugin`/`outputenabled`/`attribute` lines and is a natural place to
+  expose streamboat's ALSA/pipe/Snapcast output backends; `plchanges`/`plchangesposid` — how real
+  clients consume the `playlist` queue-version field above, instead of raw diffing; `stats`
+  (`artists`/`albums`/`songs`/`uptime`/`db_playtime`/`db_update`/`playtime`) — some clients render a
+  blank status bar without it; `replay_gain_status`/`replay_gain_mode {off|track|album|auto}` — maps
+  onto streamboat's own normalisation setting (`audio-pipeline` skill); `getvol` — a separate volume
+  query from `status.volume`, see the volume-semantics note below; `single`/`consume` each accept
+  `0|1|oneshot` (already reflected above); optionally `channels`/`subscribe`/`sendmessage`
+  client-to-client messaging (up to 16 channels/client) — a ready-made extension channel for
+  streamboat-specific commands inside the MPD protocol.
+- **Volume semantics when output is bit-perfect (no resampling, no software attenuation) and there
+  is no hardware mixer are unspecified elsewhere, and MPRIS/MPD/HTTP all expose a slider that needs
+  the same answer.** MPD's own honest answer: `status` reports `volume: -1` (and `getvol` returns
+  empty) when no mixer exists — clients already handle this. The Connect wrapper's ALSA logic
+  (`tidal-connect.md` §2.4) is the complementary lesson: create a softvol named `Master` only when no
+  hardware `Master` control exists, else `SoftMaster` with an explicit warning that the slider now
+  moves shared hardware volume. go-librespot's `external_volume` config key names the third case —
+  the daemon does not own volume at all (an amp or DAC's own knob does). **Expose a capability**,
+  `volume: hardware | software | none`, in `GET /health`, and make MPRIS's `CanControl`/`Volume`,
+  MPD's `volume: -1`/`getvol`, and the HTTP endpoint all derive from that one value.
 
 **Clients streamboat would inherit for free**: ncmpcpp, mpc, ncmpc (terminal); Cantata (Qt desktop);
 MALP/M.A.L.P. (Android); numerous iOS clients; mpDris2 (bridges MPD → MPRIS).
@@ -91,13 +116,22 @@ not a drop-in dependency). Go has `fhs/gompd` (client). There is no drop-in "emb
 your app" library for either language — implementing the subset is a hand-written parser plus a
 state machine, on the order of a few thousand lines.
 
-**streamboat's recommended MPD-subset design, pulling the above together**: loopback/Unix-socket
-bound by default (so `local_permissions` covers auth with no shared password); port 6600 falling
-back through 6601-6609 (Nuclear); `status`, `currentsong`, transport commands, queue commands,
-`setvol`, `idle` with the full subsystem list, `albumart`/`readpicture`; **and** `lsinfo`/`search`/
-`find` over a virtual browse tree (Home / My Collection / Playlists / Mixes) plus
-`listplaylists`/`listplaylistinfo` for TIDAL playlists, following Mopidy-MPD's `context.browse()`
-mapping. Document explicitly which commands are supported and which are not.
+**streamboat's recommended MPD-subset design, pulling the above together**: port 6600 falling back
+through 6601-6609 (Nuclear); `status`, `currentsong`, transport commands, queue commands, `setvol`/
+`getvol`, `idle` with the full subsystem list, `tagtypes`, `outputs` family, `plchanges`, `stats`,
+`albumart`/`readpicture`; **and** `lsinfo`/`search`/`find` over a virtual browse tree (Home / My
+Collection / Playlists / Mixes) plus `listplaylists`/`listplaylistinfo` for TIDAL playlists,
+following Mopidy-MPD's `context.browse()` mapping. Document explicitly which commands are supported
+and which are not.
+
+**Bind mode is a real fork, not "just default loopback" — an earlier draft of this design presented
+both as the default, which is a contradiction.** `local_permissions`/loopback with no shared
+password is the hardened default for a box where phone control is not wanted — but the headline
+benefit ("MALP/ncmpcpp/Cantata work day one") needs LAN reach, since a phone client cannot use a
+Unix socket or `127.0.0.1`. For that case use `host_permissions "<CIDR> read,control"`-style per-CIDR
+grants (still no shared password), with an explicit warning that MPD traffic is unencrypted
+regardless of bind mode — the LAN-bound MPD surface is a lower trust tier than the
+token-authenticated HTTP API. **Pick one as the actual default and document the other as opt-in.**
 
 ---
 
@@ -106,6 +140,15 @@ mapping. Document explicitly which commands are supported and which are not.
 Snapcast (canonical repo **`badaix/snapcast`** — `snapcast/snapcast` redirects) is a client/server
 synchronized multiroom player: the server reads PCM from a source, timestamps and encodes it, and
 clients play in sync — "typically the deviation is below 0.2ms".
+
+**Read this together with `daemon-architecture.md` §6's Pushkin section, not in isolation: TIDAL
+allows exactly one privileged stream per account, so multiroom cannot be "one streamboat daemon per
+room, discovered over mDNS" — two daemons would fight each other's Pushkin session.** It must be one
+daemon holding the single stream and fanning decoded PCM out to many endpoints, which is exactly the
+Snapcast-server-with-many-clients shape below. This also means the pipe/stream-plugin output here is
+not merely "high leverage per line of code" — it is the *only* architecture under which multiroom is
+possible at all given TIDAL's terms, which is worth spending real effort on (the stream-plugin
+below, not a bare FIFO).
 
 - **Ports**: 1704 (TCP, binary audio + time sync to clients), 1705 (TCP JSON-RPC control), 1780
   (HTTP + WebSocket JSON-RPC + the Snapweb UI, 1788 for SSL). Bind addresses configurable via
@@ -239,8 +282,13 @@ a URL served by streamboat itself, i.e. streamboat becomes an HTTP re-server of 
 LAN (what Music Assistant does for its players). **And even a working Cast sender caps streamboat
 below its own headless daemon**: Google Cast supports FLAC only up to 96 kHz/24-bit, and 24-bit at
 176.4/192 kHz does not play on Chromecast Audio and can hang the device — the same class of quality
-ceiling the report rejects the Connect binary for (`tidal-connect.md` §2.5).
-[documented-web: https://developers.google.com/cast/docs/media]
+ceiling the report rejects the Connect binary for (`tidal-connect.md` §2.5). **Citation-hygiene
+caveat**: `developers.google.com` is blocked from this research environment; this ceiling was
+recovered via a search-index summary, not read directly, and was previously mis-tagged as directly
+confirmed. Re-verify the exact number before quoting it as a hard spec — the recommendation to skip
+a Cast sender in v1 does not depend on it.
+[documented-web, recovered via search-index summary, unverified against a primary source:
+https://developers.google.com/cast/docs/media (unreachable from here)]
 
 **AirPlay (sender).** Precedents: `philippe44/libraop` (RAOP/AirPlay v2 player + library, Windows/
 macOS/Linux x86 and ARM), `music-assistant/airplay-cli` ("unified command-line binary for streaming
@@ -299,11 +347,11 @@ model: try the running instance first, fall back to starting one.
 | Surface | Clients gained | Effort | Auth story | Expressiveness | Recommend |
 | --- | --- | --- | --- | --- | --- |
 | **MPRIS2/D-Bus** (`org.mpris.MediaPlayer2.streamboat`) | playerctl, GNOME/KDE media widgets, hardware media keys, mpDris2-style bridges | XS (`mpris-server` 0.9 + `zbus` 5, as in `ref:sone`) | session bus = local user | transport + metadata, **and** queue (`TrackList`) + stored-playlist activation (`Playlists`) — both optional interfaces `mpris-server` 0.9 already implements; catalogue search/browsing is still out of reach | **v1, Linux** |
-| **Unix domain socket / named pipe** (NDJSON, ncspot-style) | the CLI, same-host GUI, tmux/status-bar scripts | XS | filesystem permissions; no port, no token | transport + status; no browsing | **v0** |
+| **Unix domain socket** (NDJSON, ncspot-style; Linux/macOS — Windows has no precedent here, `daemon-architecture.md` §2) | the CLI, same-host GUI, tmux/status-bar scripts | XS | filesystem permissions; no port, no token | transport + status; no browsing | **v0** |
 | **Windows SMTC / macOS Now Playing** | OS media overlays and keys | XS (`souvlaki` 0.8.3 as in `ref:sone-windows`) | OS-scoped | transport + metadata | **v1, GUI only** |
 | **HTTP + WebSocket JSON API** | scripts, Home Assistant, Stream Deck, streamboat's own web remote and future mobile app | M | loopback default + generated token (`Authorization: Bearer` for API clients, a cookie exchange for the browser remote) + opt-in LAN bind | everything | **v1** |
 | **Embedded web remote** (served by the daemon) | any phone browser on the LAN | S once the API exists | same token; served over the same listener; not a secure browser context over plain HTTP | everything the API has | **v1.1** |
-| **MPD subset on 6600** | MALP, ncmpcpp, Cantata, mpc | M–L | `local_permissions`/Unix-socket needs no password at all; a network password stays unencrypted regardless | queue + transport + catalogue browsing via `lsinfo`/`search` over a virtual tree | **v1.2, explicitly a subset — including browsing** |
+| **MPD subset on 6600** | MALP, ncmpcpp, Cantata, mpc | M–L | pick one default: loopback/`local_permissions` (no password, no phone reach) **or** LAN `host_permissions "<CIDR> …"` (no password, delivers the phone-client benefit) — not both at once; a network password stays unencrypted regardless (§1) | queue + transport + catalogue browsing via `lsinfo`/`search` over a virtual tree | **v1.2, explicitly a subset — including browsing** |
 | **mDNS `_streamboat._tcp`** | streamboat GUI on another host; future mobile app | S | Sendspin-style pairing token → long-lived, revocable token | discovery only | **v1.2** |
 | **Raw PCM pipe/stdout output** | Snapcast, and anything that eats PCM | XS | n/a (local pipe) | n/a — forces a fixed sample format (§2) | **v1** |
 | **Sendspin source** | Music Assistant + emerging ESP32/Pi endpoints | L | Noise handshake per spec | full | **watch** |

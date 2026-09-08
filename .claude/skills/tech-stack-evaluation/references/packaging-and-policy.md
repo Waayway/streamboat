@@ -108,6 +108,19 @@ of a Tauri app needs two offline-source generators regenerated every release, an
 is itself automated in SONE's release pipeline — see `references/tauri-engineering-facts.md` §7 for
 why that automation needs an explicit human/bot line drawn under this same policy.
 
+**SONE — the closest precedent — is itself published on Flathub, and its release automation sits
+close to the line this policy draws (gap identified during fact-checking).** `ref:sone/README.md:11-14`
+carries a Flathub badge for `io.github.lullabyX.sone`; the repo's only GitHub Actions workflow,
+`ref:sone/.github/workflows/flathub-update.yml`, is an automated bot that regenerates
+`cargo-sources.json`/`pnpm-sources.json` and commits into the Flathub repo on every release. The live
+policy prohibits AI tools/agents from "open[ing] or automat[ing] Flathub submission pull requests, or
+generat[ing] their commit messages, descriptions, review comments, or replies" — it is **unresolved**
+(and not addressed by Flathub's own text) whether that reaches an *automated, non-AI* release bot
+updating an *already-published* app's lockfile sources, as opposed to opening a new submission.
+Decide this explicitly before copying SONE's release-automation pattern: keep the human owner as the
+one who opens and describes any Flathub-facing PR, and ask Flathub directly rather than assuming a
+reading either way.
+
 ## §4 Apple App Store guidelines — verbatim
 
 - **5.2.2** (verbatim): "If your app uses, accesses, monetizes access to, or displays content from a
@@ -123,6 +136,16 @@ why that automation needs an explicit human/bot line drawn under this same polic
   JavaScript. You may apply for an entitlement to use an alternative web browser engine in your
   app" — entitlement scoped explicitly to the EU and Japan. This is why a Tauri iOS build is fine
   (WKWebView) but a bundled Chromium is not.
+- **Unresolved: whether GPL-3.0 itself is independently incompatible with App Store distribution,
+  beyond 5.2.2's ToS-authorization problem** (gap identified during fact-checking, not researched in
+  this pass). The FSF/VLC's long-standing position is that GPLv2/v3's terms conflict with the App
+  Store's usage and installation-information rules, independently of 5.2.2. If that holds, the App
+  Store is closed to a GPL-3.0 streamboat for two independent reasons, not one — relevant because Open
+  decision #1 (licence) and "iOS is closed" are currently presented as independent conclusions and may
+  not be, and because the same reasoning could bear on a future Play Store or alt-marketplace plan.
+  Verify against a primary source (the FSF's GPL FAQ / App Store statements, and Apple's current
+  terms) before asserting either way; the 5.2.2 conclusion above stands regardless of how this
+  resolves.
 
 ## §5 Trademark rule
 

@@ -39,19 +39,24 @@ getting the wording wrong has consequences beyond a bug report.
 **Note on confidence**: `developer.tidal.com`, `support.tidal.com`, and `tidal.com` were blocked from
 direct fetch in the research environment that produced this skill; the quotations below come from
 search-result excerpts, not a direct read. Re-verify before using any of this wording in a
-public-facing document.
+public-facing document. **Confidence differs per bullet — see the marker on each.**
 
-- **Developer Guidelines**: "playbacks will only be available through our SDKs, namely, an official,
-  unmodified version of the TIDAL Player module, and TIDAL will reject any quota extension requests
-  for any Offering that attempts to circumvent this." Also: certain app categories (alarm/ringtone,
-  games/quizzes, voice control, non-interactive webcasting, mixing TIDAL content with other
-  services' streams) are prohibited without express written approval.
-- **Developer Terms**: prohibits accessing the Developer Tools "beyond the scope of these Developer
-  Terms or without an authorized TIDAL account," and prohibits text/data mining or scraping of the
-  TIDAL Platform. TIDAL "may limit the number of service calls that applications may make, as TIDAL
-  deems appropriate, in its sole discretion, without notice"; apps stay "in development" with quota
-  limits until formally approved.
-- **Consumer Content Guidelines/Terms**: users agree not to undertake "Circumventing or modifying,
+- **Developer Guidelines** — *higher confidence: this exact sentence was independently re-confirmed
+  via a targeted search excerpt in a fact-check pass, though the page itself remains unfetchable*:
+  "playbacks will only be available through our SDKs, namely, an official, unmodified version of the
+  TIDAL Player module, and TIDAL will reject any quota extension requests for any Offering that
+  attempts to circumvent this." Also: certain app categories (alarm/ringtone, games/quizzes, voice
+  control, non-interactive webcasting, mixing TIDAL content with other services' streams) are
+  prohibited without express written approval.
+- **Developer Terms** — *lower confidence: a fact-check pass could not re-obtain verbatim wording,
+  only confirm the page exists*: prohibits accessing the Developer Tools "beyond the scope of these
+  Developer Terms or without an authorized TIDAL account," and prohibits text/data mining or scraping
+  of the TIDAL Platform. TIDAL "may limit the number of service calls that applications may make, as
+  TIDAL deems appropriate, in its sole discretion, without notice"; apps stay "in development" with
+  quota limits until formally approved.
+- **Consumer Content Guidelines/Terms** — *lower confidence: plausible boilerplate, not
+  verbatim-corroborated in any pass — do not quote this in a public document before reading
+  `tidal.com/content-guidelines` directly*: users agree not to undertake "Circumventing or modifying,
   attempting to circumvent or modify, or encouraging or assisting any other person in circumventing
   or modifying any security technology or software that is part of the TIDAL Services" and not to
   "Reverse-engineer, decompile, disassemble, modify, or create derivative works of any material on
@@ -66,18 +71,28 @@ registered client. The realistic risk is not a lawsuit against streamboat; it is
 the shared client IDs** — which python-tidal's own changelog shows has happened at least twice
 (v0.8.7, v0.8.8, both "OAuth Client ID, secret updated").
 
-**Do not conflate this with the March 2026 "community keys broken" report** — that issue
-(`yaronzz/Tidal-Media-Downloader` #1213) is specifically about the **legacy pre-OAuth
-`x-tidal-token` keys**, not the OAuth device-code/PKCE client IDs the current ecosystem uses, and it
-is a single unconfirmed reporter. Cite the changelog rotations as the stronger evidence.
+**The March 2026 "community keys broken" report is directly relevant, and an earlier draft of this
+skill mis-scoped it — correct that if you see it repeated elsewhere.** `yaronzz/Tidal-Media-Downloader`
+issue #1213 (2026-03-21: "I think all of the API keys in [the linked gist] are now invalid") links a
+gist (`gist.github.com/yaronzz/48d01f5a24b4b7b37f19443977c22cd6`) whose entries carry `platform`
+(Fire TV, Android TV, Android Auto, TV), `formats`, **`clientId`, `clientSecret`** and `valid` — i.e.
+**OAuth client-credential pairs of the same kind** python-tidal/High Tide/Sone use, not legacy
+`x-tidal-token` keys (that separate, older family — the riad-uk gist — is a different thing, see
+`references/auth.md` §4). The pairs in the yaronzz gist are not the same two python-tidal ships, and
+this remains a single unconfirmed reporter with no second source — but it is *more* relevant to
+streamboat's architecture than a "legacy keys only" reading would suggest, not less. python-tidal's
+own changelog (two "OAuth Client ID, secret updated" entries, v0.8.7/v0.8.8) is still the
+stronger-corroborated evidence that these credentials get rotated periodically; cite both together.
 
 ## 3. Enforcement history
 
-- 2016: TIDAL's counsel (Reed Smith LLP) filed a DMCA takedown against **TiDown**, a downloader,
-  asserting "The code provided by the user can be used to circumvent access controls to copyright
-  protected works." The developer disputed the framing. (Covered by TorrentFreak and Digital Music
-  News — **`torrentfreak.com` is also blocked from direct fetch** in the research environment; this
-  is second-hand, same confidence tier as the Developer Terms quotations above.)
+- 2016-08-31: TIDAL's counsel (Reed Smith LLP) filed a DMCA takedown against **TiDown**
+  (`github.com/Lordmau5/Tidown`), a downloader, asserting "The code provided by the user can be used
+  to circumvent access controls to copyright protected works." The developer disputed the framing.
+  **Primary source, directly readable**: `github.com/github/dmca/blob/master/2016/2016-08-31-Tidal.md`
+  — cite this over TorrentFreak/Digital Music News coverage, which this research environment could
+  not fetch (`torrentfreak.com` is also blocked, same confidence tier as the Developer Terms
+  quotations above).
 - Downloaders (`Tidal-Media-Downloader`, `tidal-dl-ng`) continue to exist publicly with their own
   "private use only" disclaimers.
 - **No evidence of any enforcement action against a player** — High Tide, Sone, Strawberry,

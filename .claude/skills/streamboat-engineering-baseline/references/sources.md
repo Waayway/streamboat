@@ -1,17 +1,19 @@
 # Sources — project→URL mapping
 
 `ref:<project>/<path>` throughout this skill and the main report
-(`/home/user/streamboat/docs/research/engineering-baseline.md`) points at a shallow (`--depth 1`)
-git clone of the named GitHub project, held read-only under
-the reference checkouts (shallow clones of the cited GitHub projects; see references/sources.md)<project>`
-in the research environment — not part of the streamboat repo itself. Clones were taken 2026-09-07.
+(`/home/user/streamboat/docs/research/engineering-baseline.md`) points at a shallow (`--depth 1`),
+read-only git clone of the named GitHub project, held in the research environment's reference
+checkouts directory (one subdirectory per project, named `<project>`) — **not** part of the
+streamboat repo itself, and not guaranteed to still exist in a later research session. Clones were
+taken 2026-09-07.
 
 ## Project → URL mapping
 
 | `ref:<project>` | GitHub URL | License | What it is, for this skill's purposes |
 | --- | --- | --- | --- |
 | `sone` | https://github.com/lullabyX/sone | GPL-3.0-only | Tauri 2 + Rust + React 19 native Linux TIDAL client. Source of the secret-store envelope, cache tiering, log rotation, rate-gate, embedded-credential obfuscation, and the local MCP control-surface design this skill recommends copying. |
-| `sone-windows` | https://github.com/lvllaby/sone-windows | GPL-3.0-only | A fork of Sone adding a Windows path; "not inspected in depth" — cited only in the license table. |
+| `sone-windows` | https://github.com/lvllaby/sone-windows | GPL-3.0-only | A fork of Sone adding a Windows path. Not inspected in depth overall, but its `scripts/prepare-gstreamer.js` + generated NSIS/WiX fragments are the single most consequential Windows-specific finding in the reference set (`packaging-and-distribution.md` §4a) — bundling the GStreamer runtime into the installer, with an embedded developer-local-path bug worth avoiding. |
+| `tidalswift` | https://github.com/melgu/TidalSwift | not recorded in this skill (macOS-only client) | Cited only for two narrow, code-level facts: it is the only checkout using Git LFS (for README screenshots, not test data — `testing-strategy.md` §11), and its macOS-only scope illustrates why a GPL-3.0-only app cannot ship on iOS (`licensing-and-legal.md` §2). |
 | `high-tide` | https://github.com/Nokse22/high-tide | GPL-3.0 | Python + GTK4/libadwaita native Linux TIDAL client. Source of the libsecret token-storage pattern, the accepted Flathub manifest, and the only reference project with real translations. |
 | `strawberry` | https://github.com/strawberrymusicplayer/strawberry | GPL-3.0 | C++17 + Qt6 + GStreamer general-purpose music player with TIDAL as one backend. Source of the 13-job build matrix, macOS notarization sequence, opt-in live-canary test pattern, and build-time credential encryption. |
 | `tidal-hifi` | https://github.com/Mastermindzh/tidal-hifi | MIT | Electron wrapper around the TIDAL web player. Source of the CONTRIBUTING AI-usage-policy precedent, issue-template shape, and multi-format Linux/Windows packaging via electron-builder. |
@@ -43,8 +45,9 @@ runs on push/PR **and** a weekly `cron: "0 0 * * 0"`, executing the pexpect devi
 | --- | --- | --- | --- |
 | Flathub app-author requirements | https://docs.flathub.org/docs/for-app-authors/requirements | Console-software ban, dev-history requirement, app ID rules, AI policy | Direct fetch of the source repo `flathub-infra/documentation` (`docs.flathub.org` itself is egress-blocked) |
 | Flathub metainfo/submission/maintenance/verification docs | `.../03-metainfo-guidelines/`, `.../05-submission.md`, `.../06-maintenance.md`, `.../10-verification.md` (same repo) | Concrete metainfo fields, submission mechanics, External Data Checker, verification | Direct fetch |
-| Flathub AI-policy flip commit | https://github.com/flathub-infra/documentation/commit/992f57b30de98ddbd5e80959e9672998c83c8c97 | Evidence the Generative AI policy briefly banned AI-assisted content in 2026-05 | Direct fetch |
-| Flathub linter rules | https://docs.flathub.org/docs/for-app-authors/linter | `finish-args-incorrect-secret-service-talk-name`, `finish-args-own-name-cpt`, `finish-args-x11-without-ipc`, `metainfo-missing-screenshots` | **Egress-blocked** — read via a search index only; the specific `--talk-name=org.mpris.MediaPlayer2.$FLATPAK_ID` "never granted" rule name is unconfirmed |
+| Flathub AI-policy flip commit | https://github.com/flathub-infra/documentation/commit/992f57b30de98ddbd5e80959e9672998c83c8c97 | Claimed evidence the Generative AI policy briefly banned AI-assisted content in 2026-05 | **Not independently re-verified in this pass** — GitHub API access to this repo's commit history is not enabled here; do not repeat the specific commit/date as settled fact |
+| flatpak-builder-lint `finish_args.py` | https://github.com/flathub-infra/flatpak-builder-lint (checks/finish_args.py) | The real own-name rule ids (`finish-args-unnecessary-appid-own-name`, `finish-args-unnecessary-appid-mpris-own-name`); confirms no rule named `finish-args-own-name-cpt` exists | Direct fetch of the source file, read in full |
+| Flathub linter rules (docs page) | https://docs.flathub.org/docs/for-app-authors/linter | `finish-args-incorrect-secret-service-talk-name`, `finish-args-x11-without-ipc`, `metainfo-missing-screenshots` | **Egress-blocked** — read via a search index only; the specific `--talk-name=org.mpris.MediaPlayer2.$FLATPAK_ID` "never granted" rule name is unconfirmed |
 | Flatpak sandbox-permissions doc | https://github.com/flatpak/flatpak-docs/blob/master/docs/sandbox-permissions.rst | `--socket=pulseaudio` covers `/dev/snd`; device table; `--persist`; default MPRIS ownership | Direct fetch, verified verbatim |
 | xdg-desktop-portal Secret portal spec | https://raw.githubusercontent.com/flatpak/xdg-desktop-portal/main/data/org.freedesktop.portal.Secret.xml | Per-app master secret over a pipe FD | Direct fetch |
 | Homebrew Package-Acceptance-Policy | https://github.com/Homebrew/brew/blob/main/docs/Package-Acceptance-Policy.md | Disjunctive 30/30/75, 90/90/225 notability floor; 30-day repo-age rule | Direct fetch |
@@ -52,9 +55,13 @@ runs on push/PR **and** a weekly `cron: "0 0 * * 0"`, executing the pexpect devi
 | Apple Developer Program / Developer ID | https://developer.apple.com/programs/, https://developer.apple.com/support/developer-id/ | $99/year covers Developer ID cert; no separate notarization fee stated | Direct fetch (the "no fee" half is an absence-of-evidence inference) |
 | Azure Trusted/Artifact Signing pricing | azure.microsoft.com, learn.microsoft.com | $9.99/$99.99 monthly tiers, eligibility wording | **Egress-blocked** — secondary sources only (devclass 2026-01-14, melatonin.dev, MS Community Hub); re-verify before a cost decision |
 | winget submission policy | https://learn.microsoft.com/en-us/windows/package-manager/package/repository | `InstallerSha256`, automated validation, silent-install | **Egress-blocked** — corroborated via `microsoft/winget-pkgs` README/PRs instead; the "7-day PR timer" claim is unconfirmed |
-| Windows `wincred.h` / keyring issue | learn.microsoft.com (blocked); AdysTech/CredentialManager#65; jaraco/keyring#355 | `CRED_MAX_CREDENTIAL_BLOB_SIZE` = 2560 bytes | mingw-w64 header copy + GitHub issues, not the primary MS page |
+| winget `doc/Validation.md` | https://raw.githubusercontent.com/microsoft/winget-pkgs/master/doc/Validation.md | `InstallerUrl` HTTPS/official-domain rule, PUA rejection, elevation/silent-install validation, `@wingetbot run` | Direct fetch |
+| Windows `wincred.h` primary source | https://raw.githubusercontent.com/MicrosoftDocs/sdk-api/docs/sdk-api-src/content/wincred/ns-wincred-credentiala.md | `CRED_MAX_CREDENTIAL_BLOB_SIZE` = `5*512` = 2560 bytes, quoted verbatim | Direct fetch — this is the actual upstream source for the blocked `learn.microsoft.com` page, not a secondary source |
+| mingw-w64 `wincred.h` | https://raw.githubusercontent.com/mingw-w64/mingw-w64/master/mingw-w64-headers/include/wincred.h | **Disagrees** with the Microsoft figure: defines the constant as a bare `512`, no version guard — a toolchain-specific trap, not a corroborating source (an earlier draft of this document mis-cited it as verification for the 2560-byte figure) | Direct fetch, line 114 read in context |
+| jaraco/keyring#355 | https://github.com/jaraco/keyring/issues/355 | Observed failures past the Windows blob limit | Direct fetch |
 | GStreamer licensing FAQ | https://raw.githubusercontent.com/GStreamer/gst-docs/master/markdown/frequently-asked-questions/licensing.md | LGPL core, `gst-plugins-ugly` for patent plugins | Direct fetch and grep — confirmed this page does **not** contain the "practical reasons under the GPL" or FFmpeg-build quotes some earlier drafts attributed to it |
-| gst-plugins-base LICENSE_readme / gst-libav README | GitHub (GStreamer org) | "For all practical reasons under the GPL itself"; FFmpeg build-mode caveat | Direct fetch |
+| GStreamer/gst-libav README | https://raw.githubusercontent.com/GStreamer/gstreamer/main/subprojects/gst-libav/README.md | **Both** the "for all practical reasons under the GPL itself" quote and the FFmpeg build-mode caveat, lines 15-20 — one file, not two, and **not** `gst-plugins-base`'s `LICENSE_readme` (that file does not exist at HEAD in the GStreamer monorepo — a second earlier-draft misattribution) | Direct fetch |
+| GStreamer/gst-plugins-base COPYING | https://raw.githubusercontent.com/GStreamer/gstreamer/main/subprojects/gst-plugins-base/COPYING | Confirms LGPL-2.1, and confirms no `LICENSE_readme` file exists in this subproject | Direct fetch |
 | Fedora Licensing/FDK-AAC wiki | fedoraproject.org (blocked) | fdk-aac is GPL-incompatible, Debian non-free | Search index + tookmund.com, Hydrogenaudio corroboration |
 | Qt open-source licensing FAQ | doc.qt.io, qt.io/faq (blocked) | LGPLv3 core, GPL-2.0-only vs GPL-3.0-only module conflict | Search index only — re-verify module-by-module if Qt is chosen |
 | SemVer / Keep a Changelog / Conventional Commits | semver.org, keepachangelog.com, conventionalcommits.org | Versioning/changelog/commit conventions | Direct fetch |

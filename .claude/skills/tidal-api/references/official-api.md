@@ -11,6 +11,7 @@ Full narrative: `docs/research/tidal-api.md` §1 and §8.10.
 5. The "compliant-but-Chromium" architecture option
 6. CORS
 7. Format differences from the unofficial API
+8. Sone's official-API artist-tools surface — the only binary-upload example in any checkout
 
 ---
 
@@ -18,8 +19,10 @@ Full narrative: `docs/research/tidal-api.md` §1 and §8.10.
 
 Base `https://openapi.tidal.com/v2/`, JSON:API shape (`data`/`attributes`/`relationships`/
 `included`, `application/vnd.api+json`). Documented (developer.tidal.com, generated SDKs).
-Registration required; third-party app review has reportedly stalled since ~2024 with no TIDAL
-staff reply as of an April 2026 follow-up (`tidal-music` GitHub Discussion #179).
+Registration required; third-party app review appears stalled — `tidal-music` GitHub Discussion #179
+(opened 2025-06-03, first contact roughly six months earlier per the OP — not "since ~2024") got a
+2026-04-16 update: "As of today, nothing has moved. I even tried reaching them via e-mail a few
+months ago, but got no reply." No TIDAL staff reply on the thread.
 
 **It is far larger than "ISRC/UPC lookup, JSON:API playlists, lyrics"** — that undersells it. The
 `paths` interface in `tidal-sdk-web/packages/api/src/allAPI.generated.ts` declares **256** top-level
@@ -49,7 +52,8 @@ product surfaces streamboat might one day want:
 Sone already uses this API opportunistically for artist bios and artworks
 (`{}/artistBiographies/{}`, `{}/artworks`) and for playlist create/patch, **using the same Bearer
 token minted by the unofficial device-code flow** — the two APIs are not mutually exclusive and do
-not require a second login.
+not require a second login. See §8 for the full artist-tools write surface, including a presigned-S3
+upload flow — it's larger than "bios and artworks" suggests.
 
 ## 2. Auth on the official API
 
@@ -82,8 +86,9 @@ third-party client gets full tracks or previews from it is unresolved (`tidal-mu
 
 ## 5. The "compliant-but-Chromium" architecture option
 
-`@tidal-music/player` — the package behind `tidal-sdk-web`'s player — is published on **npm**,
-**Apache-2.0**, and is the *only fully ToS-compliant way for a third party to play full-quality
+`@tidal-music/player` — the package behind `tidal-sdk-web`'s player — lives in the
+`tidal-music/tidal-sdk-web` monorepo under **Apache-2.0** (public npm publication not independently
+confirmed), and is the *only fully ToS-compliant way for a third party to play full-quality
 TIDAL audio*, because it **is** "an official, unmodified version of the TIDAL Player module" (the
 exact phrase the Developer Guidelines require, `docs/research/tidal-api.md` §14). It is a
 Shaka-Player/EME-based browser player, so it needs a Widevine CDM — the same castlabs-Electron trick
@@ -106,19 +111,50 @@ decision to state, not one to make silently. See "Open decisions" in `SKILL.md`,
 origins — unlike `openapi.tidal.com/v2` (the official API), which the browser-based `tidal-sdk-web`
 calls directly. Every unofficial-API OSS client with a webview frontend (Sone, sone-windows) routes
 100% of its TIDAL calls through native/backend code and only lets the webview touch
-`resources.tidal.com` directly; a community docs repo (`tidal-api-docs`) names CORS explicitly as
-the reason browser-based PKCE handoffs don't work in-browser. **This was not independently
-re-verified with a live CORS preflight in this pass** — re-check with
-`curl -I -H 'Origin: https://example.com' https://api.tidal.com/v1/sessions` before treating it as
-settled, but treat it as the working assumption: whatever UI toolkit streamboat picks, the API
-client must be a native-side module with no browser-origin dependency, not a "nice to have."
+`resources.tidal.com` directly. **Genuinely unverified, and weaker-sourced than it may look**: the
+`tidal-api-docs` citation once offered in support (`README.md:17`,
+`Authorization/Retrieve-From-Authentication-Flow.md:8`) is actually about retrieving the `client_id`
+from the web player from within a browser, not about `api.tidal.com`'s CORS response headers — it
+does not directly evidence CORS posture. No checkout runs a live preflight. Run `curl -i -H 'Origin:
+https://example.com' -X OPTIONS https://api.tidal.com/v1/sessions` and record the result before
+treating this as settled — but treat it as the working assumption meanwhile: whatever UI toolkit
+streamboat picks, the API client must be a native-side module with no browser-origin dependency, not
+a "nice to have."
 
 ## 7. Format differences from the unofficial API
 
 - Locale: official is BCP-47 hyphenated (`en-US`, `nb-NO`); unofficial is underscored (`en_US`).
 - Errors: official/JSON:API is `{"errors": [{"detail": "..."}]}`; unofficial is
   `{"status", "subStatus", "userMessage"}` — see `references/transport.md` §5.
-- Content-Type: `POST`/`PATCH`/`DELETE` on the official API require
-  `Content-Type: application/vnd.api+json`.
+- Content-Type: the official web SDK sets `Content-Type: application/vnd.api+json` on
+  `POST`/`PATCH`/`DELETE`. **This is the SDK's own behavior, not a demonstrated server
+  requirement** — Sone POSTs/PATCHes the same `openapi.tidal.com/v2/playlists` endpoints with plain
+  `application/json` (reqwest's `.json(&body)`) and it works. Don't block on matching the header
+  exactly.
 - Pagination: JSON:API `page[cursor]` idioms, with a query serializer that allows reserved
   characters through (`allowReserved: true`) for include-lists and cursor values.
+
+## 8. Sone's official-API artist-tools surface — the only binary-upload example in any checkout
+
+Sone's unofficial-API token also drives official-API *artist* writes, not just playlist writes — the
+`§1` bullet list undersells this too. All on `https://openapi.tidal.com/v2` with the same Bearer
+token, `Content-Type: application/vnd.api+json`, `x-tidal-client-version`, `?countryCode=`:
+
+- `GET /artists/{id}/relationships/followers` — follower list.
+- `PATCH /artists/{id}` — attributes and external links.
+- `PATCH /artistBiographies/{id}` — bio text.
+- **Cover-art upload, a four-step presigned-S3 flow**:
+  1. `POST /artworks` with `{"data":{"type":"artworks","attributes":{"mediaType":"IMAGE",
+     "sourceFile":{"md5Hash":"<hex md5>","size":<bytes>}}}}` → response carries `data.id` and
+     `data.attributes.sourceFile.uploadLink.href`.
+  2. `PUT <uploadLink.href>` — a presigned URL with **no Authorization header**, but
+     `content-md5: <base64 of the same md5 digest>` and `Content-Type: image/jpeg` required. The
+     digest is sent twice, in two different encodings (hex in the JSON body, base64 in the header) —
+     an easy transcription bug.
+  3. Poll `GET /artworks/{id}` until it reports ready.
+  4. `PATCH /artists/{id}/relationships/profileArt` with
+     `{"data":[{"type":"artworks","id":"<artworkId>"}]}`.
+
+This is a genuine feature-scope question, not an implementation detail — "claim your artist page" /
+edit bio / edit links / upload art are things the native app does. See
+`references/catalog-and-library.md` §7 for where this connects to the social-features scope decision.

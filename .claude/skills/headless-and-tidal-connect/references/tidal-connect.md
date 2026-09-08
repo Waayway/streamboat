@@ -52,11 +52,26 @@ iFi Audio ZEN Stream firmware image
 ```
 [documented-web, from repository descriptions and READMEs]
 
+**The root of this chain has since disappeared from GitHub**: `github.com/ppy2/ifi-tidal-release`
+now returns HTTP 404. `seniorgod/ifi-tidal-release` still describes itself as "tidal connect
+application for ARM SBC based on https://github.com/ppy2/ifi-tidal-release", confirming the lineage
+even though the origin repo itself is gone. Record this as "origin repo no longer reachable" — it is
+not evidence either way on whether TIDAL has ever enforced against redistributors (§5's "no takedown
+found" caveat stands on its own). [documented-web: https://github.com/ppy2/ifi-tidal-release (404)]
+
 ### 2.1 What the wrapper contributes vs. the binary
 
 `ref:tidal-connect` is MIT-licensed and **contains no TIDAL binary**: "This repository does not
 contain any tidal-connect binary" (`ref:tidal-connect/README.md:3-4`). It contributes ALSA device
 resolution, an `/etc/asound.conf` generator, a test tone, a restart loop, and a compose file.
+
+**The binary/certificate paths in §2.2 are fallback defaults, not the only option.**
+`ref:tidal-connect/bin/entrypoint.sh:59-99` prefers, in order: a user-supplied
+`/assets/custom/bin/tidal_connect` (+ matching `tidal_connect.dat`) over the shipped iFi binary; a
+user-supplied `/assets/custom/certificate/tcon.crt` over the shipped iFi certificate; or an explicit
+`$CERTIFICATE_PATH`. In practice no alternative binary or certificate has ever surfaced in the fork
+ecosystem — but the design does not assume iFi's is the only one that will ever exist, so don't
+describe "the iFi binary and certificate" as hardcoded when writing about this wrapper.
 
 Container dependencies (`ref:tidal-connect/build/Dockerfile`, base `debian:bookworm-slim`):
 `ca-certificates`, `alsa-utils`, `libportaudio-ocaml`, `libssl-dev`, `libavahi-client3`,
@@ -286,18 +301,56 @@ Readings:
   `BUFFERING|IDLE|PAUSED|PLAYING`. Combined with `websocketpp` in the target binary, the most likely
   design is a JSON-over-WebSocket control channel with a Cast-like namespace/message model. **This
   is shape resemblance, not proof** — no wire capture was available. [inferred, medium confidence]
-- **`cloudConnect` + `cloudQueue` mean handoff does not require the LAN.** A server-side queue with
-  an ETag (`UPDATE_ITEMS_ETAG`) lets any signed-in device pick up the queue. Endpoints for
-  `cloudQueue` are **not documented anywhere found** and do not appear in any official SDK.
-- **The official SDKs (web, Android, iOS) contain no Connect/device-picker code at all.** Searching
-  `ref:tidal-sdk-web`, `ref:tidal-sdk-android`, `ref:tidal-sdk-ios` for `remotePlayback`,
-  `cloudQueue`, `tidalConnect` returns nothing. **Connect is not in the public SDK surface** —
-  confirmed as a negative result.
+- **`cloudConnect` + `cloudQueue` mean handoff does not require the LAN — and the server-side queue
+  behind this turns out to be officially documented, correcting what this reference previously
+  said.** [refuted-and-corrected]
+- **The official SDKs (web, Android, iOS) contain no `remotePlayback`/Connect/device-picker
+  *transport* code at all.** Searching `ref:tidal-sdk-web`, `ref:tidal-sdk-android`,
+  `ref:tidal-sdk-ios` for the literal strings `remotePlayback`, `cloudQueue`, `tidalConnect` returns
+  nothing. **This half is confirmed**: the Connect wire protocol and the desktop client's
+  `cloudConnect` device-discovery/handoff mechanism are not in the public SDK surface — confirmed as
+  a negative result.
+- **But all three SDKs bundle the official OpenAPI spec for `openapi.tidal.com/v2`, and it documents
+  a full server-side play-queue resource — `/playQueues` — that this reference previously said did
+  not exist anywhere.** [refuted-and-corrected, verified-source
+  `ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json` (spec version 1.10.104); also present in
+  `ref:tidal-sdk-android/tidalapi/bin/tidal-api.json` and
+  `ref:tidal-sdk-ios/Sources/TidalAPI/Config/input/tidal-api-oas.json`, with a generated Swift client
+  at `ref:tidal-sdk-ios/Sources/TidalAPI/Generated/OpenAPIClient/Classes/OpenAPIs/APIs/PlayQueuesAPI.swift`
+  and a generated TS client in `ref:tidal-sdk-web/packages/api/src/allAPI.generated.ts`]
+  - **Routes**: `GET/POST /playQueues`; `GET/PATCH/DELETE /playQueues/{id}`; `GET/PATCH
+    /playQueues/{id}/relationships/current` (to-one, the now-playing item); `GET/PATCH/POST/DELETE
+    /playQueues/{id}/relationships/future` (to-many, the upcoming tail); `GET
+    /playQueues/{id}/relationships/past` and `/owners`.
+  - **Attributes**: `createdAt`, `lastModifiedAt`, `repeat` (`NONE|ONE|BATCH`), `shuffle`
+    (`OFF|BATCH|ALL`), `shuffled`. Item resource identifiers carry `meta {batchId (uuid), itemId,
+    legacySource, replacement}`.
+  - **Auth**: PKCE scopes `r_usr` (read) / `w_usr` (write) under `Authorization_Code_PKCE` — a
+    **different auth stack** from the unofficial `api.tidal.com` v1 surface everything else in this
+    skill set assumes. That is the real catch, not "undocumented": using this resource means running
+    a second, official PKCE login alongside the unofficial-API session, or not using it at all.
+  - **What this settles and what it doesn't**: `current`/`future`/`past` map closely onto the desktop
+    client's `cloudQueue` shape above (`currentItemId`/tail/history), and `repeat`/`shuffled` map
+    onto `RepeatMode`/`shuffled` — so a documented, officially supported, cross-device server-side
+    queue does exist. streamboat could publish and consume the **user's own** cloud queue through the
+    sanctioned API, handing off between streamboat's desktop app, its daemon and the official TIDAL
+    app without touching the closed Connect transport at all — a real product option this reference
+    previously foreclosed by mistake. What remains genuinely undocumented: the `cloudConnect`
+    **transport** itself (how a device announces itself and receives a push when the queue changes),
+    and the `etag`/`itemsEtag` concurrency fields the desktop client's Redux store uses — neither
+    appears in the `/playQueues` OpenAPI spec. So "cloudConnect the wire protocol" is still closed;
+    "a server-side queue resource" is not.
 
-**Conclusion: the controller side is as closed as the target side.** streamboat can enumerate
-`_tidalconnect._tcp` devices on the LAN (§3), but has no documented way to connect to one, and
-building one from scratch means reverse-engineering an obfuscated binary's WebSocket protocol *and*
-solving controller-side authentication. [inferred, high confidence]
+**Conclusion, revised**: the Connect **transport** (mDNS target discovery, device-to-device handoff,
+`cloudConnect`) is as closed as the target side — streamboat can enumerate `_tidalconnect._tcp`
+devices on the LAN (§3) but has no documented way to connect to one, and building one from scratch
+means reverse-engineering an obfuscated binary's WebSocket protocol *and* solving controller-side
+authentication. But **queue handoff between a user's own streamboat instances and their official
+TIDAL app is a separate, documented, officially-sanctioned problem** (`/playQueues` above) that does
+not require any of that reverse-engineering. Open sub-question for the owner: whether a queue written
+through this official PKCE API is visible to the unofficial-API session the rest of streamboat uses,
+and whether the two logins can be merged into one UX (see the Open decisions section of `SKILL.md`).
+[inferred, high confidence on the transport half; confirmed on the queue-API half]
 
 For the client-side Connect/device-picker data model as it applies to streamboat's own future
 "remotes" UI (not the wire protocol), see the `tidal-client-features` skill's
@@ -344,6 +397,8 @@ build it" question above is already settled — these are different, and public-
    README ends up saying.
 
 **Unverified in this section**: TIDAL's actual partner terms (blocked domain); whether the Connect
-control channel really is JSON-over-WebSocket (inferred, no wire capture); `cloudQueue`/
-`cloudConnect` endpoints (undocumented anywhere); whether TIDAL has ever acted against Connect
-binary redistributors (no takedown found, absence of evidence only).
+control channel really is JSON-over-WebSocket (inferred, no wire capture); the `cloudConnect`
+**transport** and the `etag`/`itemsEtag` concurrency fields (undocumented — but not the
+`/playQueues` queue resource itself, which is documented, see §4); whether TIDAL has ever acted
+against Connect binary redistributors (no takedown found, absence of evidence only — and the origin
+repo's own 404 (§2) is not evidence either way).
