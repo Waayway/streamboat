@@ -372,3 +372,39 @@ PREVIEW asset; drop permanently on a sender-fault batch error rather than retryi
 timestamps from a server-anchored clock (`GET /v1/ping`) rather than local system time, which
 matters on a Pi without a real-time clock; a user-supplied client ID (D-023) changes what an honest
 event looks like and the payload must follow the credential in use.
+
+## 2026-09-08 — Round 8: account writes, crash reporting, control surface
+
+### D-028 Account writes: library writes only (q8.3) — decided
+
+Favourites, playlist create/edit/reorder (with ETag preconditions) and the queue; nothing else.
+Profile, Block, Picks and AI-playlist writes stay out of reach.
+
+Alternatives: read-only; add profile and taste writes.
+
+### D-029 Crash reporting: local crash dumps plus a debug bundle; nothing leaves the machine unprompted (R-2, closed) — decided
+
+The reopened item closes on the research default: structured logs with token redaction by
+construction, local minidumps, and a "generate debug bundle" command the user attaches to an issue
+by hand. No third-party or self-run crash service, no ingest key in the binary.
+
+Alternatives: opt-in hosted reporting; an opt-in prefilled-GitHub-issue helper.
+
+### D-030 Headless control surface: HTTP + WebSocket JSON on loopback (q9.1) — decided
+
+One protocol for the GUI (in-process), the CLI, a web remote and a future phone app. Bound to
+127.0.0.1 with a generated token and Host-header allowlisting; LAN exposure is a logged opt-in.
+MPRIS and SMTC ship as day-one adapters over it, with MPRIS registration in the engine so it works
+in daemon mode. Specify the track/album/playlist URI grammar before users store playlists
+(mopidy-tidal's composite scheme is the precedent).
+
+Alternatives: MPD protocol as primary; MPRIS/D-Bus only.
+
+### D-031 Listener host and versioning: daemon only, additive and tolerant (q9.2) — decided
+
+Only `streamboatd` binds a listener; the GUI speaks the same Command/Event types in-process without
+opening a port. The protocol is versioned additively: a capabilities query, unknown fields ignored,
+no field ever repurposed, so older clients keep working. The GUI can start hosting later without a
+protocol change.
+
+Alternatives: the GUI hosts a listener too; exact-match versions per release.
