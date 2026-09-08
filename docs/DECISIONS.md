@@ -327,3 +327,48 @@ extractable and that a secret-less ID filters the hi-res tiers out of the cascad
 build with no credential at all.
 
 Alternatives: user must supply their own; embedded and obfuscated (Sone, python-tidal).
+
+## 2026-09-08 — Round 7: login, identity, tokens, play reporting
+
+### D-024 Login: device code and PKCE both ship (q7.2) — decided
+
+Device code (with a locally generated terminal QR) is the headless and CLI default; PKCE with a
+loopback redirect on `streamboat://` is the desktop default. The token store records which client
+pair minted each token because refresh must use the matching pair. PKCE is the only flow that
+unlocks HI_RES_LOSSLESS; device code is the only flow that works on a headless box.
+
+Alternatives: PKCE only (High Tide); device code only (caps quality below hi-res).
+
+### D-025 Client identity: an honest User-Agent where it works (q7.3) — decided
+
+Send a distinctive `streamboat/x.y` User-Agent by default and TIDAL's own device headers only on
+the specific endpoints that demand them. No reference client has published whether an honest UA is
+still served, so verify against a live account before the first release and keep a documented
+fallback setting that switches to the reference clients' headers.
+
+Alternatives: impersonate TIDAL's Android app on every request (the reference clients' habit);
+send nothing distinctive.
+
+### D-026 Token storage: OS keyring first, encrypted file fallback (q8.1) — decided
+
+Keyring first; then an AES-256-GCM file whose key lives in the keyring; then a passphrase-derived
+key. 0600 file in a 0700 directory. Under Flatpak use the Secret portal (no extra finish-arg).
+Store only the refresh token in the Windows credential blob because of its size ceiling. On a
+headless box the encrypted-file path is the normal case.
+
+Alternatives: keyring only, fail loudly; an additional plaintext mode for servers.
+
+### D-027 Play reporting: on by default, disableable, disclosed (q8.2) — decided
+
+streamboat reports finished plays to TIDAL so Recently Played and Home personalisation behave as
+the user expects out of the box (Sone's choice). Disclosed in the README, the metainfo and the
+setting itself, which states exactly what is sent and that with the embedded credential the event
+describes TIDAL's Android client.
+
+Alternatives: off by default (the research recommendation); never implement it.
+
+Operational rules, fixed regardless of the default: log a play only past 30 seconds; never for a
+PREVIEW asset; drop permanently on a sender-fault batch error rather than retrying; derive
+timestamps from a server-anchored clock (`GET /v1/ping`) rather than local system time, which
+matters on a Pi without a real-time clock; a user-supplied client ID (D-023) changes what an honest
+event looks like and the payload must follow the credential in use.
