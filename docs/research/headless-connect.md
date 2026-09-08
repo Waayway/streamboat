@@ -12,6 +12,13 @@ Evidence tags used throughout:
 - **[inferred]** — my reasoning from the above, not stated anywhere.
 - **[unverified]** — could not confirm; stated as a gap, not a fact.
 
+**Fact-check pass (2026-09-07)**: this document has been independently fact-checked against the
+reference checkouts and reachable primary sources. Claims that turned out wrong are marked
+**refuted**/**corrected** in place, with the correction and its source; claims that turned out right
+often carry a **confirmed** tag plus a nuance the original draft missed; new facts the fact-check
+supplied are marked **[gap]**. Genuinely open items keep **[unverified]**. Treat any claim without one
+of these markers as carried over unchanged from the original research pass.
+
 ---
 
 ## Summary
@@ -21,7 +28,10 @@ Evidence tags used throughout:
    CDN itself. The controller's local audio pipeline (DSP, replay gain, exclusive output) does not
    apply to the target. [documented-web + verified-source]
 2. **Targets are discovered over mDNS with the service type `_tidalconnect._tcp`**
-   (`avahi-browse -t _tidalconnect._tcp`). [documented-web:
+   (`avahi-browse -t _tidalconnect._tcp`; add `-r` to resolve hostname/address/port/TXT record —
+   the troubleshooting doc's own examples omit `-r`, but `avahi-browse(1)` supports it). Records
+   carry a ~120 s TTL, which is why a rapidly restarting target can collide with its own stale
+   advertisement. [confirmed, documented-web:
    https://github.com/TonyTromp/tidal-connect-docker/blob/master/docs/TROUBLESHOOTING.md]
 3. **There is no open implementation of the Connect protocol — neither target nor controller.**
    Every working Linux target is the same closed ARM binary (`tidal_connect_application`) leaked from
@@ -35,9 +45,16 @@ Evidence tags used throughout:
    a WebSocket control channel + HTTPS/TLS to TIDAL, with a per-device X.509-style certificate
    (`--tc-certificate-path`, default `IfiAudio_ZenStream.dat`) as the device identity. [inferred from
    the licence list + CLI flags]
-6. **Device identity is the hard gate.** A Connect target authenticates with a vendor-issued
-   certificate. There is no documented way to obtain one outside a commercial partnership; the
-   community route is to reuse iFi's. streamboat must not ship it. [verified-source + inferred]
+6. **Device identity is the hard gate, and it has two inputs, not one.** A Connect target
+   authenticates with a vendor-issued certificate (`--tc-certificate-path`) **and** the upstream
+   systemd unit also passes `--netif-for-deviceid eth0` — i.e. the device id is derived partly from
+   a named network interface (its MAC), which is likely why the same certificate can be reused
+   across many community installs without an observed collision. GioF71's Docker wrapper drops this
+   flag entirely (`ref:tidal-connect/bin/entrypoint.sh` has no `--netif-for-deviceid`), which may be
+   an unnoticed gap in its own uniqueness story. There is no documented way to obtain a certificate
+   outside a commercial partnership; the community route is to reuse iFi's. streamboat must not ship
+   either. [verified-source + confirmed, documented-web:
+   https://raw.githubusercontent.com/shawaj/ifi-tidal-release/master/README.md]
 7. **The Connect binary is capped at 16-bit/44.1 kHz LOSSLESS since TIDAL removed MQA at the end of
    July 2024** — previously 24/48 plus MQA unfolding to 24/88 or 24/96.
    `ref:tidal-connect/README.md` explicitly steers hi-res users to mopidy-tidal, upmpdcli's TIDAL
@@ -66,8 +83,17 @@ Evidence tags used throughout:
     streamboat needs. [verified-source]
 12. **MPD compatibility is the cheapest way to inherit a client ecosystem**: port 6600, a line
     protocol, `idle` for push notifications, and existing phone/desktop clients (MALP, ncmpcpp,
-    Cantata, mpc). Mopidy-MPD and Nuclear both implement *subsets* successfully. Its security model
-    is a single plaintext password and no encryption. [documented-web]
+    Cantata, mpc). Mopidy-MPD and Nuclear both implement *subsets* successfully — and, contrary to an
+    earlier draft of this document, a subset does not have to drop catalogue browsing: Mopidy-MPD
+    maps `lsinfo`/`search`/`find` onto an arbitrary backend via `context.browse()`, which is exactly
+    how MALP and ncmpcpp browse TIDAL today through mopidy-tidal. MPD's access control is **not**
+    just a shared plaintext password: it also supports `local_permissions` (Unix-socket clients) and
+    `host_permissions` (per-IP/CIDR ranges), so a loopback- or Unix-socket-bound listener needs no
+    password at all — only the transport stays unencrypted. Mopidy-MPD itself is now "kept on life
+    support by the Mopidy core developers" with a "Maintainer wanted" notice, which tempers how much
+    weight to put on it as a *maintained* precedent even though its design is sound. [confirmed,
+    documented-web: https://raw.githubusercontent.com/MusicPlayerDaemon/MPD/master/doc/user.rst;
+    https://github.com/mopidy/mopidy-mpd]
 13. **A local HTTP/WebSocket control API is the norm for modern daemons.** go-librespot ships
     "REST API + WebSocket events" plus MPRIS; spotifyd ships MPRIS plus a custom
     `rs.spotifyd.Controls` D-Bus interface (`TransferPlayback`, `VolumeUp`); tidal-hifi ships a
@@ -83,12 +109,22 @@ Evidence tags used throughout:
 15. **Chromecast sending is technically reachable** (`cast-sender` / `rust_cast` crates,
     `_googlecast._tcp` discovery, Default Media Receiver `CC1AD845`) but requires handing the
     receiver a URL it can fetch — which for TIDAL means either a signed CDN URL that expires or a
-    local re-serving proxy. **AirPlay sending** has precedents (`libraop`, Music Assistant's
-    `airplay-cli`) but means decoding and re-transmitting audio. Both raise the same
-    re-transmission question. [documented-web + inferred]
-16. **Being an AirPlay/Chromecast *receiver* is not streamboat's job**: shairport-sync (AirPlay 2)
-    and UxPlay already exist; a Chromecast receiver is blocked by Google's receiver authentication.
-    [documented-web]
+    local re-serving proxy — **and it caps quality below what streamboat's own daemon already
+    reaches**: Google Cast supports FLAC only up to 96 kHz/24-bit, and 24-bit at 176.4/192 kHz does
+    not play on Chromecast Audio and can hang the device. **AirPlay sending** has precedents
+    (`libraop`, Music Assistant's `airplay-cli`, `akustikrausch/airplay2-sender-cpp`) but means
+    decoding and re-transmitting audio. Both raise the same re-transmission question. [documented-web:
+    https://developers.google.com/cast/docs/media + inferred]
+16. **Being an AirPlay/Chromecast *receiver* is not streamboat's job — but not because it is
+    impossible.** shairport-sync (AirPlay 2) and UxPlay already exist for the AirPlay side. A
+    Chromecast receiver is *not* technically blocked: `rgerganov/shanocast` is a working open-source
+    one, built on Chromium's Openscreen. Its receiver authentication passes only because it reuses
+    **precomputed signatures taken from AirReceiver** — another vendor's device credentials — which
+    is exactly the "reuse someone else's identity" move streamboat has already rejected for iFi's
+    Connect certificate (§6). Framing the Chromecast receiver as a technical dead end understates the
+    real, and stronger, reason to skip it: doing it right requires the same kind of credential
+    borrowing streamboat refuses to do elsewhere. [refuted-and-corrected, documented-web:
+    https://github.com/rgerganov/shanocast]
 17. **Headless login is a solved UX problem with three known shapes**: device-code + QR in the
     terminal (`ref:tidalt/internal/tidal/loginprint.go` uses `qrterminal/v3`); a tiny local HTTP page
     that shows the link and accepts the pasted PKCE redirect URL (mopidy-tidal, port 8989); and
@@ -217,6 +253,14 @@ Notable: `--enable-websocket-log` and `--disable-web-security` both point at a W
 surface inside the binary; `--clientid` shows the target carries a TIDAL OAuth client id like every
 other TIDAL client. [verified-source + inferred]
 
+**A twelfth flag exists upstream that GioF71's wrapper drops.** The systemd unit shipped by
+`shawaj/ifi-tidal-release` invokes the same binary with an additional `--netif-for-deviceid eth0` —
+the Connect device id is derived partly from a named network interface (i.e. its MAC address),
+alongside the certificate. That is a second identity input the wrapper's own flag list — and this
+report's flag list until this fact-check — omits. [confirmed, documented-web:
+https://raw.githubusercontent.com/shawaj/ifi-tidal-release/master/README.md, the pasted `[Service]`
+`ExecStart` block]
+
 An optional `speaker_controller_application` runs first, inside `tmux`, when present
 (`DISABLE_CONTROL_APP=0`, `SLEEP_TIME_SEC=3` before launching the main app). Its role in the forks is
 to bridge metadata and volume: TonyTromp's stack runs a "volume-bridge" service that exports playback
@@ -257,8 +301,15 @@ All from `ref:tidal-connect/README.md` and `ref:tidal-connect/bin/common.sh`: [v
   (issue #21). No workaround known.
 - **avahi-daemon must be running.** Not installed by default on DietPi.
 - **ALSA card indices move.** Prefer `CARD_NAME` over `CARD_INDEX`; the index is resolved at
-  container start and a fresh `/etc/asound.conf` written, so the app always opens `default`.
-  Indices change simply because a USB DAC was or wasn't powered on at boot.
+  container start and a fresh `/etc/asound.conf` written. **Correction to an earlier draft of this
+  document**: the app does not uniformly open `default`. `common.sh`'s `write_audio_config()` emits
+  `pcm.tidal-audio-device` + `pcm.tidal-softvol` and passes `tidal-softvol` when softvol is enabled
+  (the shipped default, `ENABLE_SOFTVOLUME=yes`); it passes `$CREATED_ASOUND_CARD_NAME` when that
+  variable is set and softvol is off; it passes `custom` when the user supplies their own
+  `asound.conf` via `userconfig/`; and it falls back to `default` only in the remaining case (no
+  softvol, no `CREATED_ASOUND_CARD_NAME`). `entrypoint.sh` then invokes the binary with
+  `--playback-device $(get_playback_device)`. Indices change simply because a USB DAC was or wasn't
+  powered on at boot. [confirmed, verified-source `ref:tidal-connect/bin/common.sh`]
 - **Software volume needs care.** `common.sh` runs `amixer -c <idx> controls | grep 'Master'`; if no
   `Master` exists it creates a softvol named `Master`; if one exists it creates `SoftMaster` and logs
   a warning that the TIDAL slider will move the *hardware* volume and affect every other player on
@@ -266,9 +317,12 @@ All from `ref:tidal-connect/README.md` and `ref:tidal-connect/bin/common.sh`: [v
 - **Exclusive device locking.** "Tidal Connect will access exclusively your audio device if you
   select it in your … Tidal App." Check with `watch cat /proc/asound/<card>/pcm0p/sub0/hw_params` —
   anything other than `closed` means busy.
-- **Pre-flight test tone.** `aplay -D $PLAYBACK_DEVICE assets/audio/short-low-tone-48k.wav`, falling
-  back to the 44.1 kHz file; the app only starts if a tone played. This catches a locked or
-  misconfigured device before a silent failure.
+- **Pre-flight test tone, and it is opt-out.** `aplay -D $PLAYBACK_DEVICE
+  /assets/audio/short-low-tone-48k.wav` (absolute path inside the container), falling back to the
+  44.1 kHz file; the app starts if a tone played *or* if `ENABLE_GENERATED_TONE=no` was set
+  (`tone_skipped=1`), which skips the device check entirely — a deliberate escape hatch for DACs
+  that click on every open. This catches a locked or misconfigured device before a silent failure,
+  but only when the gate is left on. [confirmed, verified-source `ref:tidal-connect/bin/entrypoint.sh`]
 - **Multi-word friendly names break Avahi for some users** (issue #216) — the default was changed to
   a single word.
 - **Raspberry Pi 5**: `tidal_connect_application: error while loading shared libraries:
@@ -278,7 +332,9 @@ All from `ref:tidal-connect/README.md` and `ref:tidal-connect/bin/common.sh`: [v
   consider at least using a Pi 3b+ or, even better, a Pi 4b." On an Asus Tinkerboard the author had
   to pin the minimum CPU frequency around 600 MHz to stop crackling.
 
-The repo ships ~40 per-DAC `asound.conf` presets in `userconfig/` and a tested-device table in
+The repo ships **26** per-DAC `asound.conf` presets in `userconfig/` (not "~40" as an earlier draft
+of this document said — `ls ref:tidal-connect/userconfig/*.asound.conf | wc -l` = 26; the directory
+has 27 entries, the 27th being `README.md`) and a tested-device table in
 `assets/known-devices.md` (Aune S6, Chord Qutest, FiiO K11, Fosi DS1, HiFiBerry DAC+/Digi+ Pro, iFi
 ZEN DAC V2, IQaudIO DAC, Topping D10, SMSL A8, Yulong D200, Apple USB dongle, RPi HDMI/headphone
 outputs, …), with per-device `CARD_NAME` / `CARD_FORMAT` / softvol notes. **This table and these
@@ -306,7 +362,16 @@ ALSA directly.
   https://github.com/TonyTromp/tidal-connect-docker/blob/master/docs/TROUBLESHOOTING.md]
 - The advertisement publishes at least the service (friendly) name and model name — the two values
   passed as `-f` and `--model-name`. [verified-source, inferred mapping]
-- **Port and TXT record keys are not documented anywhere I could find.** [unverified]
+- **Port and TXT record keys are not documented in any of the sources read for this report — but
+  this is resolvable in minutes, not a research dead end.** Run `avahi-browse -r -t
+  _tidalconnect._tcp` (the `-r` resolve flag; the troubleshooting page cited above omits it) against
+  any Connect-capable device already on the LAN — a Volumio/moOde box, a WiiM, a BluOS speaker — and
+  it prints hostname, IPv4/IPv6 address, port and the full TXT record. On macOS: `dns-sd -B
+  _tidalconnect._tcp` then `dns-sd -L <name> _tidalconnect._tcp`. Treat this as a task for the owner
+  to run on their own network (it costs minutes) rather than as an open question, since it settles
+  both a diagnostics feature (§6) and the "do not collide with TIDAL's service type" rule at the same
+  time. [documented-web: https://github.com/TonyTromp/tidal-connect-docker/blob/master/docs/TROUBLESHOOTING.md
+  (unresolved form only); `avahi-browse(1)`, `dns-sd(1)` — **[unverified until the owner runs it]**]
 - Host networking is required for the container because multicast does not cross Docker's bridge.
   [verified-source]
 
@@ -477,14 +542,18 @@ service type that appears in TIDAL's own `RemotePlaybackDevice.fullname` example
 Receiver app id is `CC1AD845`. [documented-web: crates.io/lib.rs listings; verified-source for the
 `_googlecast._tcp` example string]
 
-The blocker is not the protocol, it is the media URL. A Cast receiver fetches the content itself, so
-streamboat would have to give it either (i) the signed TIDAL CDN URL — which is time-limited, may
-carry DASH manifests the Default Media Receiver cannot parse, and hands a third-party device a
-credentialed URL; or (ii) a URL served by streamboat itself, i.e. streamboat becomes an HTTP
-re-server of TIDAL audio on the LAN. Option (ii) is technically easy and is what Music Assistant
-does for its players, but it is a re-transmission design and deserves an explicit decision.
-[inferred; the "TIDAL serves signed, expiring URLs" fact is established in
-`/home/user/streamboat/docs/research/tidal-api.md`]
+The blocker is not just the protocol, it is the media URL — and even solving that only buys a lower
+ceiling than streamboat's own daemon. A Cast receiver fetches the content itself, so streamboat would
+have to give it either (i) the signed TIDAL CDN URL — which is time-limited, may carry DASH manifests
+the Default Media Receiver cannot parse, and hands a third-party device a credentialed URL; or (ii) a
+URL served by streamboat itself, i.e. streamboat becomes an HTTP re-server of TIDAL audio on the LAN.
+Option (ii) is technically easy and is what Music Assistant does for its players, but it is a
+re-transmission design and deserves an explicit decision. And even a working Cast sender caps
+streamboat below its own headless daemon: Google Cast supports FLAC only up to 96 kHz/24-bit, and
+24-bit at 176.4/192 kHz does not play on Chromecast Audio and can hang the device — the exact same
+class of quality ceiling the report rejects the Connect binary for (§2.5). [confirmed, documented-web:
+https://developers.google.com/cast/docs/media; the "TIDAL serves signed, expiring URLs" fact is
+established in `/home/user/streamboat/docs/research/tidal-api.md`]
 
 **AirPlay (sender).** Precedents: `philippe44/libraop` (RAOP/AirPlay v2 player + library, Windows /
 macOS / Linux x86 and ARM), `music-assistant/airplay-cli` ("unified command-line binary for streaming
@@ -498,10 +567,15 @@ routes CoreAudio output there with no code in streamboat. Same for Windows with 
 Cross-platform parity is the only reason to implement a sender at all. [inferred]
 
 **Receiving** (streamboat as an AirPlay/Cast target) is out of scope: shairport-sync already covers
-AirPlay 2 receiving on Linux/FreeBSD, UxPlay covers mirroring, and a Chromecast receiver is blocked
-because "Google Chrome authenticates the receiver and refuses to stream to it if authentication
-fails" (the `shanocast` write-up). [documented-web:
-https://github.com/mikebrady/shairport-sync, https://xakcop.com/post/shanocast/]
+AirPlay 2 receiving on Linux/FreeBSD, and UxPlay covers mirroring. **A Chromecast receiver is not
+technically impossible** — `rgerganov/shanocast` is a working open-source one built on Chromium's
+Openscreen — but it passes Chrome's receiver authentication only by reusing **precomputed signatures
+taken from AirReceiver**, i.e. another vendor's device credentials. That is the same "reuse someone
+else's identity" move streamboat has already rejected for iFi's Connect certificate (§6), which is
+the stronger and more honest reason to skip a Chromecast receiver — not that the protocol can't be
+implemented. [refuted-and-corrected, documented-web: https://github.com/mikebrady/shairport-sync,
+https://github.com/rgerganov/shanocast (`xakcop.com`, the original write-up, is blocked by this
+environment's egress proxy — see §17/Sources)]
 
 **Recommendation**: do not build Cast or AirPlay senders in v1. Build the *raw PCM pipe output*
 (§11) instead — it feeds Snapcast, which already solves multiroom including AirPlay/Cast endpoints
@@ -559,7 +633,14 @@ playback_cache_buffer_bytes = 16777216
   Track/Album/Artist whose *title* is the login instruction and whose *cover art URL* is a generated
   QR code of the login URL. Any MPD client renders it. No protocol extension, no companion app.
   `login_hack.py` builds these objects by introspecting the provider's return type annotations
-  (`ObjectBuilder`, `width = height = 150`).
+  (`ObjectBuilder`, `width = height = 150`). **One detail worth copying carefully, not verbatim**:
+  the QR is not generated locally. `_image_url()` builds
+  `"https://api.qrserver.com/v1/create-qr-code/?" + urlencode(...)` — the cover art is a hotlinked
+  image from a third-party remote service, which fails on an offline or firewalled box, i.e. exactly
+  the headless deployment this feature exists for. `ref:tidalt`'s `qrterminal/v3` approach generates
+  the QR locally and has neither problem; streamboat should render its own QR locally (in-band or in
+  a terminal) rather than reuse this hotlink pattern. [confirmed + corrected, verified-source
+  `ref:mopidy-tidal/mopidy_tidal/login_hack.py:109-115`]
 - A tiny HTTP server on `login_server_port` (default 8989) serves a page with the login link and, for
   PKCE, a form: "Paste the response URL here". It binds `("", port)` — **all interfaces, no
   authentication** (`ref:mopidy-tidal/mopidy_tidal/web_auth_server.py`). Copy the idea, not the bind
@@ -585,6 +666,21 @@ entries. [verified-source]
 **Pros**: enormous ecosystem leverage; battle-tested; Apache-2.0 so the ideas are freely copyable.
 **Cons**: Python/GStreamer/Mopidy stack that streamboat is unlikely to adopt wholesale; coupling to
 Mopidy's provider API; a hardcoded CDN hostname that will rot; the login-server bind is insecure.
+
+**A legal-posture caveat the "copy this" recommendation must carry**: this caching proxy stores
+**plain, playable HTTP chunks** of the CDN response in SQLite — a cache directory full of decrypted
+FLAC, finalized once a download completes. That is a materially different design from the one
+defensible precedent in this space, go-librespot's cache: "only the raw, still-encrypted files are
+stored: a cached file is useless without a valid Spotify account, since the audio key is retrieved
+again on every playback" (`cache.{enabled,dir,size_limit}`, off by default, 1 GB LRU when on). The
+owner's stance is that streamboat is a player for subscribers, not a ripper, and a cache of plain
+playable audio reads closer to the latter than the former. **Recommendation, revising the "reusable
+artifacts" table below**: adopt go-librespot's posture — cache for jitter/seek in memory or a
+short-lived buffer, and if a persistent cache is ever added, keep it opaque (encrypted or otherwise
+useless without a live, authenticated session) rather than copying mopidy-tidal's SQLite proxy as-is.
+[confirmed + gap, documented-web: https://raw.githubusercontent.com/devgianlu/go-librespot/master/README.md
+(Audio cache section); verified-source `ref:mopidy-tidal/mopidy_tidal/gstreamer_proxy/__init__.py`,
+`cache.py`]
 
 #### 8.2 tidalt — the "one binary, two modes" precedent
 
@@ -653,8 +749,19 @@ is the honest boundary of the MPRIS-as-IPC idea. [inferred from `main.go:149-163
   `Semaphore(MAX_SSE_CONNECTIONS)` limiting concurrent SSE clients and code that displays
   `127.0.0.1` when bound to the wildcard (`ref:sone/src-tauri/src/overlay/server.rs`).
 
-**This is the security model streamboat should adopt for its control API**: loopback by default,
-opt-in LAN bind, a generated bearer token, an explicit connection cap.
+**This is the security model streamboat should adopt for its control API, with one qualification**:
+loopback by default, opt-in LAN bind, a generated token, an explicit connection cap. But sone's
+specific choice of carrying the token *in the URL path* is sound for a machine-to-machine client (an
+MCP client, a script) and weak for a human-facing surface — a URL-path token opened in a phone
+browser lands in browser history, a shared-phone address bar, any `Referer` a third-party asset
+sends, and reverse-proxy logs. **Recommendation**: use `Authorization: Bearer <token>` for API
+clients, and for the web remote (§14/§17) issue a one-time pairing URL that immediately exchanges the
+token for an `HttpOnly`, `SameSite` cookie scoped to the daemon's origin — never a token that persists
+in the address bar. Also add `allow_origin` and optional `cert_file`/`key_file` to the control-API
+config schema from day one (go-librespot's `server.{address,port,allow_origin,cert_file,key_file}` is
+the model — note there is no `server.tls` key, TLS is configured by supplying `cert_file`+`key_file`).
+[uncertain — design recommendation, not a fact-check target itself; documented-web:
+https://raw.githubusercontent.com/devgianlu/go-librespot/master/README.md]
 
 MPRIS in sone is `mpris-server = "0.9"` over `zbus = "5"` (`ref:sone/src-tauri/Cargo.toml:53,66`);
 sone-windows adds `souvlaki = "0.8.3"` alongside `mpris-server` for Windows SMTC
@@ -691,17 +798,27 @@ existing user scripts and Stream Deck integrations port over. [verified-source +
 
 upmpdcli implements a UPnP/OpenHome Media Renderer on top of MPD, and separately a Media Server with
 Python plugins that gateway external services — including TIDAL, built on python-tidal. GioF71
-contributed a rewritten TIDAL plugin; the docker images from 2025-04-07 carry plugin version 0.8.3.
-Configuration is by environment variables including `TIDAL_AUDIO_QUALITY`
-(`LOW|HIGH|HI_RES|HI_RES_LOSSLESS`) and pre-generated tokens (`TIDAL_TOKEN_TYPE`,
-`TIDAL_ACCESS_TOKEN`, `TIDAL_REFRESH_TOKEN`, `TIDAL_EXPIRY_TIME`). [documented-web:
-https://github.com/GioF71/upmpdcli-docker, discussion #281,
-https://github.com/GioF71/audio-tools/blob/main/media-servers/tidal-hires/README.md]
+contributed a rewritten TIDAL plugin. **Version correction**: an earlier draft of this document dated
+the plugin at 0.8.3 (2025-04-07); the current upmpdcli-docker version table reads `release|tidal|0.8.12`
+and `master|tidal|0.8.16`/`edge|tidal|0.8.16` as of this check (2026-09) — a version number this stale
+in a design doc reads as current when it isn't, so treat any specific plugin version as a snapshot,
+not a fact to build against. Configuration is by environment variables including
+`TIDAL_AUDIO_QUALITY` (`LOW|HIGH|HI_RES|HI_RES_LOSSLESS`) and pre-generated tokens
+(`TIDAL_TOKEN_TYPE`, `TIDAL_ACCESS_TOKEN`, `TIDAL_REFRESH_TOKEN`, `TIDAL_EXPIRY_TIME`).
+[confirmed + corrected, documented-web: https://raw.githubusercontent.com/GioF71/upmpdcli-docker/main/README.md,
+discussion #281, https://github.com/GioF71/audio-tools/blob/main/media-servers/tidal-hires/README.md]
 
 The interesting failure mode: in `HI_RES_LOSSLESS` mode the plugin serves DASH manifests, and **most
 UPnP renderers cannot play a manifest**. GioF71's answer is a *whitelist* — MPD+upmpdcli,
-gmrender-resurrect, and some WiiM devices get hi-res; everything else is served 16/44.1 for
-compatibility. [documented-web, `ref:tidal-connect/README.md` corroborates]
+gmrender-resurrect, and some WiiM Pro/Pro Plus devices (on the `master`/`edge` images) get hi-res;
+everything else is served 16/44.1 for compatibility. **The gate is keyed on User-Agent, and it has a
+documented off switch**: the environment variable is `TIDAL_ENABLE_USER_AGENT_WHITELIST`; setting it
+to `no` serves hi-res to any renderer, which the maintainer explicitly recommends as a way to
+discover additional compliant devices worth whitelisting. That is the difference between a hardcoded
+device list and a testable policy — worth copying the *policy shape*, not just the list of known-good
+renderers. [confirmed + gap, documented-web:
+https://raw.githubusercontent.com/GioF71/upmpdcli-docker/main/README.md; `ref:tidal-connect/README.md`
+corroborates the renderer list]
 
 **Lesson for streamboat**: if streamboat ever exposes a UPnP renderer or serves streams to third-party
 devices, the DASH-manifest-vs-plain-URL split becomes a device compatibility matrix. Prefer to decode
@@ -710,10 +827,16 @@ locally and emit PCM (Snapcast model) over shipping manifests to foreign rendere
 #### 8.6 Lyrion (LMS) + Squeezelite
 
 `michaelherger/lms-plugin-tidal` integrates TIDAL with Lyrion Music Server (ex-Logitech Media
-Server), playing to Squeezebox hardware and Squeezelite software players. Hi-res FLAC support has
-been a running issue (issues #35, #89); `ref:tidal-connect/README.md` (2024) states it supports
-LOSSLESS but not TIDAL HiRes. Community threads in 2025 show partial hi-res work and users disabling
-"FLAC hires" to fix playback. [documented-web; status as of 2026 **[unverified]**]
+Server), playing to Squeezebox hardware and Squeezelite software players. `ref:tidal-connect/README.md`
+(2024) states it supports LOSSLESS but not TIDAL HiRes. Hi-res FLAC friction is real but the picture
+is more mixed than "an ongoing problem": issue #35 ("Hi-Res: use of FLAC/MQA") is **closed**, #89
+("can't play 24 bit files") is **open**, and there are at least four more data points — #88 "Hires
+FLAC" (closed), #98 "only cd quallity no HiRes" (closed), #100 "Attempt at Hires Lossless (Max) and
+Dolby Atmos support" (closed, suggesting hi-res work has since landed), #113 "forced atomos stream
+for some tracks" (open). **Keep this flagged as genuinely uncertain rather than stating either
+"broken" or "fixed"** — the issue tracker shows active, incremental progress, not a settled state.
+[uncertain, confirmed via GitHub issue search on `michaelherger/lms-plugin-tidal`; status as of 2026
+**[unverified]** beyond what the issue tracker shows]
 
 Relevance: mostly as a warning that hi-res + a legacy streaming ecosystem is where these projects
 break, and as evidence that a *server with many thin players* is a durable architecture in this space.
@@ -721,10 +844,15 @@ break, and as evidence that a *server with many thin players* is a durable archi
 #### 8.7 Music Assistant — the "server + many player providers" maximum
 
 Python server, official distribution via a Home Assistant add-on or Docker, dev server at
-`http://localhost:8095`, bundling ffmpeg 6.1+. Music providers include TIDAL; player providers
-include Sonos, Chromecast, AirPlay, Squeezelite, DLNA, Snapcast (with a built-in snapserver exposed
-on port 1780) and, since 2.8 (March 2026), **Sendspin** including "Sendspin Bridges" that wrap
-existing AirPlay/Cast devices so they can join a synchronized Sendspin group. [documented-web:
+`http://localhost:8095`, bundling ffmpeg 6.1+ (not published to PyPI as a Python package). Music
+providers include TIDAL; player providers include Sonos, Chromecast, AirPlay, Squeezelite, DLNA,
+Snapcast and, since 2.8 (March 2026), **Sendspin** including "Sendspin Bridges" that wrap existing
+AirPlay/Cast devices so they can join a synchronized Sendspin group. **Port correction**: the
+built-in snapserver's control port is **1705** (JSON-RPC, bound to `127.0.0.1` by default —
+`DEFAULT_SNAPSERVER_IP = "127.0.0.1"`, `DEFAULT_SNAPSERVER_PORT = 1705` in
+`music_assistant/providers/snapcast/constants.py`), not 1780 as an earlier draft of this document
+said; 1780 is Snapcast's own HTTP/Snapweb port (1788 for SSL), a different service entirely.
+[confirmed + corrected, documented-web:
 https://raw.githubusercontent.com/music-assistant/server/dev/README.md; music-assistant GitHub
 discussions #4200, #5354; blog post 2026-03-25 — note music-assistant.io itself was blocked by the
 egress proxy, so the site's own pages are second-hand here]
@@ -738,44 +866,91 @@ Snapcast/Sendspin, not a reimplementation of them). [inferred]
 
 ### 9. The MPD ecosystem
 
-**Protocol facts** (from the MPD documentation and its wide client ecosystem; note
-`mpd.readthedocs.io` and `musicpd.org` were both blocked by the egress proxy, so these are from
-search summaries and long-standing common knowledge — treat as [documented-web, medium confidence]
-and re-verify against the spec before implementing):
+**Protocol facts, re-verified against the primary spec** (`mpd.readthedocs.io` and `musicpd.org` are
+blocked by this environment's egress proxy, but the spec's own source is not:
+`raw.githubusercontent.com/MusicPlayerDaemon/MPD/master/doc/protocol.rst` and `doc/user.rst` — cite
+these, not search summaries, and drop the earlier "medium confidence, re-verify" hedge on the facts
+below since they are now confirmed against the spec text itself):
 
-- Default TCP port **6600**; Unix-socket listening is also supported.
-- Line-oriented text protocol; server greets with `OK MPD <version>`; responses are `key: value`
-  lines terminated by `OK`, or `ACK [error@index] {command} message` on failure.
-- Command lists: `command_list_begin` / `command_list_ok_begin` … `command_list_end`.
-- **`idle [SUBSYSTEMS…]`** blocks until something changes and replies `changed: <subsystem>` —
-  subsystems include `database`, `update`, `stored_playlist`, `playlist`, `player`, `mixer`,
-  `output`, `options`, `partition`, `sticker`, `subscription`, `message`, `neighbor`, `mount`.
-  `idle`/`noidle` may not appear inside command lists.
-- **Security**: a single plaintext `password` command; "MPD's control protocol transmits data,
-  including passwords, in plaintext. The MPD server does not support any form of encryption."
-- Binary responses exist for `albumart` / `readpicture`.
+- Default TCP port **6600** ("If no port is specified, the default port is 6600" — `doc/user.rst`);
+  Unix-socket listening is also supported.
+- Line-oriented text protocol; server greets with `OK MPD <version>`; a command "returns `OK` on
+  completion or `ACK <error>` on failure", full form `ACK [error@command_listNum] {current_command}
+  message_text`, e.g. `ACK [2@1] {play} Bad song index`.
+- Command lists: `command_list_begin` / `command_list_ok_begin` … `command_list_end`. **`idle` and
+  `noidle` are explicitly not allowed inside a command list.**
+- **`idle [SUBSYSTEMS…]`** blocks until something changes and replies `changed: <subsystem>` — the
+  full, confirmed subsystem list is `database`, `update`, `stored_playlist`, `playlist`, `player`,
+  `mixer`, `output`, `options`, `partition`, `sticker`, `subscription`, `message`, `neighbor`, `mount`.
+- **`status` fields** (the fields an MPD client actually renders, confirmed against the spec):
+  `partition`, `volume`, `repeat`, `random`, `single` (`0|1|oneshot`), `consume` (`0|1|oneshot`),
+  `playlist` (a monotonically increasing 31-bit **queue version** — the standard way a client detects
+  a changed queue without diffing), `playlistlength`, `state`, `song`/`songid`, `nextsong`/`nextsongid`,
+  `elapsed`, `duration`, `bitrate`, `xfade`, `mixrampdb`, `mixrampdelay`, `audio`
+  (`samplerate:bits:channels` — **this is how an MPD client displays 24-bit/192 kHz today; it is the
+  honest-quality-reporting hook for MPD mode**), `updating_db`, `error`, `lastloadedplaylist`.
+- **Capability advertisement and version negotiation exist and matter for streamboat's own protocol
+  design** (see §15/§17): `commands`/`notcommands` list what the current connection may call;
+  `protocol` / `protocol available` / `protocol enable {FEATURE}` / `protocol clear` negotiate
+  optional behaviour additively. This is the "tolerant" alternative to Sendspin's exact-match
+  versioning (§11) and is a real design choice to surface, not silently pick.
+- **Security is not "a single plaintext password and no encryption", as an earlier draft of this
+  document said.** MPD has four access-control layers: `default_permissions` (the baseline for
+  unauthenticated clients); `local_permissions` (permissions granted to clients connecting over a
+  local Unix socket); `host_permissions` (per-IP or per-CIDR, e.g. `host_permissions "192.168.1.0/24
+  read,control"`); and any number of `password "secret@permissionset"` entries, each carrying its own
+  permission set. **Only the transport-encryption half of the original claim holds**: "the password
+  option is not secure: passwords are sent in clear-text over the connection, and the client cannot
+  verify the server's identity." **This changes the risk assessment for an MPD-compatible listener**:
+  bind it to a Unix socket or loopback with `local_permissions`, and it needs no shared plaintext
+  password at all — the weak link is specifically a *network* password, not MPD's access control in
+  general.
+- Binary responses exist for `albumart` / `readpicture`: a `binary: <n>` header line, then exactly
+  `<n>` bytes, then the completion line; a client-settable `binarylimit SIZE` (since MPD 0.22.4) caps
+  chunk size.
 - **Partitions**: one MPD process can present multiple frontends with separate queue/player/outputs.
 
 **Clients streamboat would inherit for free**: ncmpcpp, mpc, ncmpc (terminal); Cantata (Qt desktop);
 MALP / M.A.L.P. (Android); numerous iOS clients; mpDris2 (bridges MPD → MPRIS). [documented-web]
 
-**Two precedents for implementing a *subset*:**
+**Two precedents for implementing a *subset* — and they prove more than "transport control only":**
 
-- **Mopidy-MPD** — "a server that implements the same protocol used by the original MPD server
-  project since 2003", compatible with most MPD clients, on top of a completely different backend.
-  [documented-web: https://github.com/mopidy/mopidy-mpd]
+- **Mopidy-MPD** implements the MPD protocol over a *non-file* backend, and its music-database
+  command set (`count`, `find`, `findadd`, `list`, `listall`, `listallinfo`, `listfiles`, `lsinfo`,
+  `search`, `searchadd`, `searchaddpl`, `update`, `rescan`) is the proof that catalogue browsing maps
+  cleanly onto a streaming service. `lsinfo` walks `context.browse(uri, recursive=False, lookup=True)`
+  and emits `("directory", path)` for internal nodes plus translated tracks for leaves, with stored
+  playlists surfaced at the root — a service catalogue mapped straight into MPD's directory model.
+  This is exactly why MALP and ncmpcpp can browse a TIDAL library through mopidy-tidal today, and it
+  directly contradicts treating "MPD fits a streaming catalogue awkwardly" as a reason to drop
+  browsing from streamboat's own MPD subset (§14/§17 revise this). **The repository's own maintenance
+  status is worth carrying alongside the precedent**: it currently states it is "kept on life support
+  by the Mopidy core developers" with a "Maintainer wanted" notice — sound design, uncertain
+  long-term maintenance. [confirmed + corrected, documented-web:
+  https://raw.githubusercontent.com/mopidy/mopidy-mpd/main/src/mopidy_mpd/protocol/music_db.py;
+  https://github.com/mopidy/mopidy-mpd]
 - **Nuclear** — a desktop GUI player with a built-in MPD-compatible server that works with `mpc`,
-  `ncmpcpp` and `mpDris2`, implementing "the subset of the protocol needed for playback control,
-  queue management, and real-time notifications", with library browsing and stored playlists
-  explicitly not supported. [documented-web:
-  https://docs.nuclearplayer.com/nuclear/integrations/mpd-server — the page itself was blocked;
-  this is from the search summary. **Re-verify before relying on the exact command list.**]
+  `ncmpcpp` and `mpDris2`, implementing "the subset of the protocol needed for playback control, queue
+  management, and real-time notifications", with library browsing and stored playlists explicitly not
+  supported (the opposite scoping choice from Mopidy-MPD — a genuine design fork worth naming
+  explicitly in streamboat's own decision). **Port behaviour, recovered via search index since
+  `docs.nuclearplayer.com` is blocked**: it binds `127.0.0.1:6600` only, and if 6600 is already taken
+  (a real collision on a box already running `mpd` — exactly the audiophile Linux target streamboat
+  cares about) it tries 6601, 6602, … up to 6609. It supports `command_list_begin` /
+  `command_list_ok_begin` / `command_list_end` and emits change notifications for playback state,
+  current track, queue contents, volume, and repeat/random/single mode. **This port-fallback behaviour
+  is the missing piece of streamboat's own MPD-listener design** — bind loopback, and fall back through
+  a small port range rather than failing outright when 6600 is occupied. [documented-web:
+  docs.nuclearplayer.com/nuclear/integrations/mpd-server — page itself blocked, content recovered via
+  search index; **re-verify the exact command list once the page is reachable**]
 
 **Rust tooling**: `mpd_protocol` and `mpd` on crates.io are **client-side**; `M0Rf30/rmpd` is a
-from-scratch MPD *server* in Rust aiming at protocol compatibility with a plugin architecture. Go has
-`fhs/gompd` (client). There is no drop-in "embed an MPD server in your app" library for Rust that I
-could confirm — implementing the subset is a hand-written parser plus a state machine, on the order
-of a few thousand lines. [documented-web + inferred]
+from-scratch MPD *server* in Rust ("Modern, high-performance MPD server written in pure Rust with DSD
+support, multi-room audio, and extensible plugin architecture", 244 commits, 15 stars — young, not a
+drop-in dependency) aiming at protocol compatibility with a plugin architecture. Go has `fhs/gompd`
+(client). There is no drop-in "embed an MPD server in your app" library for either language —
+implementing the subset is a hand-written parser plus a state machine, on the order of a few thousand
+lines. [confirmed, documented-web + inferred]
 
 ---
 
@@ -811,14 +986,48 @@ player: the server reads PCM from a source, timestamps and encodes it, and clien
   purpose-built `librespot` / `airplay` source types in some builds.
 - **Codecs**: PCM, FLAC (default), Vorbis, Opus.
 - **Clients**: Linux, macOS, FreeBSD, Android, Windows, Raspberry Pi, and an ESP32 port.
-- Requires accurate clocks (NTP/chrony).
+- Requires accurate clocks (NTP/chrony) — see the Pi time-sync note in §16.
+- **snapserver advertises itself over mDNS with four service types** — directly relevant to
+  streamboat's own discovery design (§17): `_snapcast._tcp` (streaming, 1704), `_snapcast-ctrl._tcp`
+  (control, 1705), `_snapcast-http._tcp` (1780), `_snapcast-https._tcp` (1788). [confirmed,
+  documented-web: https://raw.githubusercontent.com/badaix/snapcast/develop/server/etc/snapserver.conf]
+  The canonical repository is `badaix/snapcast` — `snapcast/snapcast` is a redirect.
 
-**The integration cost for streamboat is one output backend**: an option like
+**The integration cost for streamboat is one output backend, with one real trade-off**: an option like
 `--output pipe:/tmp/snapfifo` (or `--output stdout`) emitting interleaved PCM at a fixed format.
 librespot's `pipe` backend and go-librespot's "raw named pipe for custom routing" are the exact
 precedent. This buys synchronized multiroom, ESP32 endpoints, and Home Assistant integration for
-almost nothing. **Highest leverage-per-line-of-code item in this entire report.** [inferred, high
-confidence]
+almost nothing — but a FIFO carries no format metadata, and Snapcast's stream sources pin a *fixed*
+sample format per stream (`sampleformat`, e.g. `48000:16:2`); go-librespot's own docs warn the pipe
+output must match: "go-librespot uses a sample rate of 44100 for the pipe output, you can either
+configure this globally for snapcast or specify it only for the go-librespot source." **So the pipe
+output is mutually exclusive with bit-perfect variable-rate output** — the daemon must resample every
+track to one fixed format to feed it, which is a real cost against the "24/192 bit-perfect beats the
+Connect target" product argument (§2.5) and belongs in the design as an explicit output *mode*, not a
+free addition. On Linux, a FIFO in `/tmp` on a recent kernel may also need `fs.protected_fifos=0`, and
+Snapcast's pipe source takes a `mode=create|read` option worth exposing. Still **very high
+leverage-per-line-of-code**, just not free. [uncertain→resolved: pipe output forces a fixed sample
+rate/bit depth, documented-web: https://raw.githubusercontent.com/badaix/snapcast/develop/doc/configuration.md]
+
+**Snapcast integration should not stop at a bare PCM pipe** — a bare FIFO produces sound with no
+title, artist, cover art or transport control anywhere in Snapweb or any Snapcast client, which is a
+poor fit for "simple but beautiful". Snapcast defines a **stream plugin** protocol for exactly this:
+snapserver launches an executable per stream and speaks newline-delimited JSON-RPC 2.0 over its
+stdin/stdout, configured as `source = pipe:///tmp/snapfifo?name=streamboat&controlscript=meta_streamboat.py`
+(relative script paths resolve under `/usr/share/snapserver/plug-ins`; snapserver always passes
+`--stream=<id>` and, when HTTP is enabled, `--snapcast-host`/`--snapcast-port`). The plugin implements
+`Plugin.Stream.Player.Control` (`play`, `pause`, `playPause`, `stop`, `next`, `previous`,
+`seek{offset}`, `setPosition{position}`), `Plugin.Stream.Player.SetProperty` and
+`Plugin.Stream.Player.GetProperties`, and may emit `Plugin.Stream.Player.Properties`,
+`Plugin.Stream.Log` and `Plugin.Stream.Ready`; capabilities are booleans (`canGoNext`,
+`canGoPrevious`, `canPlay`, `canPause`, `canSeek`, `canControl`). Shipped examples include
+`meta_mpd.py`, `meta_mopidy.py` and `meta_go-librespot.py` — a `streamboat snapcast-plugin`
+subcommand following the same shape is a few hundred lines and turns Snapweb into a complete remote,
+not just a speaker. Separately, snapserver can also *launch* streamboat itself via a `process://`
+source (with `params`/`idle_threshold`/`wd_timeout`), which can replace a separate systemd unit on a
+box whose only job is feeding Snapcast. [confirmed + gap, documented-web:
+https://raw.githubusercontent.com/badaix/snapcast/develop/doc/json_rpc_api/stream_plugin.md;
+https://raw.githubusercontent.com/badaix/snapcast/develop/doc/configuration.md]
 
 **Sendspin** (formerly "Resonate"), an Open Home Foundation protocol, is the 2026 development to
 watch: [documented-web, from the spec repo README at
@@ -829,19 +1038,41 @@ https://raw.githubusercontent.com/Sendspin/spec/main/README.md]
   end to end by the Noise layer inside the WebSocket payloads."
 - Discovery: `_sendspin._tcp.local.` for server-initiated (client listens, recommended port **8928**)
   and `_sendspin-server._tcp.local.` for client-initiated (server listens, recommended port **8927**).
-- Framing: binary frames after the Noise handshake; the first byte is the message type
-  (0 = JSON, 1 = fragmentation, 4–7 player, 8–11 artwork, 12–15 source, 16–23 visualizer,
-  192–255 custom roles).
+- Framing: binary frames after the Noise handshake; the first byte is the message type. **Correction
+  to an earlier draft of this document, which skipped two IDs**: the confirmed table is 0 = JSON,
+  1 = fragmentation, **2 = Pairing, 3 = Reserved**, 4–7 player, 8–11 artwork, 12–15 source, 16–23
+  visualizer, 24–191 reserved for future roles, 192–255 custom roles.
 - Codecs are configuration, not mandate — `opus`, `flac`, `pcm` are named as stream-config values.
 - Clock sync: clients "MUST use the time-filter algorithm" (a two-dimensional Kalman filter,
   https://github.com/Sendspin-Protocol/time-filter) to translate microsecond server timestamps.
-- Spec licence: **not stated in the excerpt read**. [unverified]
+- Spec licence: **not stated in the spec README**. [unverified]
 - Shipped in Music Assistant 2.8 (2026-03-25) including bridges that wrap AirPlay/Cast devices.
   Music Assistant's own endpoint is `ws://<server>:8927/sendspin`. [documented-web]
 
+**Sendspin's pairing and identity design directly answers open question 6 (§18) and stage 1.2's
+"a short pairing code exchanged for a long-lived token", which this report otherwise leaves
+unspecified**: [confirmed + gap, documented-web:
+https://raw.githubusercontent.com/Sendspin/spec/main/README.md — Definitions, Encryption, Cipher
+Suites, Rehandshake, Pairing Token sections]
+
+- Noise pattern `KKpsk2` with Curve25519 static keys serving as `client_id`/`server_id` (base64url,
+  43 characters, persistent across reboots).
+- A 32-byte long-term PSK established during pairing, mixed into every subsequent handshake.
+- A **"Sentinel PSK"** fallback for unpaired sessions, so an unpaired client can still connect at a
+  reduced trust level rather than being refused outright.
+- **In-band rehandshake**: a session already in transport mode can be promoted to paired without
+  dropping the WebSocket — no reconnect-and-reauthenticate round trip.
+- **QR-code pairing tokens**: a version-1 token, a 24-byte code, 39 body characters — i.e. a fully
+  specified, screen-free pairing flow for exactly the headless-box scenario streamboat's own stage
+  1.2 needs.
+- The **server** is always the Noise initiator, regardless of which side opened the TCP/WebSocket
+  connection — worth carrying into streamboat's own protocol since it removes an asymmetry question.
+
 Sendspin is *architecturally what streamboat's own remote protocol would look like* (mDNS + WebSocket
-+ typed binary frames + clock sync). If it gains adoption, implementing a Sendspin *source* would let
-streamboat feed a whole ecosystem of endpoints. Track it; do not bet v1 on it. [inferred]
++ typed binary frames + clock sync + a fully specified pairing scheme). If it gains adoption,
+implementing a Sendspin *source* would let streamboat feed a whole ecosystem of endpoints; even if it
+does not, its pairing design is worth copying wholesale rather than reinventing streamboat's own.
+Track it; do not bet v1 on it. [inferred]
 
 ---
 
@@ -849,27 +1080,63 @@ streamboat feed a whole ecosystem of endpoints. Track it; do not bet v1 on it. [
 
 | Project | Language | Control surfaces | Discovery / handoff | Notes |
 | --- | --- | --- | --- | --- |
-| **librespot** | Rust | Library **and** binary; the binary registers as a Spotify Connect receiver | Zeroconf (Spotify Connect) | The reuse model: "ships both as a library — used by projects like ncspot, Spotifyd, and Snapcast — and as a standalone headless binary" [documented-web] |
-| **spotifyd** | Rust (on librespot) | MPRIS (`org.mpris.MediaPlayer2.spotifyd.instance$PID`), plus a **custom `rs.spotifyd.Controls` D-Bus interface** exposing e.g. `TransferPlayback`, `VolumeUp`, available even when not the active device; `--onevent` hook to run an external command; `--dbus-type system` for headless boxes with no session bus; optional Secret Service keyring | Spotify Connect | [documented-web: docs.spotifyd.rs] |
-| **go-librespot** | Go | **REST API + WebSocket events**; MPRIS; `GET /auth/code` during device-auth | `zeroconf_backend` = `builtin` or `avahi`, `zeroconf_enabled`, `zeroconf_port` | Config covers `audio_backend` (alsa, pipe, pulseaudio, audio-toolbox, wasapi), `bitrate`, `volume_steps`, `external_volume`, normalisation (`normalisation_pregain`, `normalisation_use_album_gain`), `crossfade_duration`, `server.{enabled,address,port,tls}`, `cache.{enabled,dir,size_limit}`. librespot-java development was retired in its favour. [documented-web] |
-| **ncspot** | Rust | TUI; embeds librespot as a library | — | Proof that a TUI/GUI and a daemon can share one engine crate [documented-web] |
+| **librespot** | Rust | Library **and** binary; the binary registers as a Spotify Connect receiver | Zeroconf (Spotify Connect) | **Correction to an earlier draft**: librespot is reused as a linked *crate* by ncspot and spotifyd, but **not** by Snapcast — Snapcast's own docs describe its librespot source as "launches librespot and reads audio from stdout", i.e. it spawns the binary as a subprocess and reads a pipe, the same integration shape this report recommends for streamboat at stage 0, not the library-linking pattern. [confirmed + corrected, documented-web: https://raw.githubusercontent.com/librespot-org/librespot/dev/README.md; https://raw.githubusercontent.com/badaix/snapcast/develop/README.md] |
+| **spotifyd** | Rust (on librespot) | MPRIS (`org.mpris.MediaPlayer2.spotifyd.instance$PID`) — **exposed only once spotifyd becomes the active playback device**; a separate, always-present **`rs.spotifyd.Controls` D-Bus interface on the `rs.spotifyd.instance$PID` bus name** exposes `TransferPlayback`/`VolumeUp`/`VolumeDown` even when *not* the active device; `--onevent` hook to run an external command; `--dbus-type system` for headless boxes with no session bus; optional Secret Service keyring | Spotify Connect | [confirmed, documented-web: https://raw.githubusercontent.com/Spotifyd/spotifyd/master/docs/src/advanced/{dbus,mpris,hooks}.md — reachable at this raw path even though `docs.spotifyd.rs` itself is blocked] |
+| **go-librespot** | Go | **REST API + WebSocket events**; MPRIS; `GET /auth/code` during device-auth, "served for as long as the daemon is waiting, so a frontend can show them instead of asking the user to read the logs" | `zeroconf_backend` = `builtin` or `avahi`, `zeroconf_enabled`, `zeroconf_port` | Config covers `audio_backend` (alsa, pipe, pulseaudio, audio-toolbox, wasapi), `bitrate`, `volume_steps`, `external_volume`, normalisation (`normalisation_pregain`, `normalisation_use_album_gain`), `crossfade_duration`, `server.{enabled,address,port,allow_origin,cert_file,key_file}` — **there is no `server.tls` key**, as an earlier draft of this document implied; TLS is configured by supplying `cert_file`+`key_file` — and `cache.{enabled,dir,size_limit}` (only the still-encrypted file is cached; the audio key is re-fetched on every playback, see §8.1's caching caveat). librespot-java development was retired in its favour. [confirmed + corrected, documented-web: https://raw.githubusercontent.com/devgianlu/go-librespot/master/README.md] |
+| **ncspot** | Rust | TUI; embeds librespot as a library; **also** a Unix-domain socket (Windows: named pipe) at the platform runtime directory, newline-delimited: plain command words in (`play`, `playpause`), newline-delimited JSON status out after every state change | — | Proof that a TUI/GUI and a daemon can share one engine crate — **and a second, cheaper proof that a same-host control surface doesn't need HTTP at all**: `ncspot info` prints the socket location; documented uses include controlling a detached session in tmux, status bars, and startup scripts. [confirmed + gap, documented-web: https://raw.githubusercontent.com/hrkfdn/ncspot/main/doc/users.md lines 191-235] |
 | **Roon** | proprietary | Core / Remote / Bridge three-tier; endpoints implement RAAT ("Roon Advanced Audio Transport"), up to 32-bit/768 kHz PCM and DSD512; DAC vendors must implement Roon's Endpoint Code + RAAT to be "Roon Ready" | proprietary | The commercial version of the same idea; strictly closed. Music Assistant users have asked for RAAT support and cannot have it. [documented-web] |
 | **tidalt** | Go | MPRIS + a client-mode TUI over D-Bus | none (single host) | §8.2 [verified-source] |
 | **mopidy(-tidal)** | Python | MPD, HTTP/WS JSON-RPC, MPRIS, Iris web UI — all via separate extensions | none | §8.1 [verified-source] |
 
-**The code-sharing pattern is unanimous**: a *library* holds session/auth/catalogue/playback, and
-thin front-ends (daemon, TUI, GUI) depend on it. librespot→{spotifyd, ncspot, Snapcast},
-Mopidy→{mopidy-mpd, mopidy-mpris, Iris}, tidalt→{TUI, daemon}, TidalSwift→{TidalSwiftLib, app}.
-streamboat should define `streamboat-core` (or equivalent) as the first artifact, before deciding on
-any UI. [verified-source + documented-web]
+**The code-sharing pattern is unanimous, and librespot's own internal shape is worth copying, not
+just its existence**: a *library* holds session/auth/catalogue/playback, and thin front-ends (daemon,
+TUI, GUI) depend on it — but librespot itself (0.8.0, Rust edition 2024, MIT) is not one monolithic
+core, it is a **workspace of separate crates**: `core`, `audio`, `playback`, `metadata`, `protocol`,
+`oauth`, `discovery`, `connect`, plus the top-level binary. Note in particular that OAuth and zeroconf
+*discovery* are their own crates, and the Connect-receiver logic lives in its own `connect` crate
+rather than inside the player — the exact boundary question streamboat's "split `streamboat-core` out
+first" decision (§18) leaves unspecified. Default features are `native-tls`, `rodio-backend`,
+`with-libmdns`, with a documented `rustls` alternative "for avoiding external OpenSSL dependencies,
+reproducible builds, or when targeting platforms where native TLS dependencies are unavailable or
+problematic (musl, embedded, static linking)" — directly relevant to shipping a static Pi binary
+(§16). A second precedent this report previously omitted: **Psst** ships `psst-core` ("Spotify TCP
+session, audio file retrieval, decoding, audio output, playback queue") plus `psst-gui`, a design
+*inspired by* librespot rather than depending on it — a second real-world answer to "how do you split
+the core" alongside ncspot's "just link the crate". [confirmed + gap, documented-web:
+https://raw.githubusercontent.com/librespot-org/librespot/dev/Cargo.toml;
+https://github.com/jpochyla/psst/blob/main/README.md]
 
-**The control-surface pattern splits two ways**:
-- *Transport-only IPC* (MPRIS / D-Bus): trivial, standard, gets media keys and playerctl for free —
-  but cannot express search, browsing, library, or queue editing well. tidalt hits this wall.
+Mopidy→{mopidy-mpd, mopidy-mpris, Iris}, tidalt→{TUI, daemon}, TidalSwift→{TidalSwiftLib, app} follow
+the same shape at a coarser grain. streamboat should define `streamboat-core` as the first artifact,
+before deciding on any UI — and should look at librespot's crate boundaries, not just its slogan, when
+deciding where `streamboat-core` ends and `streamboat-server`/`streamboat-connect`(-analogue) begins.
+[verified-source + documented-web]
+
+**The control-surface pattern splits into (at least) three, not two — an earlier draft of this
+document undersold MPRIS**:
+- *Transport-only IPC* (MPRIS / D-Bus): trivial, standard, gets media keys and playerctl for free.
+  **Correction**: MPRIS is not limited to "transport + metadata only". The full spec defines four
+  interfaces — `org.mpris.MediaPlayer2` (Root), `.Player`, `.TrackList` and `.Playlists` — and
+  `mpris-server` 0.9, the crate this report already recommends and that `ref:sone` already depends
+  on, implements all of them: `TrackListInterface` (`GetTracksMetadata`, `AddTrack`, `RemoveTrack`,
+  `GoTo`, `TrackListReplaced`) and `PlaylistsInterface` (`GetPlaylists`, `ActivatePlaylist`). So MPRIS
+  *can* express the queue and stored-playlist activation for free, before any HTTP API exists — what
+  it genuinely cannot express is catalogue **search** or hierarchical **browsing**. tidalt's
+  MPRIS-as-IPC wall (§8.2) is a scoping choice (it implements only Root+Player), not a ceiling MPRIS
+  itself imposes. [confirmed + corrected, documented-web:
+  https://raw.githubusercontent.com/SeaDve/mpris-server/main/README.md]
+- *Same-host, no-listener IPC* (Unix domain socket / named pipe): trivial, no port, no token, no TLS
+  question — filesystem permissions are the auth model. ncspot's socket (above) is the direct
+  precedent for exactly the `streamboat play <url>` / `streamboat status` / same-host-GUI traffic this
+  report otherwise routes through the HTTP API by default. Recommend this as the v0 control surface
+  for the CLI and same-host GUI, with the HTTP/WS API re-exposing the same command/event vocabulary
+  over the network in v1 (Rust's `interprocess` crate covers both Unix sockets and Windows named
+  pipes). [gap, documented-web: https://raw.githubusercontent.com/hrkfdn/ncspot/main/doc/users.md]
 - *Rich IPC* (HTTP + WebSocket JSON): expresses everything, needs auth, needs a client. go-librespot,
   Mopidy, Music Assistant, tidal-hifi, sone all landed here.
 
-streamboat needs **both**: MPRIS for OS integration, and a rich local API for real remotes. [inferred]
+streamboat needs **all three**: MPRIS (now including queue/playlist) for OS integration, a Unix
+socket for same-host scripting and the CLI, and a rich local API for real remotes. [inferred]
 
 ---
 
@@ -897,15 +1164,59 @@ keyring, file fallback at `~/.config/sone/sone.key`. mopidy-tidal's answer: a pl
 at `/var/lib/mopidy/tidal/tidal-<session_type>.json`. streamboat needs the keyring-with-file-fallback
 design, and the file must be 0600 in a 0700 directory. [verified-source]
 
+**Gap this report previously left as a one-liner: pairing a *phone or GUI* to a headless daemon that
+has no screen at all.** Stage 1.2 (§17) says only "a short pairing code exchanged for a long-lived
+token", with no mechanism, no expiry, no revocation story, and no resolution of the collision between
+"every listener defaults to loopback" and "the mobile app controls the daemon". No single precedent in
+the reference set solves this end to end; assemble it from the pieces that do exist: [gap,
+documented-web: https://raw.githubusercontent.com/devgianlu/go-librespot/master/README.md
+(`GET /auth/code`, `server.{allow_origin,cert_file,key_file}`); verified-source
+`ref:tidalt/internal/tidal/loginprint.go`; verified-source
+`ref:mopidy-tidal/mopidy_tidal/web_auth_server.py`]
+
+- go-librespot exposes its device-auth link and code over `GET /auth/code` "for as long as the daemon
+  is waiting, so a frontend can show them instead of asking the user to read the logs", and supports
+  TLS on the same listener via `server.cert_file`/`server.key_file` plus CORS via
+  `server.allow_origin`.
+- `ref:tidalt` renders a QR in the terminal with `qrterminal/v3` — works over SSH, no companion
+  service needed.
+- `ref:mopidy-tidal` serves a fixed-port login page — the pattern to copy, not its unauthenticated
+  wildcard bind (§8.1).
+- **Decisions the owner still needs to make, not facts to look up**: (1) daemon-initiated pairing
+  (`streamboat pair` over SSH prints a short-lived code/QR) vs. client-initiated (a client asks, the
+  daemon logs a code the user confirms out-of-band); (2) one named, revocable token per client
+  (`streamboat tokens list|revoke`) vs. a single shared secret; (3) plain HTTP on the LAN — which
+  makes the web remote a **non-secure context** in the browser sense (no service worker, no
+  installable PWA, no Web Crypto — see the secure-contexts gap in §17) — vs. a self-signed certificate
+  with a permanent browser warning vs. loopback-only plus an SSH tunnel. A URL-path token (§8.3) is
+  unsuitable for whichever of these ends up rendered in a phone browser.
+
+**Token and session identity when a GUI and a daemon share one host or one account is also
+unspecified, and it is the first thing that breaks in real multi-process use.** Partial answer,
+verified in the code: python-tidal's `Session.token_refresh()` posts `grant_type=refresh_token` with
+`client_id`/`client_secret` and updates only `access_token`, `expiry_time` and `token_type` — it never
+replaces `self.refresh_token`, so the refresh token is long-lived, not rotated on use, and two
+processes holding the same refresh token do not invalidate each other
+(`ref:python-tidal/tidalapi/session.py:717-750`). Still to decide and document: (a) one shared token
+file with an advisory lock and a single writer, vs. separate logins per role (GUI vs. daemon); (b)
+whether the daemon uses a different `client_id` than the GUI — the Connect binary takes `--clientid`
+and python-tidal swaps `client_id`/`client_secret` between its OAuth and PKCE paths, so device
+identity is a per-client choice, and it is also the string TIDAL shows in
+`PRIVILEGED_SESSION_NOTIFICATION.clientDisplayName` (§5); (c) which process owns the Pushkin socket
+when both run on one host — two open Pushkin sockets on one account will fight each other exactly the
+way the report already warns about a daemon fighting the user's phone (§5). [gap, verified-source
+`ref:python-tidal/tidalapi/session.py:717-750`; `ref:tidal-connect/bin/entrypoint.sh` (`--clientid`);
+`ref:tidal-sdk-web/packages/player/src/internal/services/pushkin.ts`]
+
 ---
 
 ### 14. Design options for streamboat headless
 
 | # | Option | Effort | Ecosystem leverage | Security posture | "Simple but beautiful" fit | Mobile-future fit |
 | --- | --- | --- | --- | --- | --- | --- |
-| **a** | **CLI player** (`streamboat play <url>`, `search`, `now-playing`) | XS | none, but zero-friction for scripting | trivial (no listener) | Excellent — a beautiful CLI is a real deliverable | none directly |
+| **a** | **CLI player** (`streamboat play <url>`, `search`, `now-playing`) | XS | none, but zero-friction for scripting — and a working, current precedent already sits unread-until-this-fact-check in the reference set (see below) | trivial (no listener) | Excellent — a beautiful CLI is a real deliverable | none directly |
 | **b** | **Daemon + JSON HTTP/WebSocket API + MPRIS + small web remote** | M | moderate: curl/scripts/Stream Deck/Home Assistant, and streamboat's own GUI | needs a real answer: loopback default, token, opt-in LAN | Good — one protocol, one document, one web page | **Best** — the mobile app speaks the same protocol |
-| **c** | **MPD-protocol-compatible server** | M–L (parser + state machine + `idle`) | **Highest** — MALP, ncmpcpp, Cantata, mpc, mpDris2 work on day one | weak by design: plaintext single password, no TLS. Bind loopback or a trusted LAN only | Mixed — MPD's model (a flat file database, stored playlists) fits a streaming catalogue awkwardly; a *subset* is honest, a full impl is a lie | Indirect — phone MPD clients exist today, but they can't browse TIDAL's catalogue well |
+| **c** | **MPD-protocol-compatible server** | M–L (parser + state machine + `idle`) | **Highest** — MALP, ncmpcpp, Cantata, mpc, mpDris2 work on day one | **not as weak as an earlier draft said**: MPD's `local_permissions`/`host_permissions` mean a Unix-socket- or loopback-bound listener needs no shared password at all; a single plaintext network password remains the only *weak* mode, and it has no transport encryption regardless (§9) | **Better than "mixed"**: Mopidy-MPD proves a streaming catalogue maps cleanly onto MPD's directory model via `lsinfo`/`search` over `context.browse()` (§9) — a *subset* should include browsing, not drop it; a full byte-for-byte MPD reimplementation is still the wrong scope | Indirect — phone MPD clients exist today, and with a browse mapping they *can* navigate a TIDAL library, as mopidy-tidal already demonstrates |
 | **d** | **streamboat-native remote protocol** (mDNS + auth + state sync; GUI and future mobile app as controllers) | L | none externally; total internally | designed in from the start (pairing code → token; TLS optional on LAN) | Good if it *is* option (b) with discovery bolted on — bad if it is a second protocol | **Essential eventually** |
 | **e** | **UPnP/DLNA renderer** | M | some (BubbleUPnP, mConnect, upplay) | UPnP has no auth model worth the name | Poor — SOAP/XML, and hi-res needs a renderer whitelist | none |
 
@@ -920,6 +1231,34 @@ database. Ship it once (b) is stable, and document exactly which commands are su
 **(a) falls out of (b) for free** if the CLI is a thin client of the daemon (`streamboat play` →
 one WebSocket call). tidalt's `play.go` is the model: try the running instance first, fall back to
 starting one. [verified-source]
+
+**A working, current CLI already sits in the reference set and answers most of option (a)'s open
+questions** — the brief specifically asked for a CLI mode "now", and this report's original draft
+rated (a) as "XS effort, none" without ever opening `ref:tidal-cli` or `ref:tidalgo`. [gap,
+verified-source `ref:tidal-cli/README.md`, `ref:tidal-cli/src/index.ts`, `ref:tidal-cli/src/playback.ts`]
+
+- `ref:tidal-cli` (`@lucaperret/tidal-cli` v1.2.5, MIT, Node ≥20, built on `commander`) is a full
+  noun-verb CLI: `auth` | `search {artist,album,track,video,playlist,suggest,editorial,history,
+  history-delete,history-clear}` | `artist {info,tracks,albums,similar,radio}` |
+  `album {info,barcode}` | `track {info,similar,isrc,radio}` | `playlist {list,create,rename,delete,
+  add-track,remove-track,add-album,move-track,set-description}` | `library {add,remove,
+  favorite-playlists,add-playlist,remove-playlist}` | `recommend --type {daily,discovery,new-release,
+  offline}` | `mix items` | `history {tracks,albums,artists}` | `saved {list,add,remove}` |
+  `share {track,album}` | `user profile` | `playback {info,url,play}`.
+- **Copyable conventions**: one global `--json` flag placed before the subcommand
+  (`tidal-cli --json search track "…"`), human-readable output by default, `exit(2)` for an invalid
+  argument value vs. `exit(1)` for a runtime error.
+- **What NOT to copy**: `playbackPlay` downloads the *entire* track (or every DASH segment) to
+  `os.tmpdir()` and shells out to `mpv --no-video` / `afplay` / `start`, deleting the file on SIGINT —
+  no streaming, no gapless, no seek. This is the anti-pattern streamboat's own `streamboat play` must
+  avoid; it should stream through `streamboat-core`'s player engine instead.
+- **A fact this report missed entirely elsewhere**: this CLI takes playback data from the *official*
+  `developer.tidal.com` API v2 — `GET /trackManifests/{id}` with `{adaptive:false,
+  formats:[HEAACV1,AACLC,FLAC,FLAC_HIRES], manifestType:'MPEG_DASH', uriScheme:'DATA',
+  usage:'PLAYBACK'}` returning a base64 data-URI manifest plus `trackAudioNormalizationData
+  {replayGain,peakAmplitude}` and `albumAudioNormalizationData` in one call — a second, officially
+  sanctioned manifest path worth comparing against the unofficial-API approach documented in
+  `/home/user/streamboat/docs/research/tidal-api.md`.
 
 **(e) should be dropped.** [inferred]
 
@@ -957,13 +1296,56 @@ a running daemon on the same host (which is exactly what the lock/bus-name check
   even in-process. That keeps the API honest without paying an IPC tax for local use, and makes
   "GUI as a remote for another host's daemon" a configuration change rather than a rewrite.
 
+**The control protocol's event schema and state-sync semantics are the most load-bearing artifact in
+this whole document, and this report previously specified none of it.** Stage 1 says only "HTTP +
+WebSocket JSON … plus an event stream", and stage 1.2 says the future mobile app speaks it — with no
+message envelope, no event vocabulary, no snapshot-vs-delta decision, no sequence/revision numbers, no
+reconnect/resume rule, and no story for two remotes editing the queue at once. Two precedents in the
+reference set answer this directly and were not previously cited for it: [gap, documented-web
+https://raw.githubusercontent.com/devgianlu/go-librespot/master/API.md and
+`/master/api-spec.yml`; verified-source `ref:TidaLuna/plugins/lib/src/redux/types/store/PlayQueue.ts`]
+
+- **go-librespot's WebSocket endpoint is `/events`**, with a closed vocabulary: `active`, `inactive`,
+  `metadata`, `will_play`, `playing`, `not_playing`, `paused`, `stopped`, `seek{position}`,
+  `volume{value,max}`, `shuffle_context`, `repeat_context`, `repeat_track`; its REST half is published
+  as an OpenAPI spec (`api-spec.yml`) — worth doing the same for streamboat's own API from day one.
+- **TIDAL's own client already has a concurrency answer worth copying**, in a file this report never
+  cited before this fact-check: `PlayQueue.ts` defines `CloudQueue{queueId, etag, itemsEtag,
+  currentItemId, headPosition, tailItemId, tailPosition, repeatMode, shuffled,
+  historyMediaItemIds}` and `CloudQueueItem{id, media_id, properties{active, original_order,
+  sourceType}}` — an ETag'd queue with stable per-item ids and explicit head/tail — plus
+  `PlayQueueElement{context{type,id}, mediaItemId, priority, uid}`, `PlayQueueSourceType`
+  (`album|artist|playlist|mix|search|MY_TRACKS|…`) and `RepeatMode{Off=0,All=1,One=2}`.
+- **Recommendation**: full snapshot on connect + typed deltas carrying a monotonic revision number, an
+  `itemsEtag` on the queue itself, stable per-item `uid`s (not array indices), and a documented
+  reconnect rule on a revision gap (resync with a fresh snapshot rather than replaying missed deltas).
+
+**Protocol versioning and capability negotiation between the daemon, the GUI, the web remote and the
+future mobile app is a second gap in the same artifact.** The GUI, the phone app and the daemon will
+be on different versions the moment the project has real users — an un-updated Pi, a store-lagged
+phone release. Two precedents already cited elsewhere in this document solve it in opposite ways, and
+the choice between them should be made explicitly rather than left implicit: [gap, documented-web
+https://raw.githubusercontent.com/MusicPlayerDaemon/MPD/master/doc/protocol.rst;
+https://raw.githubusercontent.com/Sendspin/spec/main/README.md]
+
+- **MPD's style (additive, tolerant)**: `commands`/`notcommands` advertise what the current connection
+  may call, and `protocol` / `protocol available` / `protocol enable {FEATURE}` / `protocol clear`
+  negotiate optional behaviour per-connection (§9).
+- **Sendspin's style (strict)**: "Core version 1, exact-match versioning" — any mismatch is a hard
+  failure, not a negotiation (§11).
+- **Recommendation**: the already-planned `GET /health` should return `{version, protocol_version,
+  capabilities[]}`, and clients should be required to degrade gracefully on a missing capability
+  (MPD-style) rather than refuse to connect (Sendspin-style) — the daemon is a home appliance, not a
+  paired security device, and a strict-versioning failure mode there is a worse user experience than a
+  silently-narrower feature set.
+
 **Process management, per platform** [documented-web + inferred; the systemd template is verified]:
 
 | Platform | Mechanism | Notes |
 | --- | --- | --- |
 | Linux (desktop) | `systemd --user` unit, generated by `streamboat service install` | Copy tidalt's template shape; `After=`/`PartOf=graphical-session.target` for a desktop daemon, but for a **headless server** use `WantedBy=default.target` and enable lingering (`loginctl enable-linger`) so it survives logout |
 | Linux (server/Pi) | system unit + a dedicated user, or `systemd --user` + linger | Needs `audio` group membership for `/dev/snd`; if PipeWire is in play the daemon must run in the user's session or use ALSA directly |
-| Windows | `windows-service` crate (`define_windows_service!`) | Services run in session 0 with no audio session by default — **verify WASAPI output works from a service** before promising it; a scheduled-task-at-logon or a tray autostart may be the honest answer [unverified] |
+| Windows | `windows-service` crate (`define_windows_service!`) | Windows services run in **session 0**, which has no interactive audio endpoint by default. First-party Microsoft documentation stating the exact rule could not be reached from this environment (general WASAPI docs only), so **treat "can a service open WASAPI?" as still unverified** — but the realistic shape of the answer is: (a) a per-user Scheduled Task at logon, (b) a tray/background app that autostarts, or (c) a service that only ever drives a pipe/network output and never opens a local device directly. **This is a named, one-hour spike, not an open question to leave unresolved**: run a WASAPI render loop from a Windows service and from a scheduled task, and record which one produces sound. The answer decides whether `streamboat service install` exists on Windows at all. [gap — needs first-party verification: https://learn.microsoft.com/en-us/windows/win32/coreaudio/wasapi plus Windows session-0-isolation guidance] |
 | macOS | `launchd` LaunchAgent (per-user, has audio) rather than a LaunchDaemon | Same audio-session caveat as Windows |
 | Container | plain PID 1 + `restart: unless-stopped`; host networking if mDNS is used | `ref:tidal-connect/docker-compose.yaml` is the template |
 
@@ -985,6 +1367,50 @@ terminal — a good idea worth copying for any path invoked by the OS. [verified
 packaging (systemd + distro/Flatpak/AUR/Homebrew), and if an in-app updater exists, make it
 "download now, apply on next idle". [inferred]
 
+**Build and distribution for small devices were entirely unaddressed in the original draft, despite
+every precedent in this document being consumed as a Docker image or a distro package on a Pi**
+(`ref:tidal-connect`, `upmpdcli-docker`, Music Assistant, Snapcast). Decisions to surface explicitly,
+not defer: [gap, documented-web https://raw.githubusercontent.com/librespot-org/librespot/dev/Cargo.toml
+(TLS feature guidance); verified-source `ref:tidal-connect/docker-compose.yaml`;
+`ref:tidal-connect/README.md` (Pi 5 loader issue, §2.4)]
+
+- **aarch64** (Pi 3/4/5 on a 64-bit OS) is mandatory; **armv7** (Pi Zero 2 W, 32-bit Raspberry Pi OS —
+  also the ARMv7 target of the ifi Connect binary itself) is a real, separate cost and needs an
+  explicit yes/no from the owner, not an assumption.
+- **glibc vs. musl-static matters concretely**: a static build removes exactly the failure class
+  documented for the Connect binary on Pi 5 (`libsystemd.so.0: ELF load command alignment not
+  page-aligned`, worked around there with `kernel=kernel8.img`, §2.4). librespot documents `rustls` as
+  the TLS option "for avoiding external OpenSSL dependencies, reproducible builds, or when targeting
+  platforms where native TLS dependencies are unavailable or problematic (musl, embedded, static
+  linking)" — the same lever applies to `streamboat-core`.
+- **If an official container is published**, it needs `network_mode: host` if mDNS is used, `/dev/snd`
+  passthrough for ALSA, and a `/var/run/dbus` mount if MPRIS or Avahi are involved —
+  `ref:tidal-connect/docker-compose.yaml` is a ready-made template for a different purpose, reusable
+  for this one.
+
+**Daemon lifecycle — queue persistence, prefetch/gapless, and idle-device handling — has no answer in
+the staged path below, and each is a one-line design decision with a precedent already in this
+document.** An MPD client expects the queue to survive `systemctl restart` (MPD itself has a
+`state_file`); prefetch of the next track is what makes gapless playback and Wi-Fi-jitter survival
+work, but §16 only ever discusses buffering as a byte count. [gap, verified-source
+`ref:tidalt/cmd/tidalt/daemon.go`; `ref:tidalt/internal/player/alsa.c`;
+`ref:mopidy-tidal/mopidy_tidal/ext.conf`; documented-web
+https://raw.githubusercontent.com/MusicPlayerDaemon/MPD/master/doc/protocol.rst (the `playlist`
+queue-version field, §9)]
+
+- `ref:tidalt` prints "No audio device is opened until playback starts" in daemon mode — a
+  deliberate hold-only-while-playing policy — paired with its D-Bus
+  `org.freedesktop.ReserveDevice1.Audio<N>` reservation so PipeWire yields the device and reclaims it
+  on stop (§16).
+- `ref:mopidy-tidal`'s `playback_cache_buffer_bytes = 16777216` with a Range-capable proxy is the
+  read-ahead lever (with the legal-posture caveat from §8.1 about *what* gets cached).
+- MPD's `status` exposes `playlist` as a monotonically increasing 31-bit queue version (§9) — the
+  standard way a client detects a changed queue without diffing it; streamboat's own protocol (above)
+  should carry an equivalent revision number.
+- **Decisions to state explicitly**: where the queue state file lives (`$XDG_STATE_HOME`); whether it
+  is written per mutation or on shutdown plus a timer; whether a restart resumes playing or paused;
+  how many tracks ahead are prefetched.
+
 ---
 
 ### 16. Raspberry Pi and small-device constraints
@@ -1000,7 +1426,13 @@ packaging (systemd + distro/Flatpak/AUR/Homebrew), and if an in-app updater exis
   resampling. Avoid resampling entirely in bit-perfect mode (`ref:sone` and `ref:tidalt` both do).
 - **USB DAC / I²S output**: `ref:tidalt/internal/player/alsa.c` opens `hw:` devices and negotiates
   formats with `snd_pcm_hw_params`, preferring `S32_LE > S16_LE > S24_3LE > S24_LE` for 16-bit
-  sources (S32_LE first because of a Hidizs USB issue) and `S24_3LE > S24_LE > S32_LE` for 24-bit;
+  sources and `S24_3LE > S24_LE > S32_LE` for 24-bit. **Correction to an earlier draft, which
+  attributed the S32_LE-first ordering to "a Hidizs USB issue"**: the code comment actually says
+  "Prefer S32_LE for 16-bit sources: many USB DACs (e.g. CS43198-based devices) have a buggy or
+  non-functional S16_LE USB endpoint but work correctly via their native 32-bit endpoint" — the
+  Hidizs device (an S9 Pro Plus) appears in a *different* comment about anomalous period-size values
+  (87 frames), not about format ordering. [confirmed + corrected, verified-source
+  `ref:tidalt/internal/player/alsa.c:28-31,70`]
   it falls back to `plughw:` **only** when format negotiation is refused, retries on device-busy
   against `hw:`, and recovers xruns with `snd_pcm_recover`. It also reserves the device over D-Bus
   (`org.freedesktop.ReserveDevice1.Audio<N>`) so PipeWire yields it, releasing on stop. This is the
@@ -1012,8 +1444,10 @@ packaging (systemd + distro/Flatpak/AUR/Homebrew), and if an in-app updater exis
   include fixed-44.1 and fixed-48 variants precisely because some outputs (RPi HDMI) can't switch.
   [verified-source + inferred]
 - **Device naming**: resolve the card by **name** from `/proc/asound/cards` at every start, never by
-  a stored index. `ref:tidal-connect/bin/common.sh` is a working implementation, including generating
-  an `/etc/asound.conf` so the application can always open `default`. [verified-source]
+  a stored index. `ref:tidal-connect/bin/common.sh` is a working implementation, generating an
+  `/etc/asound.conf`. **Correction**: the application does not uniformly open `default` — see §2.4
+  for the exact `tidal-softvol` / `$CREATED_ASOUND_CARD_NAME` / `custom` / `default` branching the
+  generated config actually implements. [verified-source]
 - **Volume**: check for an existing `Master` control with `amixer -c <idx> controls`; create a
   softvol only if absent, else create `SoftMaster` and warn that the remote's slider will move
   hardware volume shared with other players. [verified-source]
@@ -1026,6 +1460,46 @@ packaging (systemd + distro/Flatpak/AUR/Homebrew), and if an in-app updater exis
   responder using `mdns-sd` (Rust, "supports both the client (querier) and the server (responder)
   uses") avoids the Avahi dependency, matching go-librespot's `zeroconf_backend: builtin | avahi`
   choice. [verified-source + documented-web]
+
+- **mDNS coexistence and name collisions were an open worry, and `mdns-sd` resolves both.** On a
+  Linux desktop Avahi already owns mDNS; on macOS `mDNSResponder` does; and if two streamboat boxes
+  share a LAN, both default to being called "streamboat". `mdns-sd` is "tested with some existing
+  common tools (e.g. Avahi on Linux, dns-sd on MacOS, and Bonjour library on iOS) to verify the basic
+  compatibility", supports macOS/Linux/Windows and IPv4/IPv6, and implements Probing (RFC 6762 §8.1),
+  Simultaneous Probe Tiebreaking (§8.2) and Conflict Resolution (§9) — collisions are handled at the
+  protocol level and surfaced to the application as a `DnsNameChange` event; it does **not** implement
+  unicast responses (§5.4) or multipacket known-answer suppression on the responder side. **Concrete
+  rules to write down, not leave implicit**: derive the default instance name from the hostname, keep
+  it single-word-safe (the Connect binary's own issue #216 — "multi-word friendly names break Avahi
+  for some users" — is a directly relevant lesson, §2.4), surface `DnsNameChange` in both the UI and
+  the logs rather than silently renaming, and expose `mdns_backend: builtin|avahi|off` mirroring
+  go-librespot. [gap, documented-web: https://raw.githubusercontent.com/keepsimple1/mdns-sd/main/README.md]
+
+- **A Raspberry Pi has no real-time clock, and this report previously said nothing about the
+  consequence.** A Pi boots with a wrong clock until NTP converges; a wrong clock breaks TLS
+  validation against TIDAL's CDN/API, breaks token-expiry arithmetic, breaks the Pushkin `USER_ACTION`
+  `startedAt` timestamp (§5, which the SDK says must come from "a true-time source"), and breaks
+  Snapcast's sub-millisecond sync (§11). The official TIDAL auth stack is visibly time-sensitive:
+  `ref:tidal-cli/src/index.ts` opens by monkey-patching `console.warn` solely to "Suppress 'TrueTime
+  is not yet synchronized' warnings from `@tidal-music/auth`" — the official package ships a TrueTime
+  service and complains before it syncs. **Concrete fixes worth adding to the deployment/systemd
+  guidance in §15**: `After=time-sync.target` (with `Wants=`) in the daemon's unit, retry-with-backoff
+  on TLS failure during early uptime instead of a hard auth error, and a clock-sync line in the
+  `/health` output. [gap, verified-source `ref:tidal-cli/src/index.ts:3-8`; documented-web
+  https://raw.githubusercontent.com/badaix/snapcast/develop/README.md (NTP/chrony requirement)]
+
+- **No testability or diagnostics story exists for the headless daemon, and this report's own
+  "reusable artifacts" table (§18) already contains the ingredients without naming the command.** A
+  headless audio daemon is the hardest thing to test and the easiest thing to break silently on a Pi.
+  Cheap mechanisms, all with a precedent already cited in this document: (a) the pipe/stdout PCM
+  output (§11) doubles as a CI sink — add `null` and `wav:<path>` outputs and playback tests become
+  byte comparisons; (b) MPD conformance (§9/§14) can be asserted in CI against real clients with `mpc`
+  (scriptable, packaged everywhere) plus the spec's own `commands`/`notcommands` output as a golden
+  file; (c) ship a `streamboat doctor` subcommand that runs exactly the checks the Connect wrapper
+  learned the hard way (§2.4): ALSA card-name resolution, device-busy detection
+  (`cat /proc/asound/<card>/pcm0p/sub0/hw_params` != `closed`), a pre-flight test tone, avahi/mDNS
+  reachability, clock sync (above), IPv6 availability. [gap, verified-source
+  `ref:tidal-connect/bin/entrypoint.sh`, `ref:tidal-connect/bin/common.sh`]
 
 ---
 
@@ -1042,10 +1516,11 @@ client ecosystems as cheaply as possible, and never touch TIDAL Connect.**
 | **0 — Snapcast-ready output** | `--output pipe:<path>` / `stdout` emitting interleaved PCM. | Tens of lines; unlocks synchronized multiroom, ESP32 endpoints, Home Assistant. | librespot/go-librespot `pipe` backend; Snapcast `/tmp/snapfifo` |
 | **0 — Headless login** | Device-code flow with a terminal QR + printed URL/code; token in the OS keyring with a 0600 encrypted-file fallback; `--config` path override. | Without it the daemon is unusable on a Pi. | `ref:tidalt/internal/tidal/loginprint.go`; `ref:mopidy-tidal/mopidy_tidal/web_auth_server.py` |
 | **1 — Control API** | HTTP + WebSocket JSON on `127.0.0.1` by default, generated UUID token, opt-in `--bind`; vocabulary modelled on tidal-hifi (`POST /player/*`, `PUT /player/volume`, `GET /current`, `GET /health`) plus catalogue/search/queue and an event stream. | This *is* the protocol the GUI, the web remote and the future mobile app all use. Build it once. | `ref:tidal-hifi/.../swagger.json`; `ref:sone/src-tauri/src/mcp/server.rs`; go-librespot |
-| **1.1 — Web remote** | A single static page served by the daemon over the same listener and token. | A phone remote for zero extra protocol work; the "beautiful" part of headless. | Snapweb; Mopidy-Iris |
-| **1.2 — Discovery + pairing** | Advertise `_streamboat._tcp` via `mdns-sd`; a short pairing code exchanged for a long-lived token; the desktop GUI grows a "play on…" picker listing local daemons. | Turns the daemon into a Connect-like target *for streamboat's own clients*, which is the honest substitute for TIDAL Connect. | Sendspin's discovery shape; go-librespot `zeroconf_backend` |
-| **1.2 — MPD subset** | An MPD-protocol listener on 6600 covering `status`, `currentsong`, `play/pause/next/previous/seek`, queue commands, `setvol`, `idle` with the relevant subsystems, `albumart`/`readpicture`. Documented explicitly as a subset. | MALP, ncmpcpp, Cantata and mpc work the day it ships — the largest client-ecosystem gain available. | Nuclear's MPD server; Mopidy-MPD |
-| **2 — Optional** | Sendspin source if the protocol gains traction; Cast/AirPlay senders only after the re-transmission question is settled; a Range-capable local caching proxy for seek + Wi-Fi jitter. | Demand-driven. | Music Assistant 2.8; `ref:mopidy-tidal/mopidy_tidal/gstreamer_proxy/` |
+| **1.1 — Web remote** | A single static page served by the daemon over the same listener and token. Built with no service-worker dependency and a small enough payload to need no offline cache, because a plain-`http://` LAN IP is **not a secure browser context** — no service worker, no installable PWA, no Web Crypto — until the TLS/tunnel decision (§13) is made. | A phone remote for zero extra protocol work; the "beautiful" part of headless — as long as it is designed around the insecure-context constraint instead of discovering it later. | Snapweb; Mopidy-Iris; W3C Secure Contexts (https://w3c.github.io/webappsec-secure-contexts/) |
+| **1.2 — Discovery + pairing** | Advertise `_streamboat._tcp` via `mdns-sd`, with the collision/rename handling from §16 (`DnsNameChange`, single-word default name); a pairing flow following Sendspin's shape (§11) — a QR/short-code pairing token exchanged in-band for a long-lived, named, revocable token — rather than a shared secret; the desktop GUI grows a "play on…" picker listing local daemons. | Turns the daemon into a Connect-like target *for streamboat's own clients*, which is the honest substitute for TIDAL Connect. | Sendspin's discovery + pairing design (§11); go-librespot `zeroconf_backend` |
+| **1.2 — MPD subset** | An MPD-protocol listener on 6600 (falling back through 6601-6609 if occupied, Nuclear-style) covering `status`, `currentsong`, `play/pause/next/previous/seek`, queue commands, `setvol`, `idle` with the relevant subsystems, `albumart`/`readpicture`, **and** `lsinfo`/`search`/`find` over a virtual browse tree (Home / My Collection / Playlists / Mixes) plus `listplaylists`/`listplaylistinfo` for TIDAL playlists — browsing is cheap to include, not a reason to scope it out (§9/§14). Documented explicitly as a subset, bound loopback/Unix-socket by default so `local_permissions` covers auth without a shared password (§9). | MALP, ncmpcpp, Cantata and mpc work the day it ships — the largest client-ecosystem gain available. | Nuclear's MPD server (port fallback); Mopidy-MPD (`lsinfo` over `context.browse()`) |
+| **1.2 — Diagnostics** | `streamboat doctor`: ALSA card-name resolution, device-busy check, pre-flight test tone (opt-out), avahi/mDNS reachability, clock sync, IPv6 availability — plus `null`/`wav:<path>` CI output sinks and MPD-conformance testing against `mpc`. | Makes the MPD subset and the Pi deployment actually verifiable instead of "should work". | `ref:tidal-connect/bin/{entrypoint,common}.sh` (§16) |
+| **2 — Optional** | Sendspin source if the protocol gains traction; a Snapcast stream-plugin (`streamboat snapcast-plugin`, JSON-RPC over stdin/stdout, §11) so Snapweb becomes a full remote, not just a speaker; Cast/AirPlay senders only after the re-transmission question is settled; a Range-capable local caching proxy for seek + Wi-Fi jitter, built opaque/encrypted per the caching-legal-posture note in §8.1, not a plain-chunk cache. | Demand-driven. | Music Assistant 2.8; Snapcast stream-plugin API; go-librespot's encrypted-cache posture |
 | **Never** | TIDAL Connect target, TIDAL Connect controller, UPnP renderer, Chromecast receiver. | §6, §7, §10. | — |
 
 Two rules that keep the stages coherent:
@@ -1054,7 +1529,11 @@ Two rules that keep the stages coherent:
    commands and consumes the same events the control API exposes. That is what makes stage 1.2's
    "GUI drives a remote daemon" a config change rather than a rewrite.
 2. **Every listener defaults to loopback.** LAN exposure is a deliberate, logged, token-protected
-   choice — not the default. mopidy-tidal's `("", 8989)` login server is the anti-pattern.
+   choice — not the default. mopidy-tidal's `("", 8989)` login server is the anti-pattern;
+   go-librespot's own default (`server.address: localhost`) matches the recommendation here.
+3. **A URL-path token is for machine clients, not browsers.** The web remote should exchange a
+   pairing token for an `HttpOnly` cookie on first use rather than carry the token in the address bar
+   for the life of the session (§8.3).
 
 ---
 
@@ -1062,12 +1541,13 @@ Two rules that keep the stages coherent:
 
 | Surface | Clients gained | Effort | Auth story | Expressiveness | Recommend |
 | --- | --- | --- | --- | --- | --- |
-| **MPRIS2 / D-Bus** (`org.mpris.MediaPlayer2.streamboat`) | playerctl, GNOME/KDE media widgets, hardware media keys, mpDris2-style bridges | XS (`mpris-server` 0.9 + `zbus` 5, as in `ref:sone`) | session bus = local user | transport + metadata only | **v1, Linux** |
+| **MPRIS2 / D-Bus** (`org.mpris.MediaPlayer2.streamboat`) | playerctl, GNOME/KDE media widgets, hardware media keys, mpDris2-style bridges | XS (`mpris-server` 0.9 + `zbus` 5, as in `ref:sone`) | session bus = local user | transport + metadata, **and** queue (`TrackList`) + stored-playlist activation (`Playlists`) — both optional interfaces `mpris-server` 0.9 already implements; catalogue search/browsing is still out of reach | **v1, Linux** |
+| **Unix domain socket / named pipe** (NDJSON, ncspot-style) | the CLI, same-host GUI, tmux/status-bar scripts | XS | filesystem permissions; no port, no token | transport + status; no browsing | **v0** |
 | **Windows SMTC / macOS Now Playing** | OS media overlays and keys | XS (`souvlaki` 0.8.3 as in `ref:sone-windows`) | OS-scoped | transport + metadata | **v1, GUI only** |
-| **HTTP + WebSocket JSON API** | scripts, Home Assistant, Stream Deck, streamboat's own web remote and future mobile app | M | loopback default + generated token + opt-in LAN bind (`ref:sone/src-tauri/src/mcp/server.rs`) | everything | **v1** |
-| **Embedded web remote** (served by the daemon) | any phone browser on the LAN | S once the API exists | same token; served over the same listener | everything the API has | **v1.1** |
-| **MPD subset on 6600** | MALP, ncmpcpp, Cantata, mpc | M–L | plaintext password only | queue + transport; browsing is awkward | **v1.2, explicitly a subset** |
-| **mDNS `_streamboat._tcp`** | streamboat GUI on another host; future mobile app | S | pairing code → token | discovery only | **v1.2** |
+| **HTTP + WebSocket JSON API** | scripts, Home Assistant, Stream Deck, streamboat's own web remote and future mobile app | M | loopback default + generated token (`Authorization: Bearer` for API clients, a cookie exchange for the browser remote — §8.3) + opt-in LAN bind (`ref:sone/src-tauri/src/mcp/server.rs`) | everything | **v1** |
+| **Embedded web remote** (served by the daemon) | any phone browser on the LAN | S once the API exists | same token; served over the same listener; not a secure browser context over plain HTTP (§17) | everything the API has | **v1.1** |
+| **MPD subset on 6600** | MALP, ncmpcpp, Cantata, mpc | M–L | `local_permissions`/Unix-socket needs no password at all; a network password stays unencrypted regardless (§9) | queue + transport + catalogue browsing via `lsinfo`/`search` over a virtual tree, following Mopidy-MPD (§9/§14) | **v1.2, explicitly a subset — including browsing** |
+| **mDNS `_streamboat._tcp`** | streamboat GUI on another host; future mobile app | S | Sendspin-style pairing token → long-lived, revocable token (§11/§13) | discovery only | **v1.2** |
 | **Raw PCM pipe / stdout output** | Snapcast, and anything that eats PCM | XS | n/a (local pipe) | n/a | **v1** |
 | **Sendspin source** | Music Assistant + emerging ESP32/Pi endpoints | L | Noise handshake per spec | full | **watch** |
 | **Chromecast / AirPlay sender** | LAN speakers | L each | n/a | full | **defer; resolve re-transmission question first** |
@@ -1091,10 +1571,12 @@ Two rules that keep the stages coherent:
    GUI↔remote daemon, web remote↔daemon, future mobile app↔daemon. JSON over WebSocket for events,
    HTTP for one-shot commands, with tidal-hifi's URL vocabulary as the starting point
    (`POST /player/play`, `PUT /player/volume`, `GET /current`, `GET /health`).
-4. **Bind loopback by default; require a token; make LAN exposure explicit.** Copy sone: random UUID
-   token generated on first enable, persisted in settings, carried in the URL path or an
-   `Authorization` header; a connection cap on the event stream; log the reachable URL with
-   `127.0.0.1` when bound to the wildcard.
+4. **Bind loopback by default; require a token; make LAN exposure explicit.** Copy sone's shape —
+   random UUID token generated on first enable, persisted in settings — but not its exact carrier: use
+   `Authorization: Bearer` for API/script clients, and for the browser-facing web remote exchange the
+   token once for an `HttpOnly`, `SameSite` cookie rather than keeping it in the URL (§8.3). Add a
+   connection cap on the event stream; log the reachable URL with `127.0.0.1` when bound to the
+   wildcard.
 5. **Implement Pushkin (`POST rt/connect` → WebSocket) in core, not in the UI.** A daemon that
    ignores streaming privileges will misbehave in exactly the multi-device scenario headless users
    live in.
@@ -1110,19 +1592,23 @@ Two rules that keep the stages coherent:
 | --- | --- | --- |
 | ALSA card-name → index resolution + generated `asound.conf` | `ref:tidal-connect/bin/common.sh` | daemon startup on Pi/servers |
 | Softvol creation with `Master`/`SoftMaster` detection | `ref:tidal-connect/bin/common.sh` | volume on hardware without a mixer |
-| Pre-flight test tone before opening the device | `ref:tidal-connect/bin/entrypoint.sh` | catch locked/misconfigured devices |
-| ~40 per-DAC `asound.conf` presets + tested-device table | `ref:tidal-connect/userconfig/`, `assets/known-devices.md` | a device compatibility database |
-| `systemd --user` unit template + installer | `ref:tidalt/cmd/tidalt/daemon.go` | `streamboat service install` |
+| Pre-flight test tone before opening the device (opt-out via `ENABLE_GENERATED_TONE=no`) | `ref:tidal-connect/bin/entrypoint.sh` | catch locked/misconfigured devices, without forcing a click on every open |
+| 26 per-DAC `asound.conf` presets + tested-device table | `ref:tidal-connect/userconfig/`, `assets/known-devices.md` | a device compatibility database |
+| `systemd --user` unit template + installer, plus `After=time-sync.target` | `ref:tidalt/cmd/tidalt/daemon.go` | `streamboat service install`; avoid the clock-skew failure mode in §16 |
 | Single-instance + client-mode fallback via D-Bus name ownership | `ref:tidalt/internal/mpris/server.go`, `cmd/tidalt/main.go` | one binary, two roles |
 | Deep-link forwarding with terminal fallback | `ref:tidalt/cmd/tidalt/play.go` | `streamboat play <url>` |
-| Terminal QR device-code login | `ref:tidalt/internal/tidal/loginprint.go` | headless login |
+| Unix-domain-socket NDJSON control surface | `ref:hrkfdn/ncspot` (`doc/users.md`) | `streamboat status`/CLI/same-host GUI, v0 (§12) |
+| Terminal QR device-code login (generated locally) | `ref:tidalt/internal/tidal/loginprint.go` | headless login |
 | Local login page + PKCE paste form | `ref:mopidy-tidal/mopidy_tidal/web_auth_server.py` | headless login (bind loopback, unlike the original) |
-| "Login hack": login prompt rendered as catalogue content | `ref:mopidy-tidal/mopidy_tidal/login_hack.py` | login inside an MPD client |
-| Range-capable SQLite caching proxy | `ref:mopidy-tidal/mopidy_tidal/gstreamer_proxy/` | seeking + jitter smoothing on Wi-Fi |
+| "Login hack": login prompt rendered as catalogue content | `ref:mopidy-tidal/mopidy_tidal/login_hack.py` | login inside an MPD client (render the QR locally, not via `api.qrserver.com` — §8.1) |
+| Encrypted/opaque audio cache (still-encrypted file, key re-fetched on play) | go-librespot `cache.{enabled,dir,size_limit}` | seeking + jitter smoothing without a plain-audio cache directory (§8.1) |
 | Pre-flight `HIRES_LOSSLESS in media_metadata_tags` check | `ref:mopidy-tidal/mopidy_tidal/playback.py` | honest quality reporting |
-| Loopback + token + SSE-cap local server | `ref:sone/src-tauri/src/mcp/server.rs`, `overlay/server.rs` | the control API's security shape |
+| Loopback + token + SSE-cap local server (Bearer for API, cookie for browser — §8.3) | `ref:sone/src-tauri/src/mcp/server.rs`, `overlay/server.rs` | the control API's security shape |
 | Player HTTP vocabulary | `ref:tidal-hifi/src/features/api/swagger.json` | API naming |
 | Streaming-privileges WebSocket handling | `ref:tidal-sdk-web/packages/player/src/internal/services/pushkin.ts` | core |
+| CLI noun-verb surface, `--json` flag, exit-code convention (not its temp-file playback) | `ref:tidal-cli/README.md`, `src/index.ts` | `streamboat`'s CLI subcommands (§14) |
+| Snapcast stream-plugin (JSON-RPC over stdin/stdout) | `badaix/snapcast` `doc/json_rpc_api/stream_plugin.md` | `streamboat snapcast-plugin` (§11) |
+| Sendspin pairing design (Noise `KKpsk2`, QR pairing token, Sentinel PSK) | `Sendspin/spec` README | streamboat's own pairing flow (§11/§13) |
 
 ---
 
@@ -1146,28 +1632,57 @@ Two rules that keep the stages coherent:
 5. **Is a Windows/macOS background service in scope at all**, or is "headless" a Linux/server story
    with GUI-only behaviour elsewhere?
 6. **Name and shape of the native remote protocol** — and whether to align it with Sendspin rather
-   than inventing one.
+   than inventing one. Sendspin's pairing design (§11) and event/versioning shape (§15) are strong
+   defaults if the answer is "align".
+7. **Does streamboat ever approach TIDAL for legitimate Connect partner/SDK status?** This report
+   establishes that target identity is a vendor-issued certificate obtainable only through a
+   commercial partnership, and that `developer.tidal.com` was unreachable from this environment — so
+   the cost, terms, and whether an open-source project can even apply are *unknown*, not
+   *impossible*. The owner should decide whether to ask TIDAL directly (a documented answer either way
+   is useful to the wider community of these projects) or to state publicly that streamboat will never
+   be a Connect device, and put that reasoning in the README next to the existing "we are not a
+   Connect target" statement.
+8. **Does streamboat's own documentation point users at the GioF71/TonyTromp Docker container as a
+   companion for Connect on the same Pi?** That container runs a binary extracted from iFi firmware
+   together with iFi's device certificate (§2); linking to it as a recommended companion is a
+   positioning choice with the same flavour as this report's own "the whole chain survives on
+   obscurity, not permission" assessment (§2.3). Decide it explicitly rather than leaving it implicit
+   in whatever the README ends up saying.
+9. **Additive-and-tolerant (MPD-style) vs. exact-match (Sendspin-style) protocol versioning** for
+   streamboat's own control API (§15) — pick one rather than discovering the answer at the first
+   version skew between daemon and mobile app.
 
 **Unverified / needs follow-up before anything is built on it:**
 
 - **TIDAL's actual partner terms for Connect.** `tidal.com`, `support.tidal.com` and
   `developer.tidal.com` are blocked by this environment's egress proxy. Every claim about SDK
   licensing, certification and partner counts here is second-hand trade press.
-- **The `_tidalconnect._tcp` TXT record keys and port.** Not documented anywhere found.
+- **The `_tidalconnect._tcp` TXT record keys and port.** Not documented in any source read for this
+  report, but resolvable in minutes on the owner's own LAN with `avahi-browse -r -t
+  _tidalconnect._tcp` (§3) — treat as a pending experiment, not a permanent unknown.
 - **Whether the Connect control channel really is JSON-over-WebSocket**, and whether it resembles the
   Cast media namespace. Inferred from `websocketpp` in the licence folder plus the Cast-shaped types
   in the desktop client's store. No wire capture.
 - **`cloudQueue` / `cloudConnect` endpoints.** Present in the desktop client's action set, absent
   from every SDK and every open client. Undocumented.
-- **The exact MPD command list Nuclear implements** (its docs site was blocked); and the precise MPD
-  protocol details above, which came from search summaries rather than the spec — re-read
-  `mpd.readthedocs.io/en/stable/protocol.html` from an unblocked network before implementing.
+- **The exact MPD command list Nuclear implements.** Its docs site (`docs.nuclearplayer.com`) remains
+  blocked by this environment's egress proxy; the port-fallback behaviour (6600→6601-6609) and its
+  general command scope were recovered via a search-index summary and should be re-verified once the
+  page is reachable. The core MPD *protocol* facts in §9, by contrast, are now confirmed against the
+  primary spec source (`raw.githubusercontent.com/MusicPlayerDaemon/MPD`) and no longer need
+  re-verification.
 - **The Sendspin spec's licence** and its adoption trajectory outside Music Assistant.
-- **Whether a Windows service can open WASAPI output** in session 0. Assume not until tested.
+- **Whether a Windows service can open WASAPI output** in session 0. Assume not until the one-hour
+  spike named in §15 is actually run.
 - **Measured CPU cost of 24/192 FLAC decode on Pi 3/4/5.** No benchmark found; do not quote numbers.
-- **Current hi-res status of `lms-plugin-tidal`** (issues #35 and #89 were open; 2026 state unknown).
+- **Current hi-res status of `lms-plugin-tidal`.** More nuanced than "ongoing problems": issue #35 is
+  closed, #89 is open, and #100 suggests hi-res work has since landed (§8.6) — genuinely mixed, not
+  simply broken or simply fixed.
 - **Whether TIDAL has ever acted against the Connect binary redistributors.** No takedown found, but
   absence of evidence only.
+- **Whether shanocast's AirReceiver-signature approach still works against current Chrome/Chromecast
+  firmware.** Cited here only to establish that a Chromecast receiver is not a technical dead end
+  (§7/§16), not as something streamboat should build on.
 
 ---
 
@@ -1182,7 +1697,7 @@ Two rules that keep the stages coherent:
 | `ref:tidal-connect/bin/common.sh` | Card-name→index resolution, `asound.conf` generation, `Master`/`SoftMaster` softvol logic |
 | `ref:tidal-connect/build/Dockerfile` | Runtime deps: `libportaudio-ocaml`, `libavahi-client3`, `alsa-utils`, `libssl-dev`, `libcurl4`, `libavformat-dev` |
 | `ref:tidal-connect/docker-compose.yaml` | `network_mode: host`, `/dev/snd`, `/var/run/dbus` mount, DNS override, full env-var surface |
-| `ref:tidal-connect/assets/known-devices.md`, `ref:tidal-connect/userconfig/` | Per-DAC card names, formats and ~40 `asound.conf` presets |
+| `ref:tidal-connect/assets/known-devices.md`, `ref:tidal-connect/userconfig/` | Per-DAC card names, formats and 26 `asound.conf` presets |
 | `ref:TidaLuna/plugins/lib/src/redux/types/store/RemotePlayback.ts` | `RemotePlaybackDeviceType`, `RemotePlaybackDevice` shape, `TidalConnectQueueInfo`, `TidalConnectMediaInfo`, `RemotePlayer States` |
 | `ref:TidaLuna/plugins/lib/src/redux/types/actions/actionTypes.ts` | `remotePlayback/*`, `chromeCast/*`, `cloudQueue/*` action names |
 | `ref:tidal-sdk-web/packages/player/src/internal/services/pushkin.ts` | `POST {legacyApiUrl}/rt/connect`, `USER_ACTION`, `PRIVILEGED_SESSION_NOTIFICATION`, `RECONNECT`, auto-pause behaviour |
@@ -1209,6 +1724,10 @@ Two rules that keep the stages coherent:
 | `ref:sone-windows/src-tauri/Cargo.toml` | `mpris-server = "0.9"`, `souvlaki = "0.8.3"` |
 | `ref:tidal-hifi/src/features/api/swagger.json` | The complete player HTTP API (OpenAPI 3.1.0, version 8.1.3) |
 | `ref:high-tide/src/mpris.py` | MPRIS bus name `org.mpris.MediaPlayer2.io.github.nokse22.high-tide`, path, interfaces |
+| `ref:tidalt/internal/player/alsa.c` | ALSA format-negotiation order, CS43198 S16_LE-endpoint workaround, `snd_pcm_recover`, `plughw:` fallback |
+| `ref:tidalt/internal/player/mpv.go` | `org.freedesktop.ReserveDevice1.Audio%d` acquire/release around playback |
+| `ref:python-tidal/tidalapi/session.py` | `token_refresh()`: refresh token is never rotated on use (lines 717-750) |
+| `ref:tidal-cli/README.md`, `ref:tidal-cli/src/index.ts`, `ref:tidal-cli/src/playback.ts` | Full CLI command surface, `--json` flag, TrueTime-warning suppression, temp-file DASH playback (anti-pattern), official `GET /trackManifests/{id}` v2 API call |
 | `/home/user/streamboat/docs/research/tidal-api.md` | TIDAL terms-of-service analysis, enforcement history, signed/expiring CDN URLs |
 | `/home/user/streamboat/docs/research/tidal-client-features.md` | Controller/target split in the native app; remote-playback feature matrix |
 | `/home/user/streamboat/docs/research/oss-landscape.md` | Prior architectural survey of the same reference set |
@@ -1217,49 +1736,60 @@ Two rules that keep the stages coherent:
 
 | URL | Supports |
 | --- | --- |
-| https://github.com/TonyTromp/tidal-connect-docker/blob/master/docs/TROUBLESHOOTING.md | `avahi-browse -t _tidalconnect._tcp`, `avahi-browse -a \| grep -i tidal`, ~120 s mDNS TTL, `ifi-pa-devs-get` |
+| https://raw.githubusercontent.com/TonyTromp/tidal-connect-docker/master/docs/TROUBLESHOOTING.md | `avahi-browse -t _tidalconnect._tcp`, `avahi-browse -a \| grep -i tidal`, ~120 s mDNS TTL, `ifi-pa-devs-get` |
+| https://raw.githubusercontent.com/shawaj/ifi-tidal-release/master/README.md | `--netif-for-deviceid`, ARMv7 binaries, `libssl1.0.0`/`libportaudio2`/`libflac++6v5`, full systemd `ExecStart` |
 | https://github.com/TonyTromp/tidal-connect-docker | Binary provenance, Avahi/ALSA/dbus/host-network deps, volume-bridge metadata service, "relies on proprietary Tidal Connect binaries" |
 | https://github.com/shawaj/ifi-tidal-release/tree/master/licenses/tidal_connect | The binary's third-party libraries: advobfuscator, asio, boost, clara, curl, mdnsresponder, openssl, websocketpp |
-| https://github.com/shawaj/ifi-tidal-release/blob/master/README.md | ARMv7 binaries, `libssl1.0.0`/`libportaudio2`/`libflac++6v5`, systemd invocation with `--tc-certificate-path` and `--playback-device` |
 | https://github.com/GioF71/tidal-connect | Wrapper repo identity, MIT, fork lineage |
 | https://github.com/seniorgod/ifi-tidal-release, https://github.com/ce-designs/tidal-connect-docker, https://github.com/lovehifi/tidal-connect-docker, https://github.com/chiefy/tidal-connect-docker, https://github.com/pulpier/tidal-connect-hifiberry | The fork ecosystem; evidence that all Linux Connect targets are the same binary |
 | https://www.whathifi.com/features/tidal-connect-everything-you-need-to-know | What Connect is, from a first-party-adjacent source |
 | https://www.ampvortex.com/tidal-connect-the-hi-fi-casting-protocol-that-defined-mqa-spatial-audio-streaming-2020-2026/ | SDK opened 2021, device counts, brand list — **low reliability, SEO-style aggregator** |
 | https://github.com/EbbLabs/mopidy-tidal | Current home of mopidy-tidal |
-| https://github.com/mopidy/mopidy-mpd | MPD-protocol emulation over a non-MPD backend |
-| https://docs.nuclearplayer.com/nuclear/integrations/mpd-server | A GUI player exposing an MPD subset (playback control, queue, notifications; no library browsing or stored playlists) — page blocked, read via search summary |
-| https://mpd.readthedocs.io/en/stable/protocol.html | MPD protocol reference — **blocked by egress proxy; facts here are from search summaries and need re-verification** |
+| https://raw.githubusercontent.com/mopidy/mopidy-mpd/main/src/mopidy_mpd/protocol/music_db.py; https://github.com/mopidy/mopidy-mpd | MPD-protocol emulation over a non-MPD backend, incl. `lsinfo`/`search`/`find` over `context.browse()`; "kept on life support … Maintainer wanted" status |
+| docs.nuclearplayer.com/nuclear/integrations/mpd-server | A GUI player exposing an MPD subset (playback control, queue, notifications; no library browsing or stored playlists), `127.0.0.1:6600` with 6601-6609 fallback — **page blocked by this environment's egress proxy; read via search-index summary, re-verify the exact command list before implementing** |
+| https://raw.githubusercontent.com/MusicPlayerDaemon/MPD/master/doc/protocol.rst, https://raw.githubusercontent.com/MusicPlayerDaemon/MPD/master/doc/user.rst | **Primary MPD spec source, reachable even though `mpd.readthedocs.io`/`musicpd.org` are blocked.** Command/response framing, `idle` subsystems, `status` fields, `commands`/`notcommands`, `protocol` negotiation, binary framing, `local_permissions`/`host_permissions`/`password` access control |
 | https://wiki.archlinux.org/title/Music_Player_Daemon | MPD port 6600, password config, client list |
-| https://github.com/M0Rf30/rmpd | A Rust MPD-protocol *server* implementation |
+| https://github.com/M0Rf30/rmpd | A Rust MPD-protocol *server* implementation (young: 244 commits, 15 stars) |
 | https://crates.io/crates/mpd_protocol, https://crates.io/crates/mpd | Rust MPD *client* libraries (not server) |
-| https://github.com/devgianlu/go-librespot | REST API + WebSocket events, MPRIS, `zeroconf_backend` builtin/avahi, audio backends, `GET /auth/code` |
-| https://docs.spotifyd.rs/advanced/dbus.html, https://docs.spotifyd.rs/advanced/mpris.html | `org.mpris.MediaPlayer2.spotifyd.instance$PID`, `rs.spotifyd.Controls` with `TransferPlayback`/`VolumeUp`, `--dbus-type system`, `--onevent` |
-| https://github.com/librespot-org/librespot | librespot as both library and Connect-receiver binary |
-| https://terminaltrove.com/ncspot/ | ncspot embeds librespot as a library |
-| https://github.com/snapcast/snapcast | Snapcast architecture, sources, codecs, sync accuracy, JSON-RPC control |
-| https://github.com/snapcast/snapcast/blob/develop/doc/json_rpc_api/control.md | Snapcast control API |
-| https://raw.githubusercontent.com/Sendspin/spec/main/README.md | Sendspin core v1: `ws://` + Noise, `_sendspin._tcp.local.` (8928) / `_sendspin-server._tcp.local.` (8927), binary frame type bytes, time-filter clock sync |
+| https://raw.githubusercontent.com/devgianlu/go-librespot/master/README.md, `/master/API.md`, `/master/api-spec.yml` | REST API + WebSocket `/events` vocabulary, MPRIS, `zeroconf_backend` builtin/avahi, audio backends, `GET /auth/code`, `server.{address,port,allow_origin,cert_file,key_file}` (no `tls` key), encrypted-file cache design |
+| https://raw.githubusercontent.com/Spotifyd/spotifyd/master/docs/src/advanced/dbus.md, `/advanced/mpris.md`, `/advanced/hooks.md` | `rs.spotifyd.Controls` on `rs.spotifyd.instance$PID` (always present) vs. `org.mpris.MediaPlayer2.spotifyd.instance$PID` (only once active), `--dbus-type system`, `--onevent` — **reachable at this raw path; `docs.spotifyd.rs` itself is blocked by this environment's egress proxy** |
+| https://raw.githubusercontent.com/librespot-org/librespot/dev/README.md, `/dev/Cargo.toml` | librespot as a Connect-receiver binary; workspace crate split (`core`/`audio`/`playback`/`metadata`/`protocol`/`oauth`/`discovery`/`connect`); `rustls` option for musl/static builds |
+| https://github.com/jpochyla/psst/blob/main/README.md | `psst-core` + `psst-gui`: a second core/GUI split, inspired by librespot rather than depending on it |
+| https://raw.githubusercontent.com/hrkfdn/ncspot/main/doc/users.md | ncspot's Unix-domain-socket/named-pipe NDJSON control surface (`ncspot info`), alongside embedding librespot as a library |
+| https://raw.githubusercontent.com/badaix/snapcast/develop/README.md, `/develop/server/etc/snapserver.conf`, `/develop/doc/configuration.md`, `/develop/doc/json_rpc_api/stream_plugin.md` | **Canonical repo is `badaix/snapcast`** (`snapcast/snapcast` redirects). Architecture, sources, codecs, sync accuracy, ports 1704/1705/1780/1788, four mDNS service types, fixed per-stream `sampleformat`, stream-plugin JSON-RPC protocol, `process://` source; librespot integration is "launches librespot and reads audio from stdout" (subprocess, not a linked crate) |
+| https://raw.githubusercontent.com/music-assistant/server/dev/music_assistant/providers/snapcast/constants.py | Built-in snapserver control port is 1705 at `127.0.0.1`, not 1780 |
+| https://raw.githubusercontent.com/Sendspin/spec/main/README.md | Sendspin core v1: `ws://` + Noise `KKpsk2`, `_sendspin._tcp.local.` (8928) / `_sendspin-server._tcp.local.` (8927), binary frame type bytes incl. 2=Pairing/3=Reserved, time-filter clock sync, QR pairing tokens, Sentinel PSK, in-band rehandshake |
 | https://github.com/orgs/music-assistant/discussions/4200 | Sendspin (formerly Resonate) origin, Open Home Foundation |
 | https://raw.githubusercontent.com/music-assistant/server/dev/README.md | Music Assistant server architecture, `localhost:8095`, ffmpeg 6.1+, Python 3.14+ |
 | https://github.com/music-assistant/server/blob/dev/music_assistant/providers/sendspin/README.md | `ws://<ma-server-ip>:8927/sendspin`, WebRTC for remote, spec at github.com/Sendspin/spec |
-| https://github.com/GioF71/upmpdcli-docker, discussion #281 | upmpdcli's TIDAL plugin: python-tidal based, `TIDAL_AUDIO_QUALITY`, pre-provisioned token env vars, plugin 0.8.3 from 2025-04-07 |
-| https://github.com/GioF71/audio-tools/blob/main/media-servers/tidal-hires/README.md | Hi-res renderer whitelist (MPD+upmpdcli, gmrender-resurrect, WiiM) |
-| https://github.com/michaelherger/lms-plugin-tidal (issues #35, #89) | Lyrion/LMS TIDAL plugin and its hi-res difficulties |
+| https://raw.githubusercontent.com/GioF71/upmpdcli-docker/main/README.md, discussion #281 | upmpdcli's TIDAL plugin: python-tidal based, `TIDAL_AUDIO_QUALITY`, pre-provisioned token env vars, `TIDAL_ENABLE_USER_AGENT_WHITELIST`; plugin version table (0.8.12 release / 0.8.16 master+edge as of 2026-09 — treat any cited version as a dated snapshot) |
+| https://github.com/GioF71/audio-tools/blob/main/media-servers/tidal-hires/README.md | Hi-res renderer whitelist (MPD+upmpdcli, gmrender-resurrect, WiiM Pro/Pro Plus) |
+| https://github.com/michaelherger/lms-plugin-tidal (issues #35, #88, #89, #98, #100, #113) | Lyrion/LMS TIDAL plugin and its hi-res difficulties — mixed state, not simply broken |
 | https://github.com/mikebrady/shairport-sync | AirPlay 2 *receiver* on Linux — why streamboat needn't build one |
 | https://github.com/philippe44/libraop, https://github.com/music-assistant/airplay-cli, https://github.com/akustikrausch/airplay2-sender-cpp, https://github.com/owntone/owntone-server | AirPlay *sender* precedents |
-| https://xakcop.com/post/shanocast/ | Chromecast receiver authentication blocks third-party receivers |
+| https://github.com/rgerganov/shanocast | A working open-source Chromecast **receiver** — passes Chrome's auth only by reusing AirReceiver's precomputed device signatures. (`xakcop.com/post/shanocast/`, the original write-up, is blocked by this environment's egress proxy; cite this repo instead) |
+| https://developers.google.com/cast/docs/media | Google Cast media quality ceiling: FLAC up to 96 kHz/24-bit only |
 | https://crates.io/crates/cast-sender, https://crates.io/crates/rust_cast | Rust CASTV2 sender crates |
-| https://crates.io/crates/mdns-sd | Rust mDNS responder+querier |
+| https://raw.githubusercontent.com/keepsimple1/mdns-sd/main/README.md, https://crates.io/crates/mdns-sd | Rust mDNS responder+querier; RFC 6762 Probing/Tiebreaking/Conflict Resolution, `DnsNameChange` |
 | https://crates.io/crates/windows-service | Rust Windows service scaffolding |
+| https://learn.microsoft.com/en-us/windows/win32/coreaudio/wasapi | WASAPI reference — no first-party statement found on session-0 service audio; treat as unverified pending the spike in §15 |
 | https://specifications.freedesktop.org/mpris/latest/ | MPRIS D-Bus Interface Specification v2.2 |
+| https://raw.githubusercontent.com/SeaDve/mpris-server/main/README.md | `mpris-server` 0.9 implements `TrackList` and `Playlists`, not just Root+Player |
 | https://docs.rs/souvlaki | Cross-platform OS media controls (MPRIS / SMTC / MPNowPlayingInfoCenter) |
-| https://help.roonlabs.com/portal/en/kb/articles/raat, https://kb.roonlabs.com/RAAT | Roon Core/Remote/endpoint model and RAAT as a closed vendor-implemented transport |
+| help.roonlabs.com/portal/en/kb/articles/raat | Roon Core/Remote/endpoint model and RAAT as a closed vendor-implemented transport — **blocked by this environment's egress proxy; corroborated via the Music Assistant discussion below instead** |
 | https://github.com/orgs/music-assistant/discussions/5133 | RAAT is unavailable to open-source implementers |
+| https://w3c.github.io/webappsec-secure-contexts/ | Only `https://` and `localhost`/`127.0.0.1` are secure browser contexts — bears on the plain-HTTP LAN web remote (§17) |
 
 ### Sources wanted but unreachable
 
 `tidal.com/connect`, `tidal.com/supported-devices`, `developer.tidal.com/documentation/open-source`,
 `www.music-assistant.io/*`, `www.lesbonscomptes.com/upmpdcli/*`, `mpd.readthedocs.io`,
-`www.musicpd.org`, `docs.nuclearplayer.com`, `deepwiki.com`, `protodoc.io` — all blocked by this
-environment's egress proxy. Anything attributed to them above came from search-result summaries or
-mirrors and is flagged accordingly.
+`www.musicpd.org`, `docs.nuclearplayer.com`, `deepwiki.com`, `protodoc.io`, `docs.spotifyd.rs`,
+`help.roonlabs.com`, `xakcop.com` — all blocked by this environment's egress proxy. **The last three
+were missing from this list in an earlier draft despite being cited as read** — a citation-hygiene
+gap a fact-check caught. Where a reachable primary exists, this document now cites that instead and
+notes the substitution inline: spotifyd's docs live in-repo at
+`raw.githubusercontent.com/Spotifyd/spotifyd/master/docs/src/advanced/{dbus,mpris,hooks}.md`; the
+Chromecast-receiver claim is cited to `github.com/rgerganov/shanocast` directly; Roon/RAAT is
+corroborated via the Music Assistant discussion thread instead. Anything else attributed to a blocked
+domain above came from search-result summaries or mirrors and is flagged accordingly.

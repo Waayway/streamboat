@@ -7,7 +7,7 @@ must deliver hi-res bit-perfect audio, must look good, and will be built by a so
 using AI coding agents heavily.
 
 Research date: 2026-09-07. Reference checkouts live under
-`/tmp/claude-0/-home-user-streamboat/6601a0d9-5722-546b-a598-a893fc14d76e/scratchpad/ref`
+the reference checkouts (shallow clones of the cited GitHub projects; see references/sources.md)
 and are cited as `ref:<project>/<path>`.
 
 ---
@@ -32,43 +32,71 @@ and are cited as `ref:<project>/<path>`.
   `hls.js` 1.6.16, Vite 7, Vitest 4, TypeScript 5.8.
 - **Size of the job, measured.** SONE at v0.21.0 is 26,721 lines of Rust
   (`tidal_api.rs` alone is 7,200 lines / 252 KB; `audio.rs` is 3,309 lines / 173 KB) plus 47,609
-  lines of TypeScript/TSX across 199 files and 85 components. High Tide (Python/GTK4) is
-  6,821 lines of Python plus 22 Blueprint `.blp` files. tidalt (Go TUI+daemon) is 13,078 lines of Go
-  plus a 111-line `alsa.c`. Strawberry's `src/` is 14,708 lines of C++/headers (whole player, not just TIDAL).
+  lines of TypeScript/TSX across 199 files, 12 atom modules (13 files — one is a colocated test), and
+  85 components. High Tide (Python/GTK4) is 6,821 lines of Python plus 22 Blueprint `.blp` files.
+  tidalt (Go TUI+daemon) is 13,078 lines of Go plus 357 lines of cgo C/headers — `alsa.c`/`.h` (151
+  lines) for ALSA output and `avcodec.c`/`.h` (206 lines) for FFmpeg decode; tidalt's decode path is
+  FFmpeg via cgo, not just an ALSA writer. **Correction (fact-checked): Strawberry's `src/` is
+  ~166,100 lines of C++/headers, not 14,708** — 491 `.cpp` files (121,981 lines) + 568 `.h` files
+  (44,141 lines) across 40 subdirectories; `src/core` alone is 21,510 lines (recount against
+  `ref:strawberry/src/`, 2026-09-07; the original count was wrong by ~11x, apparently from an `xargs
+  wc -l` batching bug that silently truncated to the last batch's "total" line). Strawberry is by far
+  the **largest** codebase in this survey — roughly 3.5x SONE's combined Rust+TS — which changes how
+  its evaluation in §4.11 should be read: it is proof Qt/GStreamer can hit bit-perfect on all three
+  desktop OSes, not a size comparable to a solo-owner MVP.
 - **Cross-platform is not free even inside one stack.** SONE is Linux-only; Windows support exists
   only as a *separate fork*, `sone-windows`, whose README says "Ported with help from AI agents" and
-  "may not be actively or correctly maintained". The fork's delta is almost entirely the audio sink:
-  `wasapi2sink` with `exclusive` property (`ref:sone-windows/src-tauri/src/audio.rs:1236-1240`) plus
-  `souvlaki = "0.8.3"` for SMTC. Plan for a per-OS output backend from day one.
+  "may not be actively or correctly maintained". **Correction (fact-checked): the fork's delta is not
+  "almost entirely the audio sink."** `sone-windows` forks an *older* SONE release — it is v0.16.0
+  (15,753 lines of Rust + 28,518 lines of TS/TSX) against current upstream SONE v0.21.0 (26,721 Rust +
+  47,609 TS/TSX) — roughly 59% of upstream's current size and five minor releases behind. Its
+  Windows-specific audio code (`wasapi2sink` with the `exclusive` property,
+  `ref:sone-windows/src-tauri/src/audio.rs:1236-1244`, plus `souvlaki = "0.8.3"` for SMTC) is real
+  evidence that the approach compiles and runs, but do not read the fork as "a sink swap is all a
+  Windows port costs" — it is missing five releases of upstream feature work. Plan for a per-OS output
+  backend from day one, and budget cross-OS parity as a standing maintenance cost, not a one-time patch.
 - **GStreamer is the proven demux/decode layer for TIDAL.** Four independent reference clients use
   it: SONE (Rust), High Tide (Python, `playbin3` with `about-to-finish` gapless,
   `ref:high-tide/src/lib/player_object.py:90-96`), Strawberry (C++/Qt6), mopidy-tidal (Python).
   It is the only engine in the survey with all TIDAL code paths proven: DASH/MPD, BTS direct URL,
-  HLS video, and FLAC/AAC/EAC3 decode.
+  HLS video, and FLAC/AAC/EAC3 decode. **But the two reference projects that ship a GStreamer Windows
+  sink disagree on which one to use.** SONE/`sone-windows` use `wasapi2sink exclusive=true`
+  (`ref:sone-windows/src-tauri/src/audio.rs:1236-1244`); Strawberry's own startup code *demotes*
+  `wasapi2sink` to `GST_RANK_SECONDARY` and ranks `directsoundsink` `GST_RANK_PRIMARY` on Windows, with
+  the in-source comment "wasapisink does not support device switching and wasapi2sink has issues, see
+  #1227" (`ref:strawberry/src/engine/gststartup.cpp:59-69`). Treat `wasapi2sink` exclusive mode as
+  "compiles and works in one AI-assisted fork," not as a community-settled Windows answer — budget a
+  hardware-verification pass before trusting it in production.
 - **libmpv is the cheapest route to bit-perfect on all three desktop OSes.** mpv documents
   `--audio-exclusive=yes` (WASAPI), a separate `coreaudio_exclusive` AO described as "direct device
   access and exclusive mode (bypasses the sound server)", and `--alsa-resample` off by default.
   Supersonic (Go/Fyne) and Feishin (Electron/React) both delegate audio to mpv. Cost: `--gapless-audio=no`
   is required for strict bit-perfect, per the Feishin bit-perfect discussion.
 - **Pure-Rust audio (cpal) cannot do bit-perfect on Windows today.** cpal 0.18.2 (2026-08-16) has no
-  exclusive-mode API; its changelog records the opposite direction — 0.17.2 "Enable as-necessary
-  resampling in the WASAPI server process" and 0.18.0 "Output streams no longer reject formats that
-  the built-in resampler can convert". Issue #106 (2016) and #459 (2020) both asked for exclusive
-  mode; #459 is closed without an implementation. Exclusive WASAPI needs the separate `wasapi`
-  crate (0.24.0, 2026-08-12, MIT).
+  exclusive-mode API; its changelog records the opposite direction. **Correction (fact-checked) to the
+  version attributions:** 0.17.2 (marked **[YANKED]** in the changelog) added "Enable as-necessary
+  resampling in the WASAPI server process"; **0.18.2** (2026-08-16, not 0.18.0) added "Output streams
+  no longer reject formats that the built-in resampler can convert"; separately, **0.18.0** (2026-06-06)
+  added ALSA `device_by_id()` acceptance of PCM shorthand names like `hw:0,0`/`plughw:foo` — 0.17.0 had
+  only introduced `device_by_id()` itself, for generic stable device IDs, not that ALSA-specific
+  acceptance. Issue #106 (2016, **still open**) and #459 (2020) both asked for exclusive mode; #459 is
+  closed without an implementation. Exclusive WASAPI needs the separate `wasapi` crate (0.24.0,
+  2026-08-12, MIT).
 - **Tauri 2 is mature on desktop and usable-but-thin on mobile.** `tauri` 2.11.5 released 2026-07-01;
   ~29.4M downloads. Mobile shipped with 2.0 (2024-10-02) but not every desktop plugin is ported.
   Audio on mobile is not a Tauri core capability: the community `tauri-plugin-native-audio` (1.0.5,
   2026-03-02, MIT/Apache-2.0) wraps Android Media3 ExoPlayer and iOS AVPlayer — but has only ~1,544
   total downloads, i.e. essentially unproven.
 - **Flathub's AI policy changed in 2026 and is now a disclosure regime, not the blanket ban the
-  press reported.** A May 2026 commit ("Reword LLM policy to make it clear it's not allowed",
-  `flathub-infra/documentation@992f57b`) tightened it to "Applications containing AI-generated or
-  AI-assisted code, documentation, or other content are not allowed", with "Exceptions may be granted
-  for mature, well-maintained projects". The **live** `docs/02-for-app-authors/02-requirements.md`
-  read on 2026-09-07 is softer: "Submitters must disclose any AI-generated code, documentation,
-  packaging, or other material…", "Disclosed AI-generated material is evaluated at reviewer
-  discretion", and a hard prohibition: "AI tools or agents must not open or automate Flathub
+  press reported.** A commit ("Reword LLM policy to make it clear it's not allowed",
+  `flathub-infra/documentation@992f57b`, dated "May 2026" by inference from press coverage — the
+  commit's own date was not independently visible when checked) tightened it to "Applications
+  containing AI-generated or AI-assisted code, documentation, or other content are not allowed", with
+  "Exceptions may be granted for mature, well-maintained projects". The **live**
+  `docs/02-for-app-authors/02-requirements.md` read on 2026-09-07 is softer: "Submitters must disclose
+  any AI-generated code, documentation, packaging, or other material…", "Disclosed AI-generated
+  material is evaluated at reviewer discretion", **"Disclosure does not create a presumption of
+  acceptance,"** and a hard prohibition: "AI tools or agents must not open or automate Flathub
   submission pull requests, or generate their commit messages, descriptions, review comments,
   or replies." This is directly load-bearing for streamboat's stated build method.
 - **Apple's App Store guideline 5.2.2 is a hard gate for an unofficial TIDAL client on iOS**:
@@ -163,25 +191,43 @@ then sets `start_threshold` and `avail_min` on the software params because
 
 tidalt does the same thing in C via cgo, with a documented preference order that differs by source
 depth: for 16-bit sources `S32_LE > S16_LE > S24_3LE > S24_LE` (S32_LE first because of a specific
-Hidizs USB DAC problem), for 24-bit sources `S24_3LE > S24_LE > S32_LE`
-(`ref:tidalt/internal/player/alsa.c`, `ref:tidalt/README.md`). tidalt also takes a D-Bus PipeWire
-reservation (`org.freedesktop.ReserveDevice1.Audio{N}`) before opening the device and releases it on
-stop, and falls back to `plughw:` only when `snd_pcm_hw_params` refuses the format.
+Hidizs USB DAC problem — CS43198-based devices per `ref:tidalt/docs/dac-compatibility.md`), for
+24-bit sources `S24_3LE > S24_LE > S32_LE` (`ref:tidalt/internal/player/alsa.c:28-39`,
+`ref:tidalt/CLAUDE.md:27-30`). **Correction (fact-checked): this order is not documented in
+`ref:tidalt/README.md`** — that file covers only the `plughw:` fallback semantics, not the format
+preference table. Worse, **tidalt's own `ref:tidalt/docs/architecture.md:43` states a different
+16-bit order** (`S16_LE → S24_3LE → S24_LE → S32_LE`), directly contradicting the code. Cite `alsa.c`
+(and `CLAUDE.md`) as authoritative, never `architecture.md` — and if streamboat copies a format table
+like this, keep exactly one copy of it, physically next to the code, so it cannot drift the way
+tidalt's own docs did. tidalt also takes a D-Bus PipeWire reservation
+(`org.freedesktop.ReserveDevice1.Audio{N}`) before opening the device and releases it on stop, and
+falls back to `plughw:` only when `snd_pcm_hw_params` refuses the format — distinguishing a format
+refusal (retries through the plug layer, sets `bitPerfect=false`, UI badge shows `(converted)`) from a
+busy device (keeps retrying `hw:` on `-EBUSY`, never downgrades).
 
 #### 2.2 Candidate audio engines
 
 | Engine | Bit-perfect Linux | Bit-perfect Windows | Bit-perfect macOS | DASH/HLS | Gapless | Deployment cost off-Linux |
 |---|---|---|---|---|---|---|
-| **GStreamer** (`gstreamer` 0.25.3, MIT/Apache) | Yes — `alsasink device=hw:X,Y`, or appsink + own ALSA writer (SONE) | Yes — `wasapi2sink` with `exclusive=true` (verified `ref:sone-windows/src-tauri/src/audio.rs:1236-1240`) | **Unproven.** `osxaudiosink` has no documented hog-mode/physical-format control | Yes — `dashdemux`, `hlsdemux`, `uridecodebin` | Yes — `concat` (SONE) or `playbin3` `about-to-finish` (High Tide); SONE notes gapless needs GStreamer ≥1.24 | High. Must ship the runtime: GStreamer documents packing the MSI and running it via `msiexec`, or Merge Modules, on Windows; a PackageMaker-style bundle on macOS |
-| **libmpv** | Yes — `--audio-device=alsa/hw:1,0 --audio-exclusive=yes`, `--alsa-resample` off by default | Yes — `--ao=wasapi --audio-exclusive=yes` (buffer tuned via `--wasapi-exclusive-buffer`) | Yes — `--ao=coreaudio_exclusive --coreaudio-change-physical-format=yes` ("direct device access and exclusive mode (bypasses the sound server)") | Yes (via FFmpeg) | Yes, but must be **disabled** for strict bit-perfect (`--gapless-audio=no`) | Medium. One shared library; Supersonic bundles it in the AppImage and requires `libmpv1`/`libmpv2` on Linux |
-| **cpal 0.18.2 + symphonia 0.6.1** | Partial — `device_by_id()` accepts `hw:0,0` since 0.17.0 | **No.** No exclusive-mode API; 0.17.2 added "as-necessary resampling in the WASAPI server process"; 0.18.0 stopped rejecting formats the built-in resampler can convert | No | **No** — symphonia decodes containers (OGG/WAV/MKV/MP4/CAF/AIFF) and codecs (MP3, FLAC, Vorbis, AAC, ALAC, ADPCM, PCM) but does not fetch or demux DASH/HLS | Manual | Zero — pure Rust, static |
+| **GStreamer** (`gstreamer` 0.25.3, MIT/Apache) | Yes — `alsasink device=hw:X,Y`, or appsink + own ALSA writer (SONE) | Yes in one fork — `wasapi2sink` with `exclusive=true` (`ref:sone-windows/src-tauri/src/audio.rs:1236-1244`) — **but Strawberry's own startup code ranks `wasapi2sink` `SECONDARY` and `directsoundsink` `PRIMARY` on Windows, citing device-switching problems (`ref:strawberry/src/engine/gststartup.cpp:59-69`, issue #1227). Needs hardware verification, not settled.** | **Unproven.** `osxaudiosink` has no documented hog-mode/physical-format control | Yes — `dashdemux`, `hlsdemux`, `uridecodebin` | Yes — `concat` (SONE) or `playbin3` `about-to-finish` (High Tide); SONE notes gapless needs GStreamer ≥1.24 | High. Must ship the runtime: GStreamer documents packing the MSI and running it via `msiexec`, or Merge Modules, on Windows; a PackageMaker-style bundle on macOS (macOS page unverified here — domain blocked) |
+| **libmpv** | Yes — `--audio-device=alsa/hw:1,0 --audio-exclusive=yes`, `--alsa-resample` off by default | Yes — `--ao=wasapi --audio-exclusive=yes` (buffer tuned via `--wasapi-exclusive-buffer`) | Yes (in mpv's own docs) — `--ao=coreaudio_exclusive --coreaudio-change-physical-format=yes` ("direct device access and exclusive mode (bypasses the sound server)"); **one field report describes it misrouting between DAC and HDMI** (see §2.3) | Yes (via FFmpeg) | Yes, but must be **disabled** for strict bit-perfect (`--gapless-audio=no`) | Medium. One shared library; Supersonic bundles it in the AppImage and requires `libmpv1`/`libmpv2` on Linux |
+| **cpal 0.18.2 + symphonia 0.6.1** | Partial — `device_by_id()` accepts ALSA shorthand (`hw:0,0`, `plughw:foo`) since **0.18.0** (0.17.0 added `device_by_id()` itself, for generic stable IDs only) | **No.** No exclusive-mode API; 0.17.2 (**yanked**) added "as-necessary resampling in the WASAPI server process"; **0.18.2** (not 0.18.0) stopped rejecting formats the built-in resampler can convert | No | **No** — symphonia decodes containers (OGG/WAV/MKV/MP4/CAF/AIFF) and codecs (MP3, FLAC, Vorbis, AAC, ALAC, ADPCM, PCM) but does not fetch or demux DASH/HLS, and does not decode EAC3/AC4 | Manual | Zero — pure Rust, static |
 | **Per-OS hand-rolled** (`alsa` 0.10 + `wasapi` 0.24.0 + `coreaudio-rs`) + symphonia for decode | Yes | Yes | Yes (in principle) | No — you write the MPD/HLS fetcher | Manual | Zero, but highest code volume |
+| **FFmpeg/libav direct** (`ffmpeg-next`/`rsmpeg`) + per-OS sink | Yes | Yes (in principle — you wire exclusive mode yourself) | Yes (in principle) | Yes — `libavformat` demuxes DASH/HLS | Manual | Medium. One shared/static FFmpeg build (own licensing/build-config work), no plugin registry to ship — smaller than GStreamer off-Linux. This is what tidalt actually does via cgo: `libavformat`/`libavcodec`/`libswresample`, FLAC/AAC/ALAC decode, resample to S32LE (`ref:tidalt/internal/player/{avcodec.c,alsa.c}`, `ref:tidalt/docs/architecture.md`) |
 
 Notes that matter:
 
 - **symphonia is MPL-2.0**, not MIT/Apache. Fine for a GPL project; note it if the licence ever changes.
-- **rodio 0.22.2** (2026-03-05, MIT/Apache) sits on cpal and inherits its ceiling; it is a game-audio
-  library, not a bit-perfect player.
+- **rodio 0.22.2** (2026-03-05, MIT/Apache) sits on cpal and inherits its ceiling. Its own description
+  is a general-purpose audio playback/recording library, not specifically a "game-audio library" —
+  either way, not a bit-perfect player.
+- **A middle option exists between "ship all of GStreamer" and "pure Rust, no DASH/HLS/no Atmos":
+  FFmpeg/libav directly.** tidalt already does this via cgo — `libavformat`/`libavcodec`/`libswresample`
+  decode FLAC/AAC/ALAC and resample to S32LE, in 206 lines of C (`avcodec.c`/`.h`) alongside the
+  111-line `alsa.c` writer — and libmpv is internally the same design. Rust equivalents:
+  `ffmpeg-next`, `rsmpeg`. Cost: FFmpeg's own licensing/build-config surface and writing your own
+  DASH/HLS fetch layer. Win: one dependency instead of a plugin registry, far smaller to ship on
+  Windows/macOS than GStreamer. See the added table row above.
 - **EAC3-JOC / Dolby Atmos**: python-tidal lists MP3, AAC/MP4A, FLAC, EAC3, AC4 as TIDAL codecs.
   symphonia does not decode EAC3/AC4; GStreamer and FFmpeg/mpv do (with `gst-libav` /
   `gstreamer1.0-libav`, which SONE's package deps include). If Atmos is ever in scope, pure-Rust
@@ -200,9 +246,16 @@ Put an `AudioEngine` trait in `streamboat-player` with a small surface
 
 1. It is the only engine with all four TIDAL code paths proven in the reference set (DASH manifest as
    a `data:application/dash+xml;base64,…` URI, BTS direct URL, HLS video, and FLAC/AAC/EAC3 decode).
-2. `wasapi2sink exclusive=true` is verified working in a real TIDAL client (`sone-windows`).
+2. `wasapi2sink exclusive=true` *compiles and ships* in a real TIDAL client (`sone-windows`) — but this
+   is not a settled answer. **Strawberry's own GStreamer startup code demotes `wasapi2sink` and ranks
+   `directsoundsink` primary on Windows**, citing device-switching problems
+   (`ref:strawberry/src/engine/gststartup.cpp:59-69`, upstream issue #1227). Budget a Windows
+   hardware-verification step (confirm the DAC actually receives exclusive-mode, unresampled PCM, not
+   just that the pipeline builds) before shipping this as a claim, and keep `directsoundsink` as a
+   documented fallback rank.
 3. The Rust bindings are healthy: `gstreamer` 0.25.3 (2026-06-29), MIT/Apache, feature flags for
-   GStreamer 1.16 → 1.30.
+   GStreamer 1.16 → 1.30 (MSRV 1.92, edition 2024 — newer toolchain requirement than SONE's pinned
+   0.23).
 
 Keep libmpv behind the same trait as the second backend, specifically because it is the only
 documented path to macOS bit-perfect (`coreaudio_exclusive` + `--coreaudio-change-physical-format=yes`)
@@ -210,6 +263,10 @@ and because it dramatically shrinks the macOS/Windows packaging problem. Treat m
 **experiment with a hardware verification step**, not a shipped claim, until measured — the Feishin
 discussion contains a user report of `coreaudio_exclusive` routing unexpectedly between DAC and HDMI,
 and the original poster could not verify Apple behaviour for lack of a sample-rate indicator on the DAC.
+**No reference project in this survey demonstrates verified bit-perfect output on macOS by any engine**
+— GStreamer's `osxaudiosink` has no documented hog-mode control and mpv's `coreaudio_exclusive` is the
+only documented path, unverified on hardware. Whichever engine streamboat ships first, macOS bit-perfect
+is a research spike with its own line item, not a checkbox that falls out of the Linux/Windows work.
 
 ### 3. Architecture shapes
 
@@ -288,7 +345,33 @@ Also expose the same command surface as:
 - **SMTC** on Windows and **MPNowPlayingInfoCenter** on macOS via `souvlaki` 0.8.3 (MIT). Caveat from
   souvlaki's own README: **Windows requires an HWND** and macOS "requires an AppDelegate/winit event
   loop (an open window is not required)". A truly headless Windows daemon therefore gets no SMTC
-  without extra work.
+  without extra work — the practical answer is: no SMTC in headless Windows mode, document that rather
+  than trying to fake an HWND.
+
+**Headless is a solved problem shape on Linux/systemd only — containers, macOS and Windows still need
+answers.** "Headless/server/CLI now" means the first thing a server user does is run it in Docker on a
+NAS or a Pi. tidalt's Docker recipe generalises directly: expose sound devices with `--device /dev/snd`
+(which also makes `/proc/asound` readable, the mechanism tidalt uses for device discovery), join the
+host audio group with `--group-add $(getent group audio | cut -d: -f3)` because `/dev/snd` nodes are
+`root:audio`, persist the config dir (OAuth session) and data dir (device preference, volume, metadata
+cache) as volumes, and optionally forward `-v /run/user/$(id -u)/bus:/run/user/1000/bus` so the
+PipeWire/WirePlumber `org.freedesktop.ReserveDevice1` handoff still works; build for `linux/amd64` and
+`linux/arm64` (`ref:tidalt/docs/docker.md`). No reference project answers macOS (launchd plist +
+CoreAudio from a non-GUI process) or a Windows service (souvlaki's SMTC needs an HWND, so a Windows
+service gets no now-playing integration) — treat both as open engineering work, not solved-elsewhere
+problems.
+
+**The audio engine is the hardest component and the one no reference project tests in-process.**
+SONE's `audio.rs` (3,309 lines, the hardest code in the project) has zero `#[cfg(test)]` modules; its
+only audio-specific test artefact is a 21-line `src-tauri/tests/gapless_probe.py`, and its only
+dev-dependency is `tempfile = "3"` (`ref:sone/src-tauri/Cargo.toml`). tidalt is the partial exception,
+with `internal/player/alsa_fallback_test.go` (68 lines) covering the `plughw:` fallback decision. CI
+runners have no sound card, so design the `AudioEngine` trait to admit a headless backend from day
+one — a GStreamer `fakesink`/`appsink` capturing PCM, or an ALSA `null` device / `snd-dummy` module —
+so the queue state machine, format negotiation table and quality cascade are testable with
+`cargo test`, and a golden-PCM comparison of a decoded FLAC is possible without hardware. (See
+`/home/user/streamboat/docs/research/engineering-baseline.md:1405`, tagged **[STACK]** for exactly this
+question.)
 
 ### 4. Candidate stacks, one by one
 
@@ -313,7 +396,106 @@ workaround for one of these in `ref:sone/src/App.css`:
 
 and its README carries an NVIDIA note: "If you see a blank window, rendering glitches, or a Wayland
 protocol error on launch, start the app with `WEBKIT_DISABLE_COMPOSITING_MODE=1 sone`". Budget for a
-handful of such workarounds, not for a rewrite.
+handful of such workarounds, not for a rewrite. The practical WebKitGTK floor is whatever engine ships
+on your build container's distro: SONE's deb depends on `libwebkit2gtk-4.1-0` and is built
+`FROM ubuntu:22.04` (`ref:sone/build-scripts/build/Dockerfile.deb`), so Ubuntu 22.04's WebKitGTK 4.1 is
+the practical baseline to design against — bundle fonts locally (no Google Fonts CDN; the app must
+work offline and the CSP should not need to allow it), prefer plain CSS/Tailwind over engine-specific
+effects, and treat `backdrop-filter`, heavy CSS animation and SVG presentation attributes as suspect.
+
+**Capabilities, CSP and plugins — the first things an implementer hits.** Tauri 2's biggest change from
+v1 is the capabilities ACL: every window/command permission must be explicitly listed in
+`src-tauri/capabilities/*.json` or the call silently fails. SONE ships one capabilities file
+(`ref:sone/src-tauri/capabilities/default.json`): identifier `default`, `windows: ["main", "miniplayer"]`,
+and permissions `core:default`, a long list of `core:window:allow-*` (fullscreen, create,
+always-on-top, close, minimize/unminimize, maximize/unmaximize, set-size, start-dragging,
+start-resize-dragging, show, set-focus), `core:webview:allow-create-webview-window`, `opener:default`,
+`global-shortcut:allow-register`, `deep-link:default`. SONE also sets `security.csp: null` in
+`tauri.conf.json` — no content policy at all. Decide deliberately: a real CSP (`img-src` limited to the
+TIDAL CDN hosts plus `asset:`/`tauri:`, no inline scripts) versus copying SONE's open posture knowingly
+— a music client renders remote artwork, lyrics and user-authored playlist/track names inside a webview
+that holds `invoke`, so this is a security decision, not a formality.
+
+SONE's plugin set (`ref:sone/src-tauri/Cargo.toml`, all version-**pinned exactly** with `=`, a
+convention worth copying to avoid surprise webview/plugin behaviour changes mid-project):
+`tauri-plugin-single-instance =2.4.2` (with the `deep-link` feature), `tauri-plugin-deep-link =2.4.9`,
+`tauri-plugin-opener =2.5.4`, `tauri-plugin-window-state =2.4.1`, `tauri-plugin-oauth =2.0.0`,
+`tauri-plugin-global-shortcut =2.3.1`. `tauri.conf.json` registers the deep-link scheme `tidal` for
+desktop. So the desktop OAuth flow runs **two mechanisms together**: a loopback HTTP listener
+(`tauri-plugin-oauth`) for the redirect, and a `tidal://` custom-scheme handler routed through
+single-instance for the case where the OS hands the redirect to a URL scheme instead. tidalt registers
+the same `tidal://` scheme with XDG (`tidalt setup`, `ref:tidalt/docs/client-server.md:64`) — decide
+which mechanism (or both) streamboat needs before building the login screen.
+
+**Window chrome is a hidden cost of "beautiful."** SONE's window config is `decorations: false`,
+`visible: false` until first paint (avoids a white flash), 1200×800, plus a second `miniplayer` window.
+Turning decorations off moves the titlebar, drag regions, resize handles, and (per OS) macOS traffic
+lights / Windows Snap Layouts into your own code — which is why its capability file needs the whole
+`core:window:allow-start-dragging`/`allow-start-resize-dragging`/`allow-minimize`/etc. list above. Decide
+early: native decorations (cheap, native feel, constrained design) versus custom chrome (SONE's route,
+real per-OS polish work).
+
+**Auto-update coverage is partial, and does not cover deb/rpm.** Tauri v2's updater plugin signs a
+static JSON manifest (minisign keypair via `tauri signer generate`) keyed by platform
+(`linux-x86_64`/`darwin-aarch64`/`windows-x86_64`) with per-platform `url` + `signature`, TLS enforced
+in production. Bundle coverage is **Linux AppImage only** (`.AppImage`, `.AppImage.tar.gz`), macOS
+`.app.tar.gz`, and Windows `.msi`/NSIS `.exe` — there is no updater for deb/rpm (those need a hosted
+repo, as SONE does on Cloudsmith) or for Snap/Flatpak (store-managed). Plan the update channel per
+package format, not as one in-app mechanism.
+
+**Windows WebView2 install mode is a required, unsized config choice.** `bundle.windows.webviewInstallMode`
+trades installer size against offline support: `downloadBootstrapper` (default, +0 MB, needs network,
+weak on Win7 `.msi`), `embedBootstrapper` (+~1.8 MB), `offlineInstaller` (+~127 MB, installs with no
+internet), `fixedVersion` (+~180 MB, pins an exact WebView2 build inside the app — the only lever that
+freezes webview-divergence risk on Windows), `skip` (+0 MB, app will not run without the runtime
+present). Windows 10 (April 2018 update or later) and Windows 11 ship the runtime with the OS, so
+`downloadBootstrapper` is mainly a first-run risk on older or offline machines — pick deliberately
+rather than defaulting silently.
+
+**Cross-compilation does not exist; there is no reference build CI at all.** `tauri build` produces
+artifacts only for the host platform (Museeks' README states this explicitly: "Tauri does not support
+cross-platform binaries, so the command will only generate binaries for your current platform"). SONE's
+own repo has **no build workflow** — `.github/workflows/` holds only `flathub-update.yml` — and releases
+come from local per-distro Docker builds (`build-scripts/build/Dockerfile.deb` = `FROM ubuntu:22.04`,
+chosen for the oldest glibc/WebKitGTK floor; `Dockerfile.rpm` = `FROM fedora:42`; plus
+`Dockerfile.pacman`, `Dockerfile.rpm-opensuse`, a `PKGBUILD`, and a `build-scripts/test/` suite that
+installs each package). Windows support in that ecosystem exists only as a separate fork. Budget three
+release pipelines (Linux/Windows/macOS build hosts, three signing setups) rather than one CI matrix that
+cross-compiles.
+
+**Flathub packaging needs two offline-source generators, regenerated every release.** SONE's release
+automation runs `flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json` and
+`flatpak-node-generator pnpm --pnpm-store-version v11 pnpm-lock.yaml -o pnpm-sources.json`
+(`ref:sone/.github/workflows/flathub-update.yml:95-139`) then commits the manifest plus both sources
+files into the Flathub repo. This is itself an automated commit to a Flathub-adjacent repo — decide
+explicitly what the release bot may commit versus what the human owner must author, given §9's AI
+policy.
+
+**macOS packaging has a documented hook for the audio backend.** Tauri's bundler supports
+`bundle.macOS.frameworks`, which accepts system frameworks, custom `.framework` bundles, and `.dylib`
+files — the config schema's own example lists `"CoreAudio"` alongside a custom dylib and a custom
+framework, which is the hook for shipping `GStreamer.framework` or `libmpv`.
+`bundle.macOS.minimumSystemVersion` defaults to macOS 10.13 and should be raised deliberately (12.0+ is
+defensible); entitlements are applied at signing time via `bundle.macOS.entitlements`, which is where a
+Hardened Runtime exception for the media backend would go.
+
+**For a Tauri project to build for Android/iOS, the app crate must be a library from day one** — this
+is the concrete shape "do not preclude mobile" implies, and it is cheap now and expensive to retrofit
+after ~85 components exist: `[lib] crate-type = ["staticlib", "cdylib", "rlib"]`, all startup logic in
+`src/lib.rs` behind `#[cfg_attr(mobile, tauri::mobile_entry_point)] pub fn run()`, with `src/main.rs`
+reduced to calling `run()`. SONE already has this shape (its Cargo.toml comment notes the `_lib` name
+suffix avoids a Windows name clash, rust-lang/cargo#8519). Tauri mobile targets Android 8/API 26 and
+iOS 9 at the platform floor; the community `tauri-plugin-native-audio` needs Android 8.0+/iOS 14.0+ and
+the iOS Background Modes → Audio capability.
+
+**IPC has a large-library data-path trap.** Every `Serialize` return value from a Tauri command is
+serialized to JSON; the docs warn this "can slow down your application if you try to return large data
+such as a file or a download HTTP response," and provide `tauri::ipc::Response::new(bytes)` for raw
+byte payloads. Design rules: page every list command, push state *deltas* not snapshots, never
+round-trip album art as base64 JSON (cache covers Rust-side and serve through the asset/custom protocol
+or `convertFileSrc`), and keep the playback position tick out of IPC entirely — send
+`(position, wall_clock, rate)` and interpolate client-side, the same approach §3 already recommends for
+the WebSocket transport.
 
 **Audio.** Entirely outside the webview, in Rust. SONE proves the whole path: quality cascade,
 manifest decode, GStreamer pipeline, exclusive ALSA writer thread, gapless via `concat`, signal-path
@@ -471,10 +653,17 @@ available to any stack.
 
 #### 4.11 Qt/QML — not recommended, but respectable
 
-Strawberry is the proof: C++17 with Qt 6 (`QT_MIN_VERSION 6.8.0` in one configuration, `6.4.0` in
-another, `ref:strawberry/CMakeLists.txt:230-242`), GStreamer with `autoaudiosink` / `osxaudiosink` /
-`directsoundsink` / `wasapisink`, bit-perfect on Linux via ALSA exclusive, GPL-3.0. It is a
-14,708-line `src/` and it works on all three desktop OSes with a coherent look.
+Strawberry is the proof: C++17 with Qt 6 (`QT_MIN_VERSION 6.8.0` on Windows/macOS, `6.4.0` elsewhere,
+`ref:strawberry/CMakeLists.txt:228-232`), GStreamer with `autoaudiosink` / `osxaudiosink` /
+`directsoundsink` / `wasapisink`, bit-perfect on Linux via ALSA exclusive, GPL-3.0. **Correction
+(fact-checked): its `src/` is ~166,100 lines of C++/headers, not 14,708** — 491 `.cpp` (121,981 lines)
++ 568 `.h` (44,141 lines) across 40 subdirectories; `src/core` alone is 21,510 lines. Strawberry is the
+**largest** codebase in this entire survey, roughly 3.5x SONE's Rust+TS combined — read its "works on
+all three desktop OSes with a coherent look" achievement against that scale, not against a solo-owner
+MVP budget. Its own Windows audio-sink ranking is also useful counter-evidence to the sone-windows path:
+`gststartup.cpp` demotes `wasapi2sink` to `GST_RANK_SECONDARY` and ranks `directsoundsink`
+`GST_RANK_PRIMARY`, citing device-switching problems (`ref:strawberry/src/engine/gststartup.cpp:59-69`,
+issue #1227) — see §2.2/§2.3.
 
 Against for streamboat: C++ plus QML plus CMake plus the Qt deployment story is the largest total
 surface of any candidate; Qt's LGPL-3.0 licensing requires dynamic linking (or a commercial licence)
@@ -484,8 +673,10 @@ and mediocre QML.
 
 #### 4.12 .NET + Avalonia — not recommended
 
-Avalonia 12 exists as of 2026 with claimed 3× Android performance improvements, a native dispatcher,
-page-based navigation and large rendering gains. Like Slint and Flutter it draws every control itself,
+Avalonia 12 exists as of 2026 with claimed 3× Android performance improvements (**web, unverified** —
+same status this report already gives the Cider Tauri-migration rumour; avaloniaui.net was not directly
+readable when fact-checked), a native dispatcher, page-based navigation and large rendering gains. Like
+Slint and Flutter it draws every control itself,
 so there is a real design ceiling and no native feel anywhere. The blocker is the same as KMP's:
 no managed-runtime path to bit-perfect audio. NAudio is Windows-only; cross-platform .NET audio means
 P/Invoke to the same three C APIs. Adding a .NET runtime dependency to a headless server binary is a
@@ -500,9 +691,12 @@ primary shell.
 
 #### 4.14 Go + Wails / Go + Fyne — not recommended
 
-- **Wails v3** is still beta as of 2026 (`v3.0.0-beta.9` is the latest prerelease; the desktop API is
-  described as stable and a Beta-to-GA tracker is open). Same webview-per-OS model as Tauri, with a
-  smaller ecosystem and the same WebKitGTK font-weight bug.
+- **Wails v3** is still beta as of 2026 — **correction (fact-checked): the latest prerelease is
+  `v3.0.0-beta.17` (2026-09-06), not `beta.9`** (the report was eight betas stale; re-check before
+  relying on this section). Every beta since at least beta.8 carries the note "This is pre-release
+  software. The API is stable, but you may still encounter issues before the final 3.0 release," so
+  "still beta, desktop API described as stable" holds even though the version number does not. Same
+  webview-per-OS model as Tauri, with a smaller ecosystem and the same WebKitGTK font-weight bug.
 - **Fyne 2.8** (2026-07-13) is real and improving — 1,000+ commits, 39 contributors, GPU shapes,
   Wayland auto-selected on Linux, Go 1.22 minimum. But it is Material-Design-by-fiat with documented
   UX friction (underlined multiline text fields to indicate focus is a common complaint), so the
@@ -570,7 +764,8 @@ scarcity, which will improve over time).
 | **Strawberry** | C++17 + Qt 6.4/6.8 + GStreamer | Classic desktop three-pane collection manager; audiophile focus incl. DSD for local files | `ref:strawberry/` |
 | **ncspot** | Rust TUI (cursive) | Terminal Spotify client; the "TUI is enough" data point | web |
 | **Cider** | Electron + Vue.js, with Rust components | Apple Music client; visually the most "designed" of the Electron music clients | web (Tauri migration **not** verified) |
-| **Nuclear / Museeks** | Electron + React | Community music players; both are proof that Electron ships fast and looks fine | web |
+| **Nuclear** | Electron + React | Community music player; proof that Electron ships fast and looks fine | web |
+| **Museeks** | **Correction (fact-checked): Tauri 2 + Rust + React, not Electron.** Museeks ported from Electron to Tauri (announced 2024; its README states "Back-end: Tauri v2 / Rust", "UI: React.js") | A **second** shipped Tauri 2 + React music player besides SONE — and the useful *negative* control for this report's argument: Museeks' `src-tauri/Cargo.toml` pins `tauri` 2.11.2 but has **no audio crate at all** (`lofty` 0.23.3 for tags, `m3u`, `axum` 0.8.9, `tokio` 1.52.3, `sqlx` 0.8.6) — playback stays in the webview, so it cannot be bit-perfect. That is exactly the split streamboat must not fall into (webview UI: yes; webview *player*: no). Its `sqlx`+`axum` choices are also independent evidence for the SQLite/local-HTTP sub-decisions in Recommendation 1. | https://github.com/martpie/museeks, `src-tauri/Cargo.toml` |
 
 ### 7. Packaging, per platform
 
@@ -626,7 +821,9 @@ Testing tooling per stack, since agents need a test to aim at:
   If streamboat reuses *code* from SONE or High Tide it inherits GPL-3.0. If it only reads them for
   API knowledge, it does not — but the safe and community-consistent choice is GPL-3.0.
 - **Toolkit licences**: Tauri MIT/Apache-2.0; React/Tailwind MIT; iced MIT; egui MIT/Apache;
-  gpui Apache-2.0; relm4/gtk4-rs MIT; cxx-qt MIT/Apache (but **Qt itself** is LGPL-3.0 or commercial —
+  gpui Apache-2.0; relm4/gtk4-rs **Apache-2.0 OR MIT** (correction — crates.io's licence field for
+  `relm4`, not plain MIT as an earlier draft said); cxx-qt MIT/Apache (but **Qt itself** is LGPL-3.0 or
+  commercial —
   LGPL requires dynamic linking or object-file relinking); Slint tri-licensed
   (`GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`) — the
   royalty-free arm requires visible attribution, the GPL arm does not and suits an open-source project;
@@ -634,20 +831,30 @@ Testing tooling per stack, since agents need a test to aim at:
   underlying GStreamer core LGPL-2.1 and some plugin sets GPL; souvlaki MIT; uniffi MPL-2.0;
   wasapi MIT.
 - **Flathub AI policy — the most consequential 2026 change for this project.** Sequence of facts:
-  - Press reporting from late May 2026 said Flathub would "ban nearly all apps and submissions made
-    with generative AI", effective 2026-05-29, covering application code, BaseApps, extensions, build
-    scripts, manifests, metadata, documentation and PR text, non-retroactive, with exceptions possible
-    for mature well-maintained projects.
-  - The primary artefact supports the tightening: commit `flathub-infra/documentation@992f57b`
-    ("Reword LLM policy to make it clear it's not allowed") in `docs/02-for-app-authors/02-requirements.md`
-    reads "Applications containing AI-generated or AI-assisted code, documentation, or other content
-    are not allowed" with "Exceptions may be granted for mature, well-maintained projects."
+  - **Unverified (fact-checked as "uncertain"):** press reporting from late May 2026 said Flathub would
+    "ban nearly all apps and submissions made with generative AI", effective 2026-05-29, covering
+    application code, BaseApps, extensions, build scripts, manifests, metadata, documentation and PR
+    text, non-retroactive, with exceptions possible for mature well-maintained projects. The source
+    domains (gamingonlinux.com, linuxiac.com, opensourceforu.com) were not reachable in this
+    environment either time this report was checked — the 2026-05-29 effective date and the
+    non-retroactivity claim rest on secondary reporting, not a primary document read directly.
+  - The primary artefact — directly read, high confidence — supports the tightening: commit
+    `flathub-infra/documentation@992f57b` ("Reword LLM policy to make it clear it's not allowed") in
+    `docs/02-for-app-authors/02-requirements.md` reads "Applications containing AI-generated or
+    AI-assisted code, documentation, or other content are not allowed" with "Exceptions may be granted
+    for mature, well-maintained projects." (Its exact commit date was not independently visible when
+    fact-checked; "May 2026" is inferred from the press timeline above, not confirmed from the commit
+    itself.)
   - **The live document, read 2026-09-07, is a disclosure regime rather than a ban.** Verbatim:
     "Submitters must disclose any AI-generated code, documentation, packaging, or other material they
     know or reasonably believe is included in the application or its Flathub packaging."
     "AI used only for research, discussion, or debugging does not need disclosure when no generated
     material is included in the application or its Flathub packaging."
     "Disclosed AI-generated material is evaluated at reviewer discretion."
+    "**Disclosure does not create a presumption of acceptance.**" (the sentence immediately following
+    the one above — an earlier draft of this report omitted it; it is the one that makes "Flathub
+    remains reachable" a conclusion the evidence supports, rather than an optimistic reading of the
+    reviewer-discretion sentence alone.)
     "Reviewers may reject a submission, including without further review, based on the extent or role
     of generated material or concerns about its review, quality, or maintainability."
     "AI tools or agents must not open or automate Flathub submission pull requests, or generate their
@@ -691,6 +898,39 @@ Whichever is chosen, the invariant that protects all three is: **`streamboat-cor
 any UI toolkit, any windowing library, or any desktop-only OS API.** Enforce it with a CI job that
 builds `streamboat-core` for `wasm32-unknown-unknown` or a bare `--no-default-features` profile.
 
+### 11. What this report does not settle, and where the answer lives instead
+
+Two brief items and several sibling-document cross-references were not fully worked through here:
+
+- **Comparanda the brief named but this report did not reach**: Symphonium and named Flutter music
+  apps (Harmony et al.) — no primary source was checked for either. The weakest evidence gap under this
+  report's own mobile-path claim (§10) is that it cites production Tauri *desktop* apps (Spacedrive,
+  AppFlowy, Clash Verge) but no example shipping on Android/iOS.
+- **Accessibility per candidate** has no row anywhere above, though
+  `engineering-baseline.md:1234,1253` tags both the screen-reader approach and the automated a11y gate
+  **[STACK]** — deferred to this document, unanswered. For the recommended stack: ARIA plus the
+  platform webview's accessibility tree (Tauri/Electron), versus AccessKit (egui/iced/Slint), AT-SPI
+  (GTK), or UIA/NSAccessibility (Qt/Avalonia). Custom window chrome (see §4.1) means keyboard focus
+  management and ARIA on the custom titlebar/player controls is real, uncalibrated work.
+- **i18n mechanism** is likewise tagged **[STACK]** at `engineering-baseline.md:1403` and unanswered
+  here: react-i18next/Fluent/ICU MessageFormat for the recommended stack vs. gettext for a GTK
+  alternative.
+- **Frontend framework within Recommendation 1** (React 19 vs. Svelte 5 vs. Solid) gets one open
+  question (see below) and one scoring-matrix row; it deserves its own short evaluation of corpus size,
+  bundle behaviour and state-management fit, since this report itself calls the choice irreversible
+  after ~85 components.
+- **The rest of `engineering-baseline.md`'s [STACK] checklist** (`:1390-1412`) that this document should
+  close in one place: logging library (SONE: `flexi_logger` 0.31 + `log`; alternative: `tracing`), path
+  resolution (`dirs` 5 vs. `directories`), crypto primitives (SONE: `aes-gcm` 0.10 + `zeroize` + `sha2`
+  + `keyring` 3 with the `sync-secret-service` feature — that feature choice matters specifically for
+  headless), fuzzing harness (`cargo-fuzz` for manifest/JSON parsers), monorepo tooling (cargo workspace
+  + pnpm workspace — SONE has both, via `pnpm-workspace.yaml`), and redaction enforcement (whether a
+  newtype can make a raw token unloggable, rather than relying on a reviewer to remember). Auto-update,
+  Flatpak dependency generators, and the audio test harness are answered above (§3, §4.1); a11y and
+  i18n are named just above as still open. When implementing, prefer this document's answer over
+  `engineering-baseline.md`'s placeholder for any item both discuss, and update that document's table
+  to point here rather than repeating the detail.
+
 ---
 
 ## Implications for streamboat
@@ -729,6 +969,18 @@ device-code login + token refresh + session/countryCode, browse home/album/artis
 search, play with quality cascade (HI_RES_LOSSLESS → HI_RES → LOSSLESS → HIGH), queue with
 shuffle/repeat, MPRIS, settings, and a `.deb`. **To parity with the official client: 9-18 months.**
 Calibration: SONE's `tidal_api.rs` alone is 7,200 lines and it reached v0.21.0 before claiming parity.
+
+This estimate is calibrated unevenly and should be read that way, not as one uniform number: the
+API-client and player crates are the sourced part (`streamboat-core`/`streamboat-player` a few
+thousand lines each, against `ref:tidalrs/src/` at 3,545 lines for an API client alone and SONE's
+`tidal_api.rs`+`audio.rs` at 10,509 lines combined); the **UI line count is not independently
+calibrated** (SONE's 47,609 lines of TS/TSX across 199 files and 85 components is the only data point,
+and it is a mature v0.21.0 app, not an MVP); and **the packaging tail is the item most often
+underestimated** — it explicitly excludes design iteration, icon/branding, Apple Developer Program
+enrollment and notarization setup, Windows code-signing setup, three separate release pipelines (no
+cross-compilation — see §4.1), the Flathub submission process itself, accessibility work, i18n
+infrastructure, and any macOS bit-perfect research spike. Re-derive this number per workstream before
+committing to it as a schedule.
 
 **Risks:**
 - WebKitGTK divergence — mitigate by testing on Linux first and keeping a workaround log (SONE's CSS
@@ -796,7 +1048,9 @@ exactly at the FFI boundary; desktop Flutter apps are recognisable as such.
 - **Go + Wails / Fyne** — Wails v3 is still beta; Fyne's Material look fights the "beautiful"
   requirement; Go's audio path is cgo either way. Go's genuine win — a clean daemon — is available in
   Rust too, and tidalt's own D-Bus server/client design is worth copying regardless of language.
-- **Xilem** — alpha, "plenty of missing features", major breaking changes expected. Not a candidate in 2026.
+- **Xilem** — alpha ("Lots of things need improvements," per its own README, not "plenty of missing
+  features" as an earlier draft of this report paraphrased it), major breaking changes expected.
+  Masonry's current release is 0.4.0 (2025-10-29), not an older 0.2.0. Not a candidate in 2026.
 
 ### Cross-cutting engineering decisions this research surfaces
 
@@ -807,8 +1061,14 @@ exactly at the FFI boundary; desktop Flutter apps are recognisable as such.
    mode (tidalt calls this out explicitly).
 3. **Make gapless and bit-perfect mutually exclusive by construction**, mirroring SONE's
    Normal-vs-DirectAlsa split, and say so in the UI.
-4. **Do not persist stream manifests across restarts.** High Tide caches them in memory per session;
-   TIDAL manifests expire (~1 hour) and segment URLs within ~24 hours.
+4. **Do not persist stream manifests across restarts.** High Tide caches them in memory per session,
+   resetting `self.manifest` per track with no TTL (`ref:high-tide/src/lib/player_object.py:140,457-491`).
+   **Correction (fact-checked, "uncertain"): the specific "~1 hour manifest / ~24 hour segment URL"
+   lifetimes in an earlier draft of this line are not supported by anything in the checkouts** — no
+   expiry constant appears in `ref:python-tidal/tidalapi/media.py` or in High Tide's player object.
+   State the rule without invented numbers: manifests and segment URLs are short-lived and must not be
+   persisted across restarts; measure actual TIDAL expiry against a live account before hard-coding any
+   duration.
 5. **Build a signal-path panel early.** It is SONE's most distinctive feature (probing GStreamer,
    `pactl` and `/proc/asound`, with a PRISTINE verdict), it is cheap once the engine is trait-shaped,
    and it is the feature that makes the bit-perfect claim credible.
@@ -845,6 +1105,37 @@ Only the owner can decide these:
    daemon's HTTP surface.
 8. **Offline caching for a logged-in subscriber**: in scope or out? It changes the storage design
    (encrypted-at-rest cache, eviction, manifest re-fetch) and the legal posture.
+9. **Is v1 all three desktop OSes at once, or Linux-first with Windows/macOS best-effort?** The closest
+   precedent (SONE) shipped Linux first and got a separate, self-described "may not be actively or
+   correctly maintained" Windows fork rather than day-one parity; the stack cannot cross-compile
+   (§4.1), so this is a staffing/sequencing decision, not a config flag.
+10. **Does `streamboat-daemon` serve a browser UI / network remote, or is remote control MPRIS-bridge
+    only?** This decides whether the React app may call `invoke` directly or must go through a
+    `Transport` interface picked at bootstrap from day one — retrofitting that boundary later is
+    expensive. Prior art on both sides: Music Assistant serves a web UI over its WebSocket API; SONE
+    already runs `axum` 0.7 in-process for its MCP/OBS servers, so adding a browser UI is a small delta;
+    tidalt deliberately has none and tells users to bridge MPRIS to a phone via KDE Connect/GSConnect
+    instead, since "MPRIS2 is a local D-Bus protocol — it does not have a network transport."
+11. **Native window decorations, or SONE's custom-chrome route?** See §4.1 — custom chrome is real,
+    recurring per-OS work (drag regions, resize handles, traffic lights, Snap Layouts), not a one-time
+    cost.
+12. **Enforce a CSP, or copy SONE's `security.csp: null`?** See §4.1 — a music client renders remote
+    artwork, lyrics and user playlist/track names in a webview holding `invoke`.
+13. **Windows WebView2 install mode** — `downloadBootstrapper` (0 MB, needs network) through
+    `fixedVersion` (+~180 MB, freezes the webview build). See §4.1.
+14. **Update channel per platform**, given the Tauri updater plugin covers only AppImage/`.app.tar.gz`/
+    MSI+NSIS — not deb/rpm (needs a hosted repo) and not Snap/Flatpak (store-managed). See §4.1.
+15. **Minimum OS versions**: macOS floor (Tauri bundler default 10.13; SONE's practical Linux floor is
+    whatever WebKitGTK its build container ships — Ubuntu 22.04 in SONE's case), Windows 10 April-2018-
+    update-or-later for a preinstalled WebView2. These constrain CI runner and container choices
+    immediately, not just release notes.
+16. **Music-video scope.** The recommended design plays video with `hls.js` inside the webview, which
+    cannot handle Widevine-protected streams — SONE ships no CDM of any kind (unlike tidal-hifi's
+    castLabs Electron build). So video is either limited to non-DRM HLS or dropped from scope; decide
+    which before designing the video player UI.
+17. **Hardware and account prerequisites.** A Mac and at least one USB DAC are needed to verify the
+    macOS and bit-perfect claims in this report, on top of the Apple Developer Program and Windows
+    signing costs `engineering-baseline.md` already prices.
 
 Unverified or low-confidence in this report — flagged so downstream agents do not treat them as fact:
 
@@ -864,7 +1155,29 @@ Unverified or low-confidence in this report — flagged so downstream agents do 
   from the fetched page; the changelog evidence (no exclusive mode, added resampling) is the stronger
   signal and is what this report relies on.
 - Effort estimates are calibrated against reference-project line counts, not against the owner's
-  actual velocity.
+  actual velocity, and the packaging tail is the most commonly underestimated part — see the effort
+  breakdown under Recommendation 1.
+- **Kotlin Multiplatform desktop audio library survey (§4.9)** — the claim that KMP has no mature
+  bit-perfect option and that gadulka/AstroPlayer/kmp-audio-recorder-player/KorAU are simple wrappers
+  could not be re-verified (docs.korge.org, the gadulka blog, and klibs.io were not reachable). The
+  underlying reasoning (JVM desktop audio goes through `javax.sound.sampled` unless you write native
+  code) is sound; the specific library list is not independently confirmed.
+- **shadcn/ui's Tailwind v4 / React 19 support and the `agmmnn/tauri-ui` scaffold (§Implications,
+  styling sub-decision)** — `ui.shadcn.com` was not reachable when fact-checked. SONE's own choice
+  *is* verified: it ships no component library at all, only Tailwind 4.1 + `lucide-react`.
+- **Music Assistant's client-package split date ("October 2024")** — not supported by anything readable
+  in the webserver README or the client repo page; drop the date or re-source it. The WebSocket-plus-
+  partial-JSON/REST API description itself is independently confirmed.
+- **GStreamer's macOS deployment page (PackageMaker-style bundle)** — `gstreamer.freedesktop.org` is
+  blocked in this environment; only the Windows deployment page (MSI/`msiexec`/Merge Modules, the
+  on-demand-plugin-loading warning) was directly read. Treat the macOS packaging claim as directionally
+  right, not primary-sourced.
+- **Tauri's "not all desktop plugins ported to mobile" and the macOS notarization mechanism (§4.1)** —
+  `v2.tauri.app` is blocked in this environment; these rest on the docs' own maturity language and
+  secondary summaries, not a page read directly in this pass. The updater plugin coverage table, the
+  WebView2 install-mode table, the macOS `bundle.macOS.frameworks` hook, and the mobile `crate-type`
+  requirement (all added to §4.1) **were** read directly from `raw.githubusercontent.com` mirrors of the
+  same docs and are higher-confidence.
 
 ---
 
@@ -889,38 +1202,77 @@ Unverified or low-confidence in this report — flagged so downstream agents do 
   `start_threshold` reset note (`:692`), the "gapless is normal-only" panic (`:156`); supports §2.1-2.3.
 - `ref:sone/src/App.css` — the WebKitGTK SVG `stroke-width` double-zoom workaround; supports the
   webview-divergence risk.
-- `ref:sone/src/components/`, `ref:sone/src/atoms/` — 85 components, 13 atom modules; supports the
-  effort calibration and the state-management sub-decision.
+- `ref:sone/src/components/`, `ref:sone/src/atoms/` — 85 components, 12 atom modules (13 files, one a
+  colocated test: `ui.test.ts`); supports the effort calibration and the state-management sub-decision.
+- `ref:sone/src-tauri/capabilities/default.json` — the capabilities ACL (`core:window:allow-*`,
+  `core:webview:allow-create-webview-window`, `opener:default`, `global-shortcut:allow-register`,
+  `deep-link:default`); supports the §4.1 capabilities/CSP note.
+- `ref:sone/.github/workflows/` (only `flathub-update.yml` present) and
+  `ref:sone/build-scripts/build/{Dockerfile.deb,Dockerfile.rpm,PKGBUILD}` — no cross-platform build CI,
+  per-distro Docker builds instead (`Dockerfile.deb` = `FROM ubuntu:22.04`); supports the §4.1
+  cross-compilation/CI note.
+- `ref:sone/.github/workflows/flathub-update.yml:95-139`, `ref:sone/pnpm-workspace.yaml` —
+  `flatpak-cargo-generator.py` + `flatpak-node-generator pnpm` regenerating `cargo-sources.json` and
+  `pnpm-sources.json` per release; supports the §4.1 Flathub-packaging note.
 - `ref:sone/snap/snapcraft.yaml` — `base: core24`, `confinement: strict`, plugs `audio-playback` and
   `alsa`, WebKit bind-path override; supports the Snap packaging notes.
-- `ref:sone-windows/src-tauri/Cargo.toml` and `ref:sone-windows/src-tauri/src/audio.rs:1236-1240` —
-  `souvlaki = "0.8.3"` on Windows, `wasapi2sink` with `exclusive` property; supports the Windows
-  bit-perfect claim.
+- `ref:sone-windows/src-tauri/Cargo.toml:3` (version `0.16.0`) and
+  `ref:sone-windows/src-tauri/src/audio.rs:1236-1244` — `souvlaki = "0.8.3"` on Windows, `wasapi2sink`
+  with `exclusive` property; supports the Windows bit-perfect claim and (against
+  `ref:sone/src-tauri/Cargo.toml:3` at `0.21.0`) the "fork is behind upstream, not a thin per-OS delta"
+  correction.
 - `ref:sone-windows/README.md` — "Ported with help from AI agents", "may not be actively or correctly
   maintained"; supports the cross-platform-fork risk and the agent-friendliness argument.
-- `ref:high-tide/src/lib/player_object.py:90-96,187-225` — `playbin3` with `about-to-finish` and a
-  `playbin` fallback, sink map (`autoaudiosink`/`alsasink device=`/`pipewiresink`),
-  `Gst.parse_bin_from_description`; supports §2.2 and the GTK-stack description.
+- `ref:strawberry/src/engine/gststartup.cpp:59-69` — demotes `wasapi2sink` to `GST_RANK_SECONDARY` and
+  ranks `directsoundsink` `GST_RANK_PRIMARY` on Windows, citing issue #1227; supports the counter-
+  evidence to the `wasapi2sink`-exclusive-mode recommendation in §2.2/§2.3/§4.1/§4.11.
+- `ref:high-tide/src/lib/player_object.py:90-96,184-226` — `playbin3` with `about-to-finish` and a
+  `playbin` fallback, sink map (`autoaudiosink`/`pulsesink`/`alsasink device=`/`jackaudiosink`/
+  `pipewiresink`/`osssink`), `Gst.parse_bin_from_description`, `PIPEWIRE` forcing
+  `gapless_enabled=False`; supports §2.2 and the GTK-stack description.
 - `ref:high-tide/build-aux/io.github.nokse22.high-tide.json` — `org.gnome.Platform` 50,
   `finish-args` with `--socket=pulseaudio` and `--filesystem=xdg-run/pipewire-0:ro` (no `--device=all`);
   supports the Flatpak/bit-perfect sandbox point.
 - `ref:high-tide/meson.build`, `ref:high-tide/pyproject.toml`, `ref:high-tide/data/ui/*.blp` —
   meson + ruff `py311` + 22 Blueprint files; supports the Python/GTK stack description.
-- `ref:tidalt/README.md` and `ref:tidalt/docs/client-server.md` — three run modes (TUI/daemon/client),
+- `ref:tidalt/README.md` and `ref:tidalt/docs/client-server.md` — three run modes (TUI/daemon/client;
+  `tidalt play <url>` starts a TUI when no server is running rather than merely forwarding-and-exiting),
   D-Bus name `org.mpris.MediaPlayer2.tidalt`, "ALSA `hw:` devices cannot be shared between processes",
   `tidalt setup --daemon` writing `~/.config/systemd/user/tidalt.service`, and the README's statement
   that the project was written entirely with LLM coding assistants; supports §3 and the
-  agent-friendliness argument.
-- `ref:tidalt/go.mod`, `ref:tidalt/internal/player/alsa.c` — bubbletea 1.3.10, lipgloss 1.1.0,
-  godbus/dbus v5, docker/secrets-engine, age; 111-line C ALSA writer; supports the Go evaluation.
+  agent-friendliness argument. **Does not** document the ALSA format-preference order — see the
+  `alsa.c`/`CLAUDE.md`/`architecture.md` citation below.
+- `ref:tidalt/internal/player/alsa.c:28-39` and `ref:tidalt/CLAUDE.md:27-30` — the authoritative ALSA
+  format-preference order (16-bit: `S32_LE > S16_LE > S24_3LE > S24_LE`; 24-bit:
+  `S24_3LE > S24_LE > S32_LE`); `ref:tidalt/docs/architecture.md:43` gives a **different, stale** 16-bit
+  order and must not be cited as the source of truth. `ref:tidalt/docs/dac-compatibility.md` names the
+  Hidizs S9 Pro Plus (CS43198) as the reason for preferring S32_LE.
+- `ref:tidalt/docs/docker.md` — the headless-container recipe (`--device /dev/snd`, `--group-add`
+  audio, config/data volumes, PipeWire D-Bus socket forwarding); supports the §3 headless-container
+  note.
+- `ref:tidalt/go.mod`, `ref:tidalt/internal/player/{alsa.c,alsa.h,avcodec.c,avcodec.h}` —
+  bubbletea 1.3.10, lipgloss 1.1.0, godbus/dbus v5, `docker/secrets-engine`, `filippo.io/age` v1.3.1
+  (an **indirect** dependency, not direct); 357 lines of cgo C/headers total (`alsa.c`/`.h` 151 lines
+  for ALSA output, `avcodec.c`/`.h` 206 lines for FFmpeg decode — not just a "111-line `alsa.c`");
+  supports the Go evaluation.
+- `ref:tidalt/internal/player/alsa_fallback_test.go` — the one reference-project audio test that exists
+  (68 lines, covers the `plughw:` fallback); supports the §3 audio-test-harness note.
 - `ref:tidal-hifi/package.json` — `"electron": "github:castlabs/electron-releases#v43.0.0+wvcus"`,
   MIT, electron-builder targets, mpris-service; supports the Electron evaluation.
-- `ref:strawberry/README.md`, `ref:strawberry/CMakeLists.txt:230-242` — C++ with Qt, `QT_MIN_VERSION`
-  6.8.0/6.4.0; supports the Qt evaluation.
+- `ref:strawberry/CMakeLists.txt:228-232,242` — C++ with Qt, `QT_MIN_VERSION` 6.8.0 on
+  `APPLE OR WIN32`, else 6.4.0 (corrects an earlier `:230-242` line citation).
+- `ref:strawberry/src/` (recount, 2026-09-07) — ~166,122 lines of C++/headers (491 `.cpp` = 121,981
+  lines; 568 `.h` = 44,141 lines; `src/core` alone 21,510 lines) across 40 subdirectories — corrects an
+  earlier "14,708 lines" count, which came from an `xargs wc -l` invocation whose batching silently
+  truncated to the last batch's "total" line; use `find ... -print0 | xargs -0 cat | wc -l` instead of
+  piping a multi-batch `wc -l` through `tail -1` when recounting large trees.
+- `ref:strawberry/src/engine/gststartup.cpp:59-69` — see above.
 - `ref:python-tidal/tidalapi/` — 6,046 lines, LGPL-3.0-or-later, codec list including EAC3/AC4;
   supports the codec/licence notes.
 - `ref:tidalrs/src/` — 3,545 lines of Rust, MIT, reqwest 0.12 + rustls + stream-download;
   supports the "a Rust TIDAL client core is a few thousand lines" calibration.
+- `ref:high-tide/src/lib/player_object.py:140,457-491` — in-memory `self.manifest`, reset per track with
+  no TTL; supports the corrected (numberless) manifest-lifetime note in the cross-cutting decisions.
 
 ### Web sources
 
@@ -942,11 +1294,38 @@ Unverified or low-confidence in this report — flagged so downstream agents do 
 - https://crates.io/crates/tauri-plugin-native-audio , https://github.com/uvarov-frontend/tauri-plugin-native-audio —
   1.0.5 (2026-03-02), MIT/Apache, Android Media3 ExoPlayer + iOS AVPlayer, Android 8.0+/iOS 14.0+,
   ~1,544 downloads; supports the "mobile audio is unproven in Tauri" claim.
+- https://raw.githubusercontent.com/tauri-apps/tauri-docs/v2/src/content/docs/plugin/updater.mdx —
+  updater plugin platform coverage (AppImage-only on Linux, `.app.tar.gz` macOS, MSI/NSIS Windows; no
+  deb/rpm/Snap/Flatpak); supports the §4.1 auto-update note.
+- https://raw.githubusercontent.com/tauri-apps/tauri-docs/v2/src/content/docs/distribute/windows-installer.mdx
+  (lines ~187-323) — `webviewInstallMode` options and size deltas (`downloadBootstrapper` +0 MB,
+  `embedBootstrapper` +~1.8 MB, `offlineInstaller` +~127 MB, `fixedVersion` +~180 MB, `skip` +0 MB);
+  supports the §4.1 WebView2 install-mode note.
+- https://raw.githubusercontent.com/tauri-apps/tauri-docs/v2/src/content/docs/distribute/macos-application-bundle.mdx
+  (lines ~120-180) — `bundle.macOS.frameworks` (system frameworks, custom `.framework`/`.dylib`, example
+  lists `"CoreAudio"`), `bundle.macOS.minimumSystemVersion` default 10.13, `bundle.macOS.entitlements`;
+  supports the §4.1 macOS packaging note.
+- https://raw.githubusercontent.com/tauri-apps/tauri-docs/v2/src/content/docs/develop/calling-rust.mdx
+  (lines ~194-207, ~502-547) — IPC return values are JSON-serialized by default and this "can slow down
+  your application" for large data; `tauri::ipc::Response::new(bytes)` for raw payloads; supports the
+  §4.1 IPC data-path note.
+- https://raw.githubusercontent.com/tauri-apps/tauri-docs/v2/src/content/docs/start/migrate/from-tauri-1.mdx
+  (lines ~21-44) — the `[lib] crate-type = ["staticlib","cdylib","rlib"]` + `tauri::mobile_entry_point`
+  shape required for Android/iOS builds; supports the §4.1/§10 mobile-crate-shape note.
+- https://github.com/martpie/museeks , https://raw.githubusercontent.com/martpie/museeks/master/src-tauri/Cargo.toml —
+  **corrects an earlier draft's classification of Museeks as Electron.** Museeks is Tauri 2 + Rust +
+  React (ported from Electron; author announcement at
+  https://news.ycombinator.com/item?id=39486181); its `Cargo.toml` pins `tauri` 2.11.2 with no audio
+  crate — playback stays in the webview. Also source for "Tauri does not support cross-platform
+  binaries" in the README. Supports §6 and the §4.1 cross-compilation note.
 - https://crates.io/api/v1/crates/cpal — cpal 0.18.2, 2026-08-16, Apache-2.0, MSRV 1.85.
 - https://raw.githubusercontent.com/RustAudio/cpal/master/CHANGELOG.md — no exclusive mode anywhere;
-  0.17.2 "Enable as-necessary resampling in the WASAPI server process"; 0.18.0 "Output streams no longer
-  reject formats that the built-in resampler can convert"; 0.17.0 `device_by_id()` accepts `hw:0,0`;
-  supports the cpal disqualification for bit-perfect Windows.
+  **0.17.2 (marked [YANKED])** "Enable as-necessary resampling in the WASAPI server process"
+  (changelog line ~104); **0.18.2** (not 0.18.0) "Output streams no longer reject formats that the
+  built-in resampler can convert" (line ~98, inside the `## [0.18.2] - 2026-08-16` section); **0.18.0**
+  (2026-06-06, line ~137) `device_by_id()` accepts ALSA shorthand `hw:0,0`/`plughw:foo`; 0.17.0 only
+  introduced `device_by_id()` itself, for generic stable device IDs. Supports the cpal disqualification
+  for bit-perfect Windows, with the version attributions corrected against an earlier draft.
 - https://github.com/RustAudio/cpal/issues/106 , https://github.com/RustAudio/cpal/issues/459 —
   exclusive-mode requests from 2016 and 2020; #459 closed without a documented implementation.
 - https://crates.io/api/v1/crates/wasapi — wasapi 0.24.0, 2026-08-12, MIT; the crate you need for
@@ -979,8 +1358,10 @@ Unverified or low-confidence in this report — flagged so downstream agents do 
   with frequent breaking changes.
 - https://crates.io/crates/relm4 , https://relm4.org/ — 0.11.0, 2026-04-08 (0.10.1 2025-12-29,
   0.10.0 2025-09-01).
-- https://github.com/linebender/xilem — Xilem/Masonry alpha as of 2026; "plenty of missing features",
-  major breaking changes expected.
+- https://github.com/linebender/xilem — Xilem/Masonry alpha as of 2026; README says "Lots of things
+  need improvements"; major breaking changes expected.
+- https://crates.io/api/v1/crates/masonry — masonry 0.4.0, 2025-10-29 (0.3.0 was 2025-05-10, 0.2.0 was
+  2024-05-07 — over two years stale); corrects an earlier draft's "v0.2.0 is the recent release" claim.
 - https://en.wikipedia.org/wiki/GTK , https://docs.gtk.org/gtk4/osx.html , https://docs.gtk.org/gtk4/windows.html —
   GTK 4.22.4 stable 2026-04-30; "partial support" for macOS and Windows; X11/Broadway backends deprecated.
 - https://gtk-rs.org/gtk4-rs/stable/latest/book/libadwaita.html and the GNOME Discourse thread
@@ -1003,8 +1384,10 @@ Unverified or low-confidence in this report — flagged so downstream agents do 
   3× Android performance, native dispatcher, page-based navigation; draws every control itself.
 - https://github.com/KDAB/cxx-qt , https://crates.io/api/v1/crates/cxx-qt — 0.10.0, 2026-08-24,
   MIT/Apache; safe Rust↔Qt interop.
-- https://v3.wails.io/blog/wails-v3-beta/ , https://github.com/wailsapp/wails/issues/5844 —
-  Wails v3 is beta (`v3.0.0-beta.9`), desktop API stable, GA tracker open; v2 remains the stable release.
+- https://github.com/wailsapp/wails/releases — **corrects an earlier draft's `v3.0.0-beta.9` citation**:
+  the latest prerelease as of 2026-09-07 is `v3.0.0-beta.17` (2026-09-06); every beta since at least
+  beta.8 carries "the API is stable, but you may still encounter issues before the final 3.0 release";
+  v2 remains the stable release. Re-check this URL rather than trusting a cached beta number.
 - https://fyne.io/blog/2026/07/13/fyne-v2.8-released/ — Fyne 2.8, 2026-07-13, 1,000+ commits,
   Wayland auto-selected on Linux, Go 1.22 minimum.
 - https://github.com/dweymouth/supersonic — Go + Fyne 2.8, mpv audio, v0.22.0, gapless + ReplayGain +
@@ -1020,18 +1403,25 @@ Unverified or low-confidence in this report — flagged so downstream agents do 
   code, documentation, or other content are not allowed"; "Exceptions may be granted for mature,
   well-maintained projects."
 - https://raw.githubusercontent.com/flathub-infra/documentation/main/docs/02-for-app-authors/02-requirements.md
-  (read 2026-09-07) — the current disclosure-based wording quoted verbatim in §9, plus the trademark rule
-  ("A Firefox fork cannot mention `Firefox` in its name or use any of the official icon, logo or artwork")
-  and the redistribution/licence requirements.
+  (read 2026-09-07, section "### Generative AI policy" at line 241) — the current disclosure-based
+  wording quoted verbatim in §9, **including "Disclosure does not create a presumption of acceptance,"
+  omitted from an earlier draft of this report**, plus the trademark rule ("A Firefox fork cannot
+  mention `Firefox` in its name or use any of the official icon, logo or artwork," lines ~727-728) and
+  the redistribution/licence requirements.
 - https://www.gamingonlinux.com/2026/05/flathub-moves-to-ban-nearly-all-apps-and-submissions-made-with-generative-ai/ ,
   https://linuxiac.com/flathub-now-rejects-ai-assisted-apps-and-submissions/ ,
-  https://www.opensourceforu.com/2026/06/flathub-bans-ai-submissions-across-flatpak-repos/ (fetches blocked;
-  read via search summaries) — effective 2026-05-29, scope covers manifests/metadata/build scripts/PR text,
-  non-retroactive; supports the timeline in §9.
+  https://www.opensourceforu.com/2026/06/flathub-bans-ai-submissions-across-flatpak-repos/ — **fact-checked
+  as "uncertain": these domains were not reachable in this environment either time this report was
+  checked.** The 2026-05-29 effective date and non-retroactivity claim rest on secondary reporting
+  (originally read via search summaries), not a primary document; supports the timeline in §9 at
+  reduced confidence.
 - https://developer.apple.com/app-store/review/guidelines/ — guideline 5.2.2 verbatim, 5.2.1, 4.2, 2.5.6;
   supports the iOS App Store gate.
-- https://github.com/music-assistant/server , https://deepwiki.com/music-assistant/server/9-api-and-interfaces —
-  command-based API over WebSocket on port 8095 with a partial JSON/REST projection; supports
+- https://github.com/music-assistant/server , https://deepwiki.com/music-assistant/server/9-api-and-interfaces ,
+  https://raw.githubusercontent.com/music-assistant/server/dev/music_assistant/controllers/webserver/README.md —
+  command-based API over WebSocket on port 8095 (`/ws`, auth then routed commands) with a partial
+  JSON-RPC-over-HTTP projection at `/api`; a separate `music-assistant/client` package exists, but **its
+  "split out in October 2024" date is unverified — neither README states an origin date**; supports
   architecture Shape 3.
 - https://raw.githubusercontent.com/Sinono3/souvlaki/master/README.md , https://crates.io/api/v1/crates/souvlaki —
   0.8.3, 2025-06-24, MIT; MPRIS on Linux/BSD, native frameworks on macOS/iOS, Windows media controls;

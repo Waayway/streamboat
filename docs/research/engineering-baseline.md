@@ -39,12 +39,15 @@ Date of research: 2026-09-07.
   `lyrics_live_tests` as `EXCLUDE_FROM_ALL`, explicitly documented as "a canary for detecting when
   a provider's endpoint, HTML structure, or response schema breaks"
   (ref:strawberry/tests/src/lyricsproviders_live_test.cpp, ref:strawberry/tests/CMakeLists.txt:126).
-- **Encrypt tokens at rest with an OS-keyring-held key, and always keep a file fallback.** Sone
+- **Encrypt tokens at rest with an OS-keyring-held key, and keep a file fallback.** Sone
   uses AES-256-GCM with a 32-byte key from the OS keyring (service `sone`, entry `master-key`),
   falling back to `<config>/sone/sone.key` at mode 0600, with a 17-byte header
   `"SONE" + version + 12-byte nonce` and transparent passthrough of legacy plaintext
-  (ref:sone/src-tauri/src/crypto.rs). High Tide instead stores the token JSON directly in
-  libsecret under schema `io.github.nokse22.high-tide` (ref:high-tide/src/lib/secret_storage.py).
+  (ref:sone/src-tauri/src/crypto.rs:79-148). Precisely: the 0600 file is written **once, at
+  first-run key generation**, even when the keyring store also succeeds — not on every launch.
+  On a later launch where the keyring read succeeds, sone writes no file. High Tide instead
+  stores the token JSON directly in libsecret under schema `io.github.nokse22.high-tide`
+  (ref:high-tide/src/lib/secret_storage.py).
 - **Under Flatpak you cannot unlock the login keyring.** High Tide guards its
   `Secret.Service`/`Collection.unlock_sync()` call with `Xdp.Portal.running_under_flatpak()`
   because "this is also only possible outside of a flatpak"
@@ -79,22 +82,34 @@ Date of research: 2026-09-07.
   GPL-3.0, tidal-hifi MIT is the exception because it is a web wrapper). Libraries are
   permissive/weak-copyleft: python-tidal LGPL-3.0-or-later, mopidy-tidal Apache-2.0, tidalrs MIT,
   libopenTIDAL MIT, tidalt Apache-2.0, all three TIDAL SDKs Apache-2.0.
-- **GStreamer pushes you to GPL in practice.** Core and base plugins are LGPL-2.1, but
-  gst-plugins-ugly and some bad plugins are GPL, and gst-libav depends on how FFmpeg was built;
-  GStreamer's own guidance is that with GPL-linked plugins "GStreamer is for all practical
-  reasons under the GPL itself"
-  (https://gstreamer.freedesktop.org/documentation/frequently-asked-questions/licensing.html).
-  fdk-aac is GPL-incompatible and must not be linked into a GPL binary
-  (https://fedoraproject.org/wiki/Licensing/FDK-AAC).
+- **GStreamer pushes you to GPL in practice.** Core and base plugins are LGPL-2.1, and
+  patent-encumbered plugins live in `gst-plugins-ugly`, per GStreamer's own licensing FAQ
+  (https://raw.githubusercontent.com/GStreamer/gst-docs/master/markdown/frequently-asked-questions/licensing.md).
+  The stronger claim — "when using GPL linked plugins, GStreamer is for all practical reasons
+  under the GPL itself" — is *not* on that FAQ page (verified by downloading and grepping it); it
+  is from `gst-plugins-base`'s `LICENSE_readme`. The FFmpeg build-mode caveat ("if you are
+  distributing an application which has a non-GPL compatible license … you have to make sure not
+  to build FFmpeg with GPL code enabled") is from `GStreamer/gst-libav`'s `README.md`, a different
+  project again. fdk-aac is GPL-incompatible and must not be linked into a GPL binary
+  (Fedora Licensing/FDK-AAC wiki content, corroborated by tookmund.com "AAC and Debian").
 - **macOS distribution costs $99/year and cannot be skipped** for a usable download: Developer ID
   + notarization are covered by Apple Developer Program membership, Homebrew applies quarantine
-  and audits casks against Gatekeeper, and Homebrew's notability floor for a self-submitted cask
-  is 90 forks / 90 watchers / 225 stars, with repos under 30 days old normally ineligible
+  and audits casks against Gatekeeper, and Homebrew's notability floor is **disjunctive, not
+  cumulative**: 30 forks *or* 30 watchers *or* 75 stars normally, 90 forks *or* 90 watchers *or*
+  225 stars for a self-submission by the repo owner (any one of the three clears the bar), with
+  repos under 30 days old normally ineligible
   (https://github.com/Homebrew/brew/blob/main/docs/Package-Acceptance-Policy.md,
   https://github.com/Homebrew/brew/blob/main/docs/Homebrew-Security-and-Supply-Chain.md).
-- **Windows signing is now cheap if you qualify**: Azure Trusted Signing (renamed Azure Artifact
-  Signing) is $9.99/month Basic, open to individuals in the USA and Canada and organisations in
-  the EU/UK; an EV certificate is roughly $280–500/year instead.
+- **Windows signing is now cheap if you qualify, but re-verify the details before relying on
+  them.** Azure Trusted Signing (renamed Azure Artifact Signing) is reported at $9.99/month Basic
+  (up to 5,000 signatures, one certificate profile) and $99.99/month Premium (up to 100,000
+  signatures, 10 profiles); an EV certificate is roughly $280–500/year instead. **Unverified**:
+  azure.microsoft.com and learn.microsoft.com are blocked from this environment, so these figures
+  come from secondary sources (devclass 2026-01-14, melatonin.dev, Microsoft Community Hub), not
+  the primary pricing page. Secondary sources describe eligibility as "verified US, Canadian, EU
+  and UK businesses and self-employed individuals" — i.e. individual/self-employed eligibility is
+  *not* geographically narrower than organisation eligibility, contrary to an earlier draft of
+  this document. Re-read the Microsoft page directly before publishing a cost figure.
 - **A GStreamer app on macOS needs the `com.apple.security.cs.allow-jit` entitlement** because
   liborc JIT-compiles SIMD at runtime under Hardened Runtime
   (ref:strawberry/dist/macos/strawberry.entitlements).
@@ -123,7 +138,7 @@ Date of research: 2026-09-07.
 | Project | License | Tests in CI | HTTP test double | Credentialed CI | Lint/format gate | Packaging targets |
 |---|---|---|---|---|---|---|
 | python-tidal | LGPL-3.0-or-later | none (lint only) | none — live account | n/a (local only) | isort + black + docformatter, mypy via tox | PyPI |
-| mopidy-tidal | Apache-2.0 | yes, matrix 3.12/3.13/3.14 × mopidy 3.3/3.4 | `unittest.mock` over `tidalapi`; `pytest-httpserver` + `trustme` for the caching proxy | no | ruff check + ruff format | PyPI |
+| mopidy-tidal | Apache-2.0 | yes — unit tests on Python 3.12/3.13/3.14 (`test.yml`); separately, a weekly + push/PR integration matrix of Python 3.12/3.13/3.14 × mopidy 3.3/3.4 (`integration.yml`) | `unittest.mock` over `tidalapi`; `pytest-httpserver` + `trustme` for the caching proxy; `pexpect`-driven real-Mopidy integration tests | no | ruff check + ruff format | PyPI |
 | sone | GPL-3.0-only | not wired to GitHub Actions (only flathub-update) | inline `serde_json::json!` fixtures for parsers; jsdom + Testing Library for UI | no | eslint, prettier, clippy `-D warnings`, cargo fmt, knip | Flathub, AUR (2 pkgs), Cloudsmith deb/rpm, Snap |
 | sone-windows | GPL-3.0-only | not inspected in depth | — | — | same toolchain as sone | Windows |
 | high-tide | GPL-3.0 | no tests | none | no | flake8/ruff config present; CI runs codespell + flatpak build | Flathub |
@@ -219,11 +234,13 @@ Retry-After then success", and "5xx, 5xx, success" backoff sequences determinist
 #### 2.4 Layer 3 — contract tests against the published spec
 
 TIDAL publishes an OpenAPI document at
-`https://tidal-music.github.io/tidal-api-reference/tidal-api-oas.json`, and both official SDKs run
-a **daily** cron that `cmp`s the vendored copy against the freshly downloaded one, prints a unified
-diff into the job log, and triggers a client-regeneration workflow that opens or updates a PR
-(ref:tidal-sdk-ios/.github/workflows/check-tidalapi-spec.yml, and the analogous
-ref:tidal-sdk-android/.github/workflows/check-tidalapi-spec.yml).
+`https://tidal-music.github.io/tidal-api-reference/tidal-api-oas.json`, and **all three official
+SDKs (web, iOS, Android)** run a **daily** cron that `cmp`s the vendored copy against the freshly
+downloaded one, prints a unified diff into the job log, and triggers a client-regeneration
+workflow that opens or updates a PR (ref:tidal-sdk-ios/.github/workflows/check-tidalapi-spec.yml,
+ref:tidal-sdk-android/.github/workflows/check-tidalapi-spec.yml, and
+ref:tidal-sdk-web/.github/workflows/check-tidalapi-spec.yml — all three, not two, run the
+identical mechanism).
 
 For streamboat:
 
@@ -277,6 +294,13 @@ against a config with no tokens and asserts that `mpc list artist` surfaces
 `.* visit https://link.tidal.com/.*` (ref:mopidy-tidal/integration_tests/test_login_hack.py). That
 single test would catch a device-flow endpoint change with no subscription at all.
 
+**This is the strongest working precedent for the credential-free canary in the whole reference
+set, and it already runs on a schedule.** `ref:mopidy-tidal/.github/workflows/integration.yml`
+runs this exact pexpect suite on a 6-leg Python × mopidy matrix, `fail-fast: false`, on
+`cron: "0 0 * * 0"` (weekly) **plus** on every push and PR — with no secrets, no live account, and
+no coverage upload. Copy the shape directly: a scheduled, fork-safe, unauthenticated workflow that
+asserts the device-flow surface still looks like a device-flow surface.
+
 #### 2.6 Fuzzing manifest and response parsing
 
 No reference project fuzzes anything (grep for `fuzz` across the checkouts hits only tidalt UI
@@ -295,6 +319,16 @@ Targets, in priority order:
 4. The DASH segment-URL builder — a `$Number$` substitution that produces a URL pointing off-host
    must be rejected, not fetched. Pin the expected CDN host set and assert every derived URL is
    within it.
+5. **The `tidal://` URI handler** — this is the one input that arrives unsolicited from the open
+   internet: registering `x-scheme-handler/tidal` means any web page the user visits can invoke
+   `streamboat play <arbitrary string>` as a process argument, pre-authentication. Fuzz the parser
+   against an allowlist of shapes (`tidal://track/<digits>`, `album`, `playlist/<uuid>`, `artist`,
+   `mix`) with hard rejection of everything else — path traversal, absurd lengths, embedded
+   newlines/NULs, non-ASCII homoglyphs, anything that would be interpolated into a shell, a
+   filesystem path, or an outbound URL. Never pass the raw argument to a subprocess or to the API
+   host without re-composing the request from the parsed id. tidalt's
+   `Exec=tidalt play %u` (ref:tidalt/cmd/tidalt/tidalt.desktop) plus its D-Bus-forwarding
+   `play.go` is the exact code shape to threat-model.
 
 Corpus: seed from the committed fixtures (the tidal-sdk-web test file alone gives DASH-FLAC,
 DASH-AAC, BTS-MP3 and EMU-HLS manifests to seed with). Run the fuzzer in CI for a bounded time
@@ -371,12 +405,40 @@ player with album art are a maintenance sink.
 
 #### 2.9 The non-negotiable CI rule
 
-**The default test job must pass on a fork PR with no secrets, with the network disabled.** Enforce
-it: run the offline suite with outbound network blocked (a proxy env var pointing at a dead port,
-or a sandbox), so a test that accidentally reaches the internet fails loudly instead of flaking.
-Everything credentialed goes in a separate workflow gated on
+**The default test job must pass on a fork PR with no secrets, with the network disabled.**
+An environment-level block (a proxy env var pointing at a dead port) is not by itself a reliable
+mechanism: many HTTP clients ignore unset/dead proxy vars, and it does nothing on the Windows and
+macOS legs of the §7.1 matrix. Enforce it in the code instead: the offline test build should
+construct the client with a transport that panics/fails on any real connection attempt — the same
+seam already recommended for stubbed transports in §2.3 (tidalt's `roundTripFunc`,
+tidal-sdk-ios's `JsonEncodedResponseURLProtocol`), so an accidental network call is a deterministic
+test failure on every OS. Layer an environment-level block on top only on Linux, where `unshare -n`
+(or a network-less container) actually isolates the process, as a second net. Everything
+credentialed goes in a separate workflow gated on
 `github.event.pull_request.head.repo.full_name == github.repository`, the pattern Strawberry uses
 for its signing/notarizing steps (ref:strawberry/.github/workflows/build.yaml:1178, 1253).
+
+#### 2.10 Coverage strategy
+
+No reference project names a coverage target except mopidy-tidal, which states plainly: "Mopidy-Tidal
+has a test suite which currently has 100% coverage. Ideally contributions would come with tests to
+keep this coverage up" (ref:mopidy-tidal/DEVELOPMENT.md), and its CI uploads to Codecov on the
+Python 3.13 leg of `test.yml`. For streamboat: measure coverage on every PR, publish the number, and
+gate on "no decrease" for the `core` parsing/auth crate only, where the parser/transport split of
+§2.1 makes 90%+ trivially reachable — explicitly exclude UI and platform-audio code from the gate so
+the number cannot be gamed by untestable surfaces.
+
+#### 2.11 Fixture and golden-file size policy
+
+Store real API captures under `tests/fixtures/api/`, golden audio under `tests/fixtures/audio/`,
+and committed fuzz crashers as regression fixtures — but state a repo-size policy before the first
+one lands, because it grows without bound otherwise: a byte cap per fixture (audio fixtures <200 KB
+per §2.7; extend the cap to JSON captures, gzip large ones), generate audio goldens from a
+tone/sweep at test time where determinism allows and commit only the SHA-256 rather than the PCM,
+keep fuzz crashers minimised before committing, and decide explicitly for or against Git LFS now
+because switching later rewrites history. No reference project uses LFS, and Strawberry's 12-format
+audio corpus (ref:strawberry/tests/data/audio/) is small enough to live in plain git — treat that as
+the working default, but record it as a decision.
 
 ---
 
@@ -414,13 +476,21 @@ for its signing/notarizing steps (ref:strawberry/.github/workflows/build.yaml:11
   Prefer the portal: it works with no extra static permission and degrades to "generate a random
   key" when no keyring exists.
 - **Windows — Credential Manager.** `CRED_MAX_CREDENTIAL_BLOB_SIZE` is `5*512` = 2560 bytes on
-  Windows 7 and later (wincred.h;
-  https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentiala). Keyring
-  wrappers have historically produced obscure failures past that
-  (https://github.com/jaraco/keyring/issues/355). A JWT access token plus a refresh token plus
-  metadata can approach that ceiling, so **store only the refresh token (plus a short type/expiry
-  marker) in the credential blob** and keep everything else in the encrypted config file. Verify
-  the actual TIDAL token sizes before finalising.
+  Windows 7 and later. `learn.microsoft.com` is blocked from this environment, so this is verified
+  against a mingw-w64 copy of `wincred.h` and corroborated by AdysTech/CredentialManager issue #65
+  ("The Windows 10 SDK's wincred.h sets CRED_MAX_CREDENTIAL_BLOB_SIZE to 5*512") rather than read
+  from the primary Microsoft page. Keyring wrappers have historically produced obscure failures
+  past that limit (https://github.com/jaraco/keyring/issues/355); whether `CRED_TYPE_GENERIC` is
+  *further* limited to 512 bytes remains disputed and unverified — measure it empirically.
+  **Sidestep the whole question**: make the keyring hold a fixed-size *key*, not the token payload
+  — exactly what sone already does on Linux (`keyring::Entry::new("sone", "master-key")` holds 32
+  bytes; the tokens live in the AES-256-GCM file, ref:sone/src-tauri/src/crypto.rs). A 32-byte key
+  can never approach 2560 bytes on any OS, which makes one design work uniformly on
+  Windows/macOS/Linux and removes the need to measure token sizes at all. Where no credential
+  store is usable at all on Windows, DPAPI (`CryptProtectData`/`CryptUnprotectData` with
+  `CRYPTPROTECT_UI_FORBIDDEN`) wraps the key file with the user's login credentials and has no
+  size limit — name it alongside the age-encrypted fallback cited from tidalt below as the
+  idiomatic Windows equivalent.
 - **macOS — Keychain.** Generic password items comfortably hold a token blob; TidalSwift and
   tidal-sdk-ios both use KeychainAccess-style generic items. Under a sandboxed/hardened build the
   keychain access group must be declared in entitlements **[STACK]**.
@@ -502,6 +572,44 @@ Enforcement:
   device in TIDAL's account settings; if an embedded client id is abused, the fallback is
   user-supplied credentials.
 
+#### 3.6 Testing the secret-store backends in CI
+
+§2.9 requires the default suite to pass on a fork PR, but a headless GitHub runner has no Secret
+Service, no unlocked Keychain and no interactive Credential Manager session. Make the store an
+interface and unit-test the encrypted-file and plaintext backends everywhere (no OS dependency).
+For the keyring backend on Linux CI, run the job under
+`dbus-run-session -- gnome-keyring-daemon --unlock` (feeding a dummy password on stdin) and skip
+(not fail) the test when `DBUS_SESSION_BUS_ADDRESS` is unset — python-tidal already treats that
+variable as the switch, passing it through in `tox.ini` precisely so its `KeyringCredentials` path
+can run (ref:python-tidal/tox.ini). On macOS runners, create and unlock a keychain explicitly
+(`security create-keychain` / `unlock-keychain`), the same step Strawberry's signing job performs
+(ref:strawberry/.github/workflows/build.yaml). On Windows, the Credential Manager API works
+headlessly for the current user, so that backend can be tested directly — and it is the right
+place to empirically measure real TIDAL token sizes against the 2560-byte blob limit above.
+
+#### 3.7 Multi-process token and device ownership
+
+The owner has committed to shipping desktop **and** headless now (see Project context). Both will
+read the same token store, and both may want the same DAC. TIDAL rotates refresh tokens, so two
+processes refreshing concurrently will invalidate each other and silently log the user out — a bug
+that only appears after both binaries ship, and it constrains the storage and process model from
+the first commit. §2.3 test 1 handles in-process refresh collapsing; it does not handle the
+cross-process case.
+
+tidalt solves both problems with a single-server model: the first process claims the D-Bus name
+`org.mpris.MediaPlayer2.tidalt`; if the name is taken the process becomes a client and forwards
+commands over D-Bus, and only the server process ever opens the ALSA `hw:` device — its own docs
+state "ALSA `hw:` devices cannot be shared between processes. If two programs both try to open
+`hw:1,0` the second one fails" (ref:tidalt/docs/client-server.md). `tidalt daemon` is the same
+engine with no TUI (ref:tidalt/cmd/tidalt/daemon.go:44). sone takes the desktop-only version of
+this with `tauri_plugin_single_instance` to focus the existing window instead of opening a second
+one (ref:sone/src-tauri/src/lib.rs:546-548).
+
+**Decide now**: either the daemon is always the token owner (with the GUI as a thin client), or
+the store must be lock-protected for multi-writer access (an advisory file lock around
+read-refresh-write, with a re-read-after-lock so a losing process adopts the winner's new token).
+Add a test for this to §2.3's list.
+
 ---
 
 ### 4. Config, cache, data, logs, telemetry
@@ -574,10 +682,39 @@ For streamboat:
   Sone states the boundary in its own metadata: "SONE is a streaming client only and does not
   support offline downloads" (ref:sone/data/io.github.lullabyX.sone.metainfo.xml).
 - Cache entries must carry a `schema_version`; bump it and drop the tier on format change rather
-  than trying to migrate.
-- Never cache stream manifests across restarts — they expire (the tidal-sdk-web docs put manifest
-  expiry at ~1 hour) and a stale manifest is a confusing failure. High Tide's rule is
-  "Cache manifests per-session (in-memory) only".
+  than trying to migrate. **Cheaper primary mechanism, used by sone**: version the whole cache
+  directory (`cache_dir/v{CURRENT_SCHEMA_VERSION}/`, currently `v5`) and on startup delete any
+  sibling `v*` directory that is not current — an O(1) migration that reclaims all disk from old
+  formats in one step (ref:sone/src-tauri/src/cache.rs:190,200-215,267-271). Keep the per-entry
+  `schema_version` field too, as a belt-and-braces guard, but make the directory scheme primary.
+- Never cache stream manifests across restarts — they expire and a stale manifest is a confusing
+  failure. The ~1-hour figure comes from source, not documentation: tidal-sdk-web's own client-side
+  constant is `const MANIFEST_EXPIRATION_MS = 3600000; // 1 hour`
+  (ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts:79), used to
+  stamp an `expires` timestamp and trigger "a complete reload since manifest has expired"
+  (ref:tidal-sdk-web/packages/player/nativePlayer.ts:182). Treat this as the SDK's own client-side
+  assumption, not a documented server guarantee. High Tide's rule is "Cache manifests per-session
+  (in-memory) only".
+- **sone encrypts every cache entry, not just settings.** §3.1's table hedges ("Encrypted or plain
+  cache dir, user-configurable"), but the reference implementation is unconditional: `<hash>.dat` is
+  written as `let encrypted = self.crypto.encrypt(data)?; fs::write(&dat_path, &encrypted)?`
+  (ref:sone/src-tauri/src/cache.rs:429-433) — the same AES-256-GCM envelope as §3.3, so the 2 GiB
+  cap is 2 GiB of AEAD blobs (each with the 17-byte header) and the cache subsystem cannot start
+  before the master key resolves. If streamboat copies the cap and tiering, copy or explicitly
+  reject the encryption, and state the startup ordering (key resolution gates cache init) either
+  way.
+
+#### 4.2a Settings-file versioning and migration
+
+§4.2 requires a `schema_version` on cache entries; the settings file needs the equivalent, and it
+is a harder problem because settings cannot simply be dropped and rebuilt like a cache tier. sone
+hit this after shipping and had to retrofit a migration path — its own log lines document it:
+`log::warn!("Failed to migrate settings to encrypted: {e}")` /
+`log::info!("Migrated settings.json to encrypted format")` (ref:sone/src-tauri/src/lib.rs:346-348).
+Put a `version` integer in the settings document from v0.1: make loading forward-only (bump on
+change, migrate up, refuse to load a version newer than the running binary and say so rather than
+silently overwriting), and add a unit test per migration step with a committed fixture of the old
+shape. This is one of the cheapest things to do on day one and among the most expensive to retrofit.
 
 #### 4.3 Logs and rotation
 
@@ -669,13 +806,15 @@ in its Disclaimer (ref:sone/README.md:540-544).
 
 #### 5.3 Dependency compatibility notes
 
-- **GStreamer**: core, base, good are LGPL-2.1. "GStreamer demands plugins be licensed under the
-  LGPL, even when they are using a GPL library"; plugins with patent issues live in
-  `gst-plugins-ugly`; "When using GPL linked plugins, GStreamer is for all practical reasons under
-  the GPL itself"
-  (https://gstreamer.freedesktop.org/documentation/frequently-asked-questions/licensing.html). A
-  GPL-3.0 streamboat has no problem here. A permissive streamboat would have to restrict itself to
-  LGPL plugins and an LGPL FFmpeg build.
+- **GStreamer**: core, base, good are LGPL-2.1. "We require that all code going into our core
+  packages is LGPL", and plugins with patent issues "would need to go into our gst-plugins-ugly
+  module" — both from GStreamer's own licensing FAQ
+  (https://raw.githubusercontent.com/GStreamer/gst-docs/master/markdown/frequently-asked-questions/licensing.md,
+  read directly and grepped: it contains neither the "practical reasons under the GPL" line nor any
+  FFmpeg guidance, despite an earlier draft of this document attributing both to it). "When using
+  GPL linked plugins, GStreamer is for all practical reasons under the GPL itself" is from
+  `gst-plugins-base`'s `LICENSE_readme` instead. A GPL-3.0 streamboat has no problem here. A
+  permissive streamboat would have to restrict itself to LGPL plugins and an LGPL FFmpeg build.
 - **FFmpeg**: LGPL-2.1+ by default; `--enable-gpl` and `--enable-nonfree` change that. tidalt
   builds FFmpeg 7.1.5 with `--disable-everything --disable-programs --disable-doc
   --disable-network --disable-autodetect --disable-shared --enable-static --enable-pic
@@ -683,17 +822,24 @@ in its Disclaimer (ref:sone/README.md:540-544).
   --enable-demuxer=flac,mov,aac,wav,ogg
   --enable-decoder=flac,aac,aac_latm,alac,pcm_s16le,pcm_s24le,pcm_s32le,vorbis
   --enable-parser=flac,aac,aac_latm,vorbis --enable-swresample` — no `--enable-gpl`, so the result
-  is LGPL (ref:tidalt/packaging/build-static-ffmpeg.sh). **Static linking of LGPL code from an
+  is LGPL (ref:tidalt/packaging/build-static-ffmpeg.sh:27,47-54 — version verified as
+  `FFMPEG_VERSION="${FFMPEG_VERSION:-7.1.5}"`). **Static linking of LGPL code from an
   Apache-2.0 binary imposes the LGPL relinking obligation** (ship object files or the full source
   and build instructions). If streamboat statically links FFmpeg, publish the exact build script
   and the object archives, or dynamically link.
-- **fdk-aac**: GPL-incompatible and "therefore nondistributable with GPL parts"; Debian ships it as
-  non-free (https://fedoraproject.org/wiki/Licensing/FDK-AAC). streamboat needs AAC *decoding*
-  only, which `avdec_aac` (LGPL FFmpeg) or `faad` covers; never link fdk-aac.
+- **fdk-aac**: GPL-incompatible and "therefore nondistributable with GPL parts" per FFmpeg's own
+  position; Debian ships it as non-free. `fedoraproject.org` is blocked from this environment —
+  this is read via a search index of the Fedora Licensing/FDK-AAC wiki, corroborated by
+  tookmund.com "AAC and Debian" and the Hydrogenaudio knowledge base, not a primary fetch.
+  streamboat needs AAC *decoding* only, which `avdec_aac` (LGPL FFmpeg) or `faad` covers; never
+  link fdk-aac.
 - **Qt 6** open source is mainly LGPLv3 with some modules GPL-only; some modules are GPL-2.0-only
-  and others GPL-3.0-only, and mixing those two is itself a violation
-  (https://doc.qt.io/qt-6/licensing.html, https://www.qt.io/faq/qt-open-source-licensing). A
-  GPL-3.0-only app can use LGPLv3 and GPL-3.0-only Qt modules but must avoid GPL-2.0-only ones.
+  and others GPL-3.0-only, and mixing those two is itself a violation — Qt's own FAQ gives the
+  concrete example that mixing GPL-3.0-only Spatial Audio with GPL-2.0-only TextToSpeech "violates
+  GPL-3.0". `doc.qt.io` is blocked from this environment; this is read via a search index of the
+  Qt open-source licensing FAQ, not a primary fetch — re-verify module-by-module before Qt is
+  chosen (https://doc.qt.io/qt-6/licensing.html, https://www.qt.io/faq/qt-open-source-licensing).
+  A GPL-3.0-only app can use LGPLv3 and GPL-3.0-only Qt modules but must avoid GPL-2.0-only ones.
   Static linking against LGPLv3 Qt carries the relinking obligation.
 - **GTK4/libadwaita** are LGPL-2.1 — no constraint on a GPL app.
 - **Electron/Chromium** is largely BSD/MIT; the castlabs Widevine build that tidal-hifi uses
@@ -726,9 +872,37 @@ third-party client, please be aware of TIDAL's terms of use." (ref:sone/README.m
 
 One unverified but material data point: a search result attributes to TIDAL's Developer Terms 2.0
 the statement that "The Player module in the SDK constitutes the only allowed way for third-party
-applications to incorporate playback of TIDAL content". `developer.tidal.com` and `tidal.com` are
+applications to incorporate playback of TIDAL content", corroborated at second hand by an
+independent search of `developer.tidal.com/documentation/guidelines-developer-terms-2_0` returning
+both that sentence and "playbacks shall only be made available through TIDAL's SDKs, namely an
+official, unmodified version of the TIDAL Player module". `developer.tidal.com` and `tidal.com` are
 both unreachable from this environment, so **this is not verified from the primary source** and
 must be checked by the legal/ToS research topic before any claim is published.
+
+**Scope distinction to get right in `docs/legal.md`, regardless of how that verification lands**:
+those Developer Terms govern the official developer-program API and SDK (the path High Tide, sone
+and python-tidal explicitly do *not* take). streamboat's declared stance — per the owner's decision
+— is the unofficial API that python-tidal/High Tide/sone use, which is governed by the consumer
+Terms of Service instead. Conflating the two documents would produce the wrong legal analysis: a
+"Player-module-only" restriction in the *developer* terms does not, by itself, establish that the
+*unofficial* API route violates the *consumer* ToS — the two are separate questions and both need
+their own primary-source read.
+
+#### 5.5 EU Cyber Resilience Act — record the determination, do not skip it
+
+The report's own date (2026-09-07) sits four days before a CRA compliance milestone: obligations
+for manufacturers to report actively exploited vulnerabilities and severe incidents to ENISA and
+national CSIRTs (24h early warning / 72h notification / 14 days after a patch) begin 2026-09-11;
+conformity-assessment-body rules applied from 2026-06-11; full compliance is due 2027-12-11
+(https://openssf.org/public-policy/eu-cyber-resilience-act/, https://orcwg.org/cra/). A free,
+non-commercial FOSS project is out of scope, but that is a determination someone has to make and
+write down, not assume. "Open-source stewards" — legal persons systematically supporting FOSS
+intended for commercial activity — carry lighter Article 24 duties (cybersecurity policy,
+cooperation on vulnerability handling, reporting) and are explicitly exempt from administrative
+fines under Article 64(10); an individual maintainer distributing a free client is neither
+manufacturer nor steward. Record the determination in `docs/legal.md`, and align `SECURITY.md`'s
+disclosure process and timelines with the steward pattern anyway — it costs nothing and is the
+answer if the project's status ever changes (e.g. a paid/hosted build appears).
 
 ---
 
@@ -771,6 +945,18 @@ flathub-infra/documentation repository):
   generate their commit messages, descriptions, review comments, or replies. Submitters must not
   request AI-agent reviews. Undisclosed or materially misrepresented AI-generated material ... may
   result in rejection. Repeated violations may result in a permanent ban from future submissions."
+  **This policy has already flipped once in 2026 and must be re-read before submission, not
+  treated as settled**: commit `992f57b` (2026-05-29, "Reword LLM policy to make it clear it's not
+  allowed") briefly replaced this text with an outright ban — "Applications containing
+  AI-generated or AI-assisted code, documentation, or other content are not allowed ... Exceptions
+  may be granted for mature, well-maintained projects" — which was widely reported as a ban before
+  the text reverted to the disclosure-plus-reviewer-discretion regime quoted above. Treat the
+  quoted text as a dated snapshot (read 2026-09-07 at commit HEAD of
+  `flathub-infra/documentation`), add a standing task to re-read it immediately before any Flathub
+  submission, and note the adjacent linter rule: sandbox-escape exceptions (`home`, `host`,
+  `flatpak-spawn`, arbitrary bus names) are reported as "not... granted if there are signs of LLM
+  usage in the software or in the exception PR" — which interacts directly with the permission
+  plan below.
 
 **Permissions a TIDAL client actually needs.** High Tide's accepted manifest is the reference
 (ref:high-tide/build-aux/io.github.nokse22.high-tide.json):
@@ -792,8 +978,17 @@ Add for streamboat, if the features exist:
   Secret portal, which needs no permission.
 - `--own-name=org.mpris.MediaPlayer2.<something>` — allowed by default only when it exactly
   matches the Flatpak ID, is an exact subname of it, or is an MPRIS subname
-  (linter rule `finish-args-own-name-cpt`). Never use `--talk-name=org.mpris.MediaPlayer2.$FLATPAK_ID`
-  (never-granted rule).
+  (linter rule `finish-args-own-name-cpt`). The default sandbox policy already lets an app own
+  `org.mpris.MediaPlayer2.$FLATPAK_ID` with no extra finish-arg at all (confirmed:
+  https://github.com/flatpak/flatpak-docs/blob/master/docs/sandbox-permissions.rst states an app
+  may "own its own namespace named by $FLATPAK_ID, subnames of it and
+  org.mpris.MediaPlayer2.$FLATPAK_ID"). **Unverified**: whether the linter has a specific
+  never-granted exception rule for `--talk-name=org.mpris.MediaPlayer2.$FLATPAK_ID` could not be
+  confirmed — `docs.flathub.org` is blocked in this environment and the rule name is not quoted in
+  any reachable mirror. Do not request that talk-name (it should not be needed given the default
+  policy above); re-verify the specific linter-rule wording from `docs.flathub.org/docs/for-app-authors/linter`
+  or `flathub-infra/flatpak-builder-lint`'s `exceptions.json` before relying on the "never granted"
+  framing.
 - **Do not request `--device=all`.** `--socket=pulseaudio` already covers `/dev/snd`, which is what
   exclusive ALSA needs. Requesting `--device=all` invites reviewer pushback and is called out in
   Flatpak's own docs as excessive.
@@ -811,11 +1006,67 @@ manifest with `yq`, regenerates dependency manifests with a **pinned** clone of
 opens a PR, skipping if one already exists for that tag. **[STACK]** the generator you need
 depends on the language.
 
-**CI-side build check**: High Tide builds the Flatpak on every push and PR for both x86_64 and
-aarch64 using `flatpak/flatpak-github-actions/flatpak-builder@v6` inside
+**CI-side build check**: High Tide builds the Flatpak for both x86_64 and aarch64 using
+`flatpak/flatpak-github-actions/flatpak-builder@v6` inside
 `ghcr.io/flathub-infra/flatpak-github-actions:gnome-48`
-(ref:high-tide/.github/workflows/flatpak.yml). Do this from day one — it is the cheapest way to
-keep the manifest honest.
+(ref:high-tide/.github/workflows/flatpak.yml). The trigger is narrower than "every push and PR":
+`push: branches: [master], paths-ignore: ['**/README.md']` and
+`pull_request: branches: [master], types: [review_requested, ready_for_review]` — i.e. pushes to
+`master` (excluding README-only changes) and PRs only once review is requested or the PR is marked
+ready for review, not every PR event. Do this from day one regardless of the exact trigger — it is
+the cheapest way to keep the manifest honest.
+
+#### 6.1a Flathub: metainfo requirements, submission mechanics, maintenance and verification
+
+The requirements doc above says only "metainfo is mandatory and must pass validation" — not enough
+to write the file from. Concrete fields, all from
+`flathub-infra/documentation` (read 2026-09-07):
+
+- **Mandatory fields**: `<id>` exactly equal to the Flatpak app ID and the manifest; a
+  `<metadata_license>` for the metainfo file itself (an AppStream-permissive value, e.g. `CC0-1.0`
+  or `FSFAP` — **not** the same field as `<project_license>`); `<project_license>` as an SPDX
+  identifier (e.g. `GPL-3.0-only`); `<name>` and `<summary>`; `<content_rating type="oars-1.1">`
+  generated from the OARS website; at least one screenshot, hosted as a direct web resource; a
+  `<developer id="..."><name>...</name></developer>` block with a reverse-DNS id (exactly one,
+  untranslated); a `<releases>` tag ("Applications must supply a releases tag ... to pass
+  validation"); `<url type="homepage">` at minimum, `url type="vcs-browser"` strongly recommended.
+- **Quality guidelines with numbers**: app name ideally ≤15 chars, must be <20; summary ideally
+  10–25 chars, must not exceed 35, sentence case, no trailing period, must not repeat the app name,
+  must not start with an article, must not mention the toolkit/language/"free and open source";
+  description ~3–6 lines at 70 columns, feature lists ≤10 items; screenshots max 1000×700 (2000×1400
+  HiDPI), 3–6 for a medium app, captured on Linux with default system settings and native window
+  decoration, one-sentence caption each, at least one in English; icon SVG or PNG ≥256×256, square,
+  no baked-in shadows.
+- **Submission mechanics**: fork `github.com/flathub/flathub` with "Copy the master branch only"
+  **unchecked**; clone the `new-pr` branch; branch off it; open the PR against base branch `new-pr`
+  (not `master`), titled `Add io.github.<owner>.streamboat`. Build and lint locally with
+  `org.flatpak.Builder` first. Comment `bot, build` to trigger a test build. On approval the
+  submission is merged into a new repo under the `flathub` GitHub org, and you get a write-access
+  invitation that must be accepted within **one week** (2FA required first). The official build
+  publishes in ~1–2 hours.
+- **Post-acceptance maintenance**: a global External Data Checker runs every two hours across all
+  app repos; sources carrying an `x-checker-data` block get automatic update PRs. Two automation
+  levels — GitHub automerge (maintainer approves once, CI gates future merges) or
+  `automerge-flathubbot-prs` in `flathub.json` (checker merges on its next run) — both require
+  Flathub admin approval and target verified apps or high-update-volume apps. Apps must use only
+  `master` (→ stable) or `beta` branches. EOL is declared via `end-of-life` in `flathub.json`
+  (`end-of-life-rebase` for a rename/migration). Flathub's own EOL criteria include 2+ years of
+  upstream inactivity, an unmaintained Flatpak package, or being 3+ runtime updates behind, with a
+  one-month maintainer notice. **This is a native alternative to copying sone's hand-rolled
+  `yq`-rewrite-and-PR pipeline** (§6.1 below) — decide between them rather than assuming the latter.
+- **Verification (the checkmark badge)**: an `io.github.*` app ID is verified for free and
+  immediately by authenticating as the GitHub repo owner (or an org admin) — another reason to
+  take the `io.github.<owner>.streamboat` ID already recommended, and the practical precondition
+  for the automerge options above. Domain-based alternatives exist (HTTPS token at
+  `https://<domain>/.well-known/org.flathub.VerifiedApps.txt`, DNS TXT record, GitLab variants) but
+  are unnecessary here.
+
+Sources: https://raw.githubusercontent.com/flathub-infra/documentation/master/docs/02-for-app-authors/03-metainfo-guidelines/index.md
+and `.../01-quality-guidelines.md`;
+https://raw.githubusercontent.com/flathub-infra/documentation/master/docs/02-for-app-authors/05-submission.md;
+https://raw.githubusercontent.com/flathub-infra/documentation/master/docs/02-for-app-authors/06-maintenance.md;
+https://raw.githubusercontent.com/flathub-infra/documentation/master/docs/02-for-app-authors/10-verification.md
+(all read 2026-09-07).
 
 #### 6.2 Snap
 
@@ -826,7 +1077,12 @@ Sone's `snapcraft.yaml` (ref:sone/snap/snapcraft.yaml) shows the audio-specific 
   `screen-inhibit-control`.
 - **`alsa` is not auto-connected**: the description tells users "For exclusive ALSA output, run:
   `sudo snap connect sone:alsa`". Budget for that support burden or treat exclusive mode as
-  unsupported under Snap.
+  unsupported under Snap. **Not independently verified**: Snap publishers can request
+  auto-connection for an interface through a store review request on snapforum
+  (snapcraft.io/forum), which was not consulted here. Before committing to Snap as an exclusive-ALSA
+  channel, check whether the `alsa` interface has ever been auto-connected for a media player and
+  what reviewers required — sone's own README implies the request was either not made or not
+  granted, which is itself informative but not conclusive.
 - MPRIS needs a **dotless** slot name: `slots: { mpris: { interface: mpris, name: sone } }`, and
   the app must own `org.mpris.MediaPlayer2.<that name>` — sone detects it via the `SNAP` env var.
 - Staging GStreamer requires `layout:` binds for `gstreamer-1.0`, `alsa-lib` and `/usr/share/alsa`,
@@ -864,6 +1120,19 @@ as sone does. Automate with `KSXGitHub/github-actions-deploy-aur@v4.1.3` driven 
 `AUR_SSH_PRIVATE_KEY` secret, with the workflow skipping cleanly when the key is absent so forks
 do not fail (ref:tidal-hifi/.github/workflows/release.yml, `publish_aur` job).
 
+**The packaging sequence has a gap: no portable Linux binary.** Flathub requires "a meaningful
+history of development" (§6.1) and Homebrew requires a 30-day-old repo at minimum (§6.5) — so for
+the first several months the only Linux channels this plan reaches are AUR and Cloudsmith deb/rpm.
+A user on Fedora Silverblue, NixOS, Debian stable, or any distro outside the Cloudsmith matrix has
+nothing to install. Both large reference GUI clients ship a portable artifact: Strawberry has a
+dedicated AppImage job (ref:strawberry/.github/workflows/build.yaml) and tidal-hifi builds an
+AppImage via electron-builder (ref:tidal-hifi/build/electron-builder.yml). **Add AppImage (or a
+static tarball for the daemon/CLI) as the first packaging deliverable**, before AUR. One caveat the
+references already hit: an AppImage has no stable app identity for the keyring — sone's own
+`crypto.rs` comments that the keyring "may be unreachable on next launch (e.g. AppImage with
+different D-Bus session)" — which is exactly why the encrypted-file fallback in §3.3 is mandatory,
+not optional, for this channel.
+
 #### 6.4 Windows
 
 - **Installer format**: tidal-hifi produces an MSI via electron-builder (`win: target: msi`);
@@ -871,16 +1140,31 @@ do not fail (ref:tidal-hifi/.github/workflows/release.yml, `publish_aur` job).
   `Capabilities.nsh`, `FileAssociation.nsh`, `Registry.nsh`). MSIX is required only for the
   Microsoft Store and forces a signed package plus a store listing; skip it initially.
 - **Signing**: unsigned installers hit SmartScreen. Options in 2026: Azure Trusted Signing /
-  Azure Artifact Signing at $9.99/month Basic (5,000 signatures) — available to individuals in
-  the USA and Canada and to organisations in the EU/UK — versus an EV code-signing certificate at
-  roughly $280–500/year on a hardware token. Trusted Signing certificates cannot be exported, so
-  losing eligibility means losing the ability to sign.
-- **winget**: submit a manifest PR to `microsoft/winget-pkgs`. `InstallerSha256` is required and is
-  verified against the downloaded installer; an automated validation pipeline installs and tests
-  the package; a PR assigned to you has a 7-day timer before the bot closes it
-  (https://learn.microsoft.com/en-us/windows/package-manager/package/repository). Generate the
-  manifest with `wingetcreate`; automate updates from the release workflow once the release assets
-  have stable names.
+  Azure Artifact Signing, reported at $9.99/month Basic (up to 5,000 signatures) and $99.99/month
+  Premium (up to 100,000 signatures, 10 certificate profiles), versus an EV code-signing
+  certificate at roughly $280–500/year on a hardware token. Trusted Signing certificates cannot be
+  exported, so losing eligibility means losing the ability to sign. **Re-verify before relying on
+  this**: `azure.microsoft.com` and `learn.microsoft.com` are blocked from this environment, so
+  these numbers come from secondary sources (devclass 2026-01-14, melatonin.dev, Microsoft
+  Community Hub), and eligibility is reported there as "verified US, Canadian, EU and UK businesses
+  and self-employed individuals" — broader than "individuals in the USA/Canada, organisations in
+  the EU/UK" as an earlier draft of this document stated.
+- **winget**: submit a manifest PR to `microsoft/winget-pkgs`. `InstallerSha256` is required per
+  installer entry and WinGet blocks installation on a hash mismatch; an automated validation
+  pipeline installs and tests the package, confirmed by the `microsoft/winget-pkgs` README and PR
+  threads. **Unverified**: a "PR assigned to you has a 7-day timer before the bot closes it" could
+  not be confirmed — `learn.microsoft.com` is blocked from this environment and the only auto-close
+  behaviour found in reachable sources is tied to the `Needs-Author-Feedback` label, not to
+  assignment; treat the 7-day figure as unconfirmed until read from the primary policy doc. **Two
+  requirements the report previously omitted, and the ones most likely to fail a first submission**:
+  the installer must support a silent/unattended install
+  (`InstallerSwitches: Silent` / `SilentWithProgress`, e.g. `/S` for NSIS or `/qn` for msiexec) —
+  the automated validation pipeline installs and uninstalls unattended in a sandbox, and an
+  installer that shows UI fails outright; and the manifest must declare `Scope` (user vs machine) —
+  a per-user install avoids UAC and is the better default for a music player, but it changes the
+  install path and therefore the `%LOCALAPPDATA%` layout assumptions in §4.1. Decide both before
+  cutting the first Windows installer. Generate the manifest with `wingetcreate`; automate updates
+  from the release workflow once the release assets have stable names.
 - No reference project auto-updates on Windows; electron-builder's `publish`/`autoUpdater` is not
   configured in tidal-hifi's build configs.
 
@@ -904,8 +1188,11 @@ do not fail (ref:tidal-hifi/.github/workflows/release.yml, `publish_aur` job).
   loaded **[STACK]**.
 - **Both architectures**: Strawberry builds on `macos-15-intel` and `macos-15` runners and
   pins `MACOSX_DEPLOYMENT_TARGET` from the newest installed SDK.
-- **Homebrew cask**: notability floor is 30 forks / 30 watchers / 75 stars, or 90 / 90 / 225 for a
-  self-submission by the repo owner; a repository under 30 days old is normally ineligible; casks
+- **Homebrew cask**: notability floor is **disjunctive** — 30 forks *or* 30 watchers *or* 75 stars
+  normally, 90 forks *or* 90 watchers *or* 225 stars for a self-submission by the repo owner (any
+  one of the three numbers clears the bar; it reads as a conjunction in slash notation but the
+  policy text is "at least 30 forks, 30 watchers or 75 stars"). A repository under 30 days old is
+  normally ineligible; casks
   must pass Homebrew's Gatekeeper audit and "must not require System Integrity Protection or
   Gatekeeper to be disabled or bypassed", and casks failing those checks are deprecated, disabled
   and removed (https://github.com/Homebrew/brew/blob/main/docs/Package-Acceptance-Policy.md,
@@ -937,9 +1224,12 @@ Recommended: **no silent in-app updater on any platform initially.**
   section and `### Added/Changed/Fixed/Removed/Deprecated/Security` groups — exactly the format
   tidal-sdk-ios uses, with a per-entry module scope suffix like `(Player)`, `(TidalAPI)`
   (ref:tidal-sdk-ios/CHANGELOG.md).
-- **Enforce the changelog in CI.** tidal-sdk-ios runs `check-version-sync.sh` on every PR touching
-  `version.txt`; it is four lines: `grep -q "$(cat ./version.txt)" ./CHANGELOG.md`
-  (ref:tidal-sdk-ios/.agents/skills/prepare-release/scripts/check-version-sync.sh). tidal-sdk-web
+- **Enforce the changelog in CI.** tidal-sdk-ios runs `check-version-sync.sh` on PRs touching
+  `version.txt` (trigger: `pull_request: paths: ['version.txt']`); the script is nine lines (a
+  shebang plus an if/else/fi block with success/failure echoes), and its single load-bearing line
+  is `grep -q "$(cat ./version.txt)" ./CHANGELOG.md`
+  (ref:tidal-sdk-ios/.agents/skills/prepare-release/scripts/check-version-sync.sh — corrected from
+  an earlier "four lines" claim in this document). tidal-sdk-web
   does the equivalent per-package with `bin/check-version-bump.sh` and a matrix over changed
   `packages/**/package.json` (ref:tidal-sdk-web/.github/workflows/check-changelog-files.yml).
 - **Conventional Commits 1.0.0** (https://www.conventionalcommits.org/en/v1.0.0/). tidal-hifi asks
@@ -957,8 +1247,53 @@ Recommended: **no silent in-app updater on any platform initially.**
   "software requiring daily updates" in the stable repo.
 - **Every release ships checksums.** tidalt generates `sha256sum * > checksums.txt` and pastes it
   into the release body with verification instructions (ref:tidalt/.github/workflows/release.yml).
-  Add build provenance attestation (`actions/attest-build-provenance`, or npm
-  `--provenance` as tidal-cli does) once the release pipeline is stable.
+  **No reference project verifies its own release artifacts beyond that.** A grep for
+  `cosign|sbom|cyclonedx|spdx` across all 21 checkouts returns no hits, and only tidal-cli
+  (`npm publish --access public --provenance`) and tidal-sdk-web (OIDC) use any provenance
+  mechanism at all, and only for npm packages — nobody attests a Linux binary. Treat provenance and
+  signing as a **no-precedent line item to budget for**, not a copyable pattern: recommend
+  GPG-/SSH-signed git tags, Sigstore/cosign keyless signing of every release asset (OIDC from
+  GitHub Actions, no key to manage) alongside `checksums.txt`, `actions/attest-build-provenance`
+  for provenance, and an SBOM (CycloneDX or SPDX) generated from the same lockfile the license scan
+  in §5.3 already reads — nearly free once a license scanner is wired up, and it is what a
+  downstream distro packager or a CRA-style enquiry (§5.5) will ask for.
+- **Release automation tooling and monorepo versioning are both unresolved.** No reference project
+  uses a release-automation tool — a grep for
+  `release-please|changesets|semantic-release|cargo-dist|goreleaser|nfpm` across the checkouts
+  hits only vendored `.goreleaser.yml` files inside tidalt's Go dependencies, not tidalt's own
+  tooling. The closest working patterns are hand-rolled:
+  `ref:tidal-sdk-ios/.agents/skills/prepare-release/scripts/{bump-version,check-release-needed,
+  extract-release-notes,suggest-changelog}.sh` invoked by CI, and tidal-sdk-web's per-package
+  `check-version-bump.sh` matrixed over changed `packages/**/package.json`
+  (ref:tidal-sdk-web/.github/workflows/check-changelog-files.yml). Pick a tool appropriate to the
+  chosen stack (release-please / changesets / cargo-release+cargo-dist / goreleaser+nfpm) **and**
+  make an explicit owner decision the report otherwise skips: a single version for the whole repo,
+  or `core` versioned and released independently of the apps — the latter is what makes a
+  permissively licensed core (§5.2) actually adoptable by other clients, which is the stated reason
+  for the license split in the first place.
+
+#### 6.8 Headless/daemon packaging deliverables
+
+§6.1–6.7 cover Flatpak, Snap, deb/rpm, AUR, MSI, DMG — all GUI. The headless mode, which the owner
+has decided ships **now** (see Project context), has no packaging deliverables specified beyond
+"ship it via deb/rpm/AUR/Docker". Three concrete artifacts, all with working precedent:
+
+1. **A systemd `--user` unit.** tidalt templates
+   `[Unit] Description=... After=graphical-session.target PartOf=graphical-session.target` /
+   `[Service] Type=simple ExecStart={{.Exec}} daemon Restart=on-failure RestartSec=5s` /
+   `[Install] WantedBy=graphical-session.target`, installed by `tidalt setup --daemon`
+   (ref:tidalt/cmd/tidalt/daemon.go:17-31).
+2. **A container image.** `--device /dev/snd` plus
+   `--group-add $(getent group audio | cut -d: -f3)` is the documented minimum for ALSA in Docker,
+   with `/proc/asound` readable for device discovery and config/state mounted as volumes
+   (ref:tidalt/docs/docker.md).
+3. **A `.desktop` file registering the `tidal://` URL scheme** — this is what makes "Open in
+   desktop app" on tidal.com work: `Exec=tidalt play %u`, `MimeType=x-scheme-handler/tidal;`,
+   `Categories=Audio;Music;Player;`, `Terminal=false` (ref:tidalt/cmd/tidalt/tidalt.desktop). Also
+   set `X-PulseAudio-Properties=media.role=music`, which tidal-hifi's desktop entry sets and the
+   report otherwise only lists in Sources without recommending
+   (ref:tidal-hifi/build/electron-builder.yml). See §2.6 item 5 for the security implication of
+   registering this scheme.
 
 ---
 
@@ -1063,7 +1398,24 @@ Full bit-for-bit reproducibility is a large project; the achievable subset:
 - Verify by rebuilding one release from the tag on a clean machine and diffing hashes; document
   the result even when it is "not yet reproducible, differs in X".
 
----
+#### 7.6 Repo governance mechanics
+
+§7.4 says "enable branch protection with required checks"; §8.3 covers CONTRIBUTING and templates.
+The mechanical pieces that make branch protection and code review actually work are cheap to get
+right at repo creation and annoying to retrofit:
+
+- **`CODEOWNERS`.** All three TIDAL SDKs ship `.github/CODEOWNERS`
+  (ref:tidal-sdk-web/.github/CODEOWNERS, ref:tidal-sdk-ios/.github/CODEOWNERS). Add one from the
+  start so `core` and the packaging directories have explicit reviewers as contributors arrive.
+- **`concurrency:` groups with cancel-in-progress** on PR workflows, used by tidal-sdk-android
+  (`pull-request.yml`, `post-merge.yml`, `publish-pages.yml`) and tidal-sdk-web (`cypress.yml`).
+  Without one, a force-push queues a duplicate full matrix.
+- **Name the required status checks explicitly.** State in `docs/DECISIONS.md` which of the §7.1
+  jobs actually block merge — the credentialed and scheduled jobs (§2.4, §2.5) must **not** be in
+  that list, per §2.9's own rule, or a fork PR will be unmergeable through no fault of the
+  contributor.
+- **State whether DCO sign-off is enforced by a bot** (e.g. the DCO GitHub App) — open question 3
+  raises the CLA/DCO decision itself but not how it would be mechanically enforced once decided.
 
 ### 8. Repository layout, docs and contribution process
 
@@ -1138,14 +1490,21 @@ targets, mobile CI, or mobile packaging yet.
   size and shape: `architecture.md`, `installation.md`, `development.md`, `debugging.md`,
   `dac-compatibility.md`, `media-keys.md`, `mpris2.md`, `docker.md`, `client-server.md`,
   `ui.md` (ref:tidalt/docs/).
-- `.claude/skills/` is a real, in-use convention in this ecosystem: tidal-sdk-ios ships
-  `.agents/skills/prepare-release/SKILL.md` with `scripts/{bump-version,check-release-needed,
-  check-version-bump,check-version-sync,extract-release-notes,suggest-changelog}.sh`, and **CI
-  invokes the same scripts from the same paths** (`.agents/skills/prepare-release/scripts/
-  check-version-sync.sh` in `changelog-check.yml`). tidal-sdk-android ships `.agents/checks/*.md`
-  as one-file-per-review-rule with severity frontmatter, explicitly "additive" to existing
-  linters and formatters. Adopt both patterns: skills that wrap real scripts CI also runs, and
-  review rules that never re-litigate what the formatter owns.
+- **The in-use convention in this ecosystem is a vendor-neutral `.agents/` directory, not
+  `.claude/skills/`.** tidal-sdk-ios ships `.agents/skills/prepare-release/SKILL.md` with
+  `scripts/{bump-version,check-release-needed, check-version-bump,check-version-sync,
+  extract-release-notes,suggest-changelog}.sh`, and **CI invokes the same scripts from the same
+  paths** (`.agents/skills/prepare-release/scripts/check-version-sync.sh` in
+  `changelog-check.yml`). tidal-sdk-android ships `.agents/{README.md,checks,do.md}` — one file per
+  review rule with severity frontmatter, explicitly "additive" to existing linters and formatters
+  ("Coexist, don't replace ... Don't re-litigate formatting."). tidal-cli ships a plain
+  `skills/tidal-cli/SKILL.md`. No checkout in the 21-project set contains a `.claude/skills/`
+  directory. Adopt both real patterns: skills that wrap real scripts CI also runs, and review rules
+  that never re-litigate what the formatter owns. Whichever directory streamboat itself uses for
+  its own agent-facing skills, be aware that a vendor-branded directory name (`.claude/`) is
+  exactly the kind of detail a Flathub reviewer reads as an AI-tooling signal under the Generative
+  AI policy (§6.1) — a neutral `.agents/` name carries less of that risk if the project ever wants
+  to minimize it, independent of which coding-agent tool actually produced the files.
 - tidal-cli ships `skills/tidal-cli/SKILL.md` and publishes it as a distributable artifact in its
   release workflow — evidence that a skill can be a shipped deliverable, not just repo furniture.
 
@@ -1187,6 +1546,23 @@ are in scope while "TIDAL's own service" is not.
 `develop` branch (tidal-hifi) only pays off with several contributors and a slow release train;
 for a solo/small project, trunk plus tags is simpler and matches sone, tidalt and the SDKs.
 
+#### 8.4 Developer environment
+
+streamboat depends on GStreamer/ALSA/PipeWire/system audio libraries; "install these 30 packages"
+is where contributors bounce, and CI reproducibility depends on the same answer — yet nothing in
+§8.1–8.3 says how a contributor gets a working build. Five of the 21 checkouts ship a Nix flake
+with a devShell: sone, high-tide, mopidy-tidal, python-tidal, TidaLuna. sone's is the instructive
+one — its devShell adds nodejs/pnpm/cargo/cargo-tauri and its `shellHook` exports
+`GST_PLUGIN_SYSTEM_PATH_1_0` composed from gstreamer plus plugins-base/good/bad/gst-libav, exactly
+the class of setup that breaks on a bare distro (ref:sone/flake.nix). high-tide's flake pulls in
+meson, ninja, blueprint-compiler, libadwaita, glib-networking, gst_all_1, libsecret, libportal and
+alsa-utils (ref:high-tide/flake.nix). mopidy-tidal instead documents a two-command `uv` workflow
+plus `make test`/`make format` (ref:mopidy-tidal/DEVELOPMENT.md). Ship `docs/development.md` plus
+one reproducible dev shell (flake or container) plus a task runner. Two cheap, cited conventions
+the repo layout in §8.1 omits: three references (python-tidal, tidal-sdk-ios, tidalt) use a
+Makefile as the CI-mirroring entry point (ref:tidalt/Makefile), and three (tidal-hifi,
+tidal-sdk-android, tidal-sdk-web) ship a `.editorconfig` (ref:tidal-hifi/.editorconfig).
+
 ---
 
 ### 9. Internationalisation and accessibility
@@ -1213,15 +1589,28 @@ for a solo/small project, trunk plus tags is simpler and matches sone, tidalt an
   locale-aware formatters, never manual `mm:ss` string building beyond duration.
 - **TIDAL's own locale surface**: the v1 endpoints take a `locale` parameter alongside
   `countryCode` and `deviceType` — e.g. `?countryCode=NZ&locale=en_US&deviceType=DESKTOP`
-  (ref:TidaLuna/plugins/lib/src/classes/TidalApi/index.ts:76). python-tidal hardcodes
+  (ref:TidaLuna/plugins/lib/src/classes/TidalApi/index.ts:76,30). python-tidal hardcodes
   `self.locale = "en_US"` with the comment `# TODO Get locale from system configuration`
-  (ref:python-tidal/tidalapi/session.py:404, 671), and sone passes `("locale", "en_US")` on ~10
-  call sites (ref:sone/src-tauri/src/tidal_api.rs). **streamboat should pass the user's actual
-  locale** — that makes TIDAL's editorial page titles, mix names and descriptions come back
-  localised for free, which is a bigger win than translating streamboat's own chrome. The exact
-  set of locales TIDAL accepts is not documented in any reference checkout; determine it
-  empirically (send a locale, compare the returned page titles) and record the result.
-  `countryCode` comes from `GET /v1/sessions` and is a separate axis from `locale`.
+  (ref:python-tidal/tidalapi/session.py:404, 671), and sone passes `("locale", "en_US")` at **21**
+  call sites in `tidal_api.rs` (lines 1808, 2307, 3074, 3258, 3336, 3381, 3429, 3489, 3528, 3576,
+  3874, 3957, 4173, 4240, 5048, 5185, 5211, 5235, 5273, 5458, 5858 — corrected from an earlier
+  "~10" estimate in this document). **streamboat should pass the user's actual locale** — that
+  makes TIDAL's editorial page titles, mix names and descriptions come back localised for free,
+  which is a bigger win than translating streamboat's own chrome. The exact set of locales TIDAL
+  accepts is not documented in any reference checkout; determine it empirically (send a locale,
+  compare the returned page titles) and record the result. `countryCode` comes from
+  `GET /v1/sessions` and is a separate axis from `locale`.
+- **i18n mechanics beyond picking a library**: three mechanical things break in practice that
+  §9.1's library choice does not cover. (1) The `.desktop` file and the AppStream metainfo are
+  user-facing and separately translated — `msgfmt --desktop` merges translations into the desktop
+  entry, and metainfo needs its own translated `<name>`/`<summary>`/`<description>`; High Tide's
+  `po/POTFILES` + `xgettext` pattern (above) does not itself cover these files, so add them to
+  `POTFILES` explicitly. (2) Add a pseudo-localization locale (wrap every translated string in
+  markers, pad it ~40%) and do a manual pass on it — the only cheap way to find strings that were
+  never externalized and layouts that break on German. (3) Define a string freeze before each
+  release so translators have a stable target, which matters given the roughly weekly cadence
+  §6.7 recommends; Flathub forbids machine-generated or mixed translations (§6.1), so an empty
+  locale is better than an auto-filled one.
 
 #### 9.2 Accessibility
 
@@ -1244,6 +1633,14 @@ for a solo/small project, trunk plus tags is simpler and matches sone, tidalt an
     stack decision lands on a webview.**
   - Any webview-based UI must use semantic HTML plus ARIA and be tested with a real screen reader
     (Orca on Linux, NVDA on Windows, VoiceOver on macOS), not just an automated audit.
+  - **Windows and macOS are first-class targets from v1 (see Project context) and need their own
+    bar, not just a Linux one.** Windows exposes UI Automation (UIA) — test with NVDA, not only
+    named in passing as the webview screen reader above. macOS uses NSAccessibility/AXAPI — test
+    with VoiceOver, and a custom-drawn or webview UI needs explicit accessibility roles on *both*
+    platforms, not just Linux's AT-SPI bridge. Add a per-OS row to the manual test matrix
+    (`docs/testing/audio-matrix.md` already proposed below) and state the OS media-key/now-playing
+    integration a screen-reader user relies on for each platform (SMTC on Windows,
+    MPNowPlayingInfoCenter on macOS, MPRIS on Linux) with acceptance criteria, not just a mention.
 - **Contrast and themes**: support the system light/dark preference and a high-contrast mode;
   never encode state in colour alone (quality badges need a text label as well as a colour —
   tidalt tests exactly this, asserting every tier on the quality ladder produces a non-empty
@@ -1323,7 +1720,40 @@ into one command.
 Do not export metrics by default. For the headless/daemon mode, an **opt-in** local Prometheus
 endpoint (bound to loopback, off unless configured) is defensible: buffer underruns, HTTP error
 rates by status, cache hit ratio by tier, token refresh count, current bitrate. It never leaves the
-machine, which keeps it consistent with the no-telemetry stance.
+machine, which keeps it consistent with the no-telemetry stance. Define the numbers once — §10.5
+below proposes the same buffer-underrun and cache-hit-ratio metrics as *performance budgets*; do
+not define them twice.
+
+#### 10.5 Baseline security posture for the local control surface
+
+Open question 9 defers the headless control-surface design (MPRIS vs HTTP/JSON) entirely to the
+owner, but whichever way that lands, a local listening socket has an established safe default, and
+the reference set already has a working precedent to copy rather than designing from the abstract.
+sone ships an opt-in local HTTP control surface (an MCP server) whose design is the baseline:
+disabled by default (`if !settings.mcp_enabled { return }`); bound explicitly to loopback
+(`let addr: SocketAddr = ([127,0,0,1], port).into()`), never `0.0.0.0`; authenticated by a random
+UUIDv4 bearer token generated on first enable and persisted in the (encrypted) settings, carried in
+the URL path (`/{token}/mcp`); a mutex held across the whole check→bind→store sequence so two
+callers cannot race the port; and a dedicated `sanitizer.rs` that projects the internal TIDAL
+models onto reduced structs (`SanitizedTrack`/`Album`/`Artist`/`Playlist` — id, title, artist,
+duration only) so the surface cannot leak account fields
+(ref:sone/src-tauri/src/mcp/mod.rs:12-42, ref:sone/src-tauri/src/mcp/server.rs:40,72-85,
+ref:sone/src-tauri/src/mcp/sanitizer.rs). **One thing to do differently**: a token in the URL path
+lands in access logs by default — put it in a header instead, and add it to the §10.2 redaction
+list regardless of which control-surface shape is chosen.
+
+#### 10.6 Performance budgets
+
+For a music player the user-visible quality bar is largely non-functional: how long until audio
+starts, whether a 10,000-track library scrolls, how much RAM it holds overnight. No reference
+project defines these, and this document specifies correctness testing in depth but nothing to
+regress performance against. Define a small set of budgets in `docs/testing/` at v0.1, measured
+with the same golden fixtures the audio tests (§2.7) use: cold start to first frame; time from
+play-press to first audio sample (the number users compare against the official client, dominated
+by the playbackinfo round-trip plus first-segment fetch — both already instrumented by the
+structured logging in §10.1); seek latency; steady-state RSS after an hour of playback; frame time
+scrolling a 10k-item list. Run them as a reporting (non-gating) CI job once the stack exists, since
+runner variance makes gating unreliable.
 
 ---
 
@@ -1366,24 +1796,46 @@ machine, which keeps it consistent with the no-telemetry stance.
 14. **Set up Renovate (weekly, grouped) + Dependabot for actions + osv-scanner + codespell +
     workflow-schema validation** on day one; they are near-zero-cost and catch real problems.
 15. **Adopt SemVer + Keep a Changelog + Conventional Commits, and enforce the changelog in CI**
-    with a four-line version-sync script.
+    with a version-sync check whose load-bearing line is
+    `grep -q "$(cat ./version.txt)" ./CHANGELOG.md` (tidal-sdk-ios's actual script is nine lines,
+    not four).
 16. **Externalise every user-facing string from the first screen**, and pass the user's real
     locale to TIDAL's `locale` parameter rather than hardcoding `en_US` as every reference does.
 17. **Put keyboard navigation, focus visibility and a shortcuts dialog in the definition of done**
     for every screen, with one keyboard test per screen in the default suite.
 18. **Build `streamboat debug-bundle` early** — it pays for itself the first time a DAC bug is
     reported.
+19. **Decide the multi-process token/device-ownership model now** (§3.7): either the daemon is
+    always the token owner with the GUI as a client, or the store needs a cross-process lock. Add
+    a test for it before the desktop and headless binaries can both be running at once.
+20. **Fuzz the `tidal://` URI handler** (§2.6 item 5) alongside the manifest/playbackinfo targets —
+    it is the one input surface reachable from an arbitrary web page before authentication.
+21. **Define a coverage target for `core` and publish it** (§2.10); state a fixture/golden-file
+    size policy and an LFS decision before the first large fixture lands (§2.11).
+22. **Ship one reproducible dev environment on day one** (§8.4: a Nix flake or container, plus a
+    Makefile that mirrors CI) — this is what determines whether a first-time contributor gets a
+    working build in five minutes or gives up.
+23. **Budget for release signing/SBOM and for a portable Linux binary as no-precedent, first-week
+    line items**, not later add-ons: no reference project attests a Linux binary (§6.7), and none
+    ships an AppImage-equivalent for the *streamboat* stack yet either (§6.3).
+24. **Record the EU CRA scope determination in `docs/legal.md`** (§5.5) — a five-minute decision
+    today, and a compliance-timeline problem if left implicit past 2026-09-11.
 
 ### Sequence the packaging work
 
 1. GitHub Releases with `checksums.txt` and a tag-triggered build (week 1 of releasing).
-2. AUR `-bin` + AUR source package; deb/rpm built in pinned containers, published to Cloudsmith.
-3. Flatpak manifest built in CI on every PR from the start; **submit to Flathub only after several
-   months of tagged releases and real users**, per the development-history requirement.
-4. Snap once the ALSA plug support burden is understood.
-5. Windows MSI/NSIS unsigned → winget once signing is sorted.
-6. macOS DMG only after the $99 Apple Developer Program is in place; Homebrew cask only after
-   notarization and after clearing the 90/90/225 notability bar.
+2. **AppImage (or a static tarball for the daemon/CLI)** — the only day-one option that reaches a
+   user on a distro not covered by AUR or the Cloudsmith deb/rpm matrix; see §6.3.
+3. AUR `-bin` + AUR source package; deb/rpm built in pinned containers, published to Cloudsmith.
+4. Flatpak manifest built in CI from the start; **submit to Flathub only after several
+   months of tagged releases and real users**, per the development-history requirement, and
+   re-read the Generative AI policy immediately before submitting (§6.1).
+5. Snap once the ALSA plug support burden is understood.
+6. Windows MSI/NSIS unsigned → winget once signing is sorted, and once the silent-install switches
+   and install `Scope` are decided (§6.4).
+7. macOS DMG only after the $99 Apple Developer Program is in place; Homebrew cask only after
+   notarization and after clearing the disjunctive 30-or-30-or-75 (90-or-90-or-225 self-submission)
+   notability bar.
 
 ---
 
@@ -1439,7 +1891,9 @@ Only the owner can settle these:
    best-effort?
 9. **Headless control surface.** MPRIS/D-Bus only (Linux-native, no new attack surface) or an
    HTTP/JSON API (cross-platform, remote control, needs auth and hardening)? This changes the
-   security model and the AGPL question.
+   security model and the AGPL question. If an HTTP surface is chosen, sone's loopback-bound,
+   token-authenticated, field-sanitized MCP server (§10.5) is the baseline design to copy or
+   deviate from explicitly, not a blank page.
 10. **Release cadence.** Weekly-ish minors like sone, or slower and batched? It affects Flathub
     eligibility (no daily-update software in stable) and the changelog burden.
 11. **Translation platform.** Self-hosted Weblate, Crowdin (Strawberry's choice), or plain PRs
@@ -1467,8 +1921,31 @@ Unverified items that must be checked before anything is published:
 - **Qt 6 module-by-module licensing** (which modules are GPL-2.0-only vs GPL-3.0-only) needs a
   per-module check against https://doc.qt.io/qt-6/licensing.html if Qt is chosen.
 - **Flathub's Generative AI policy text quoted here is from the repository HEAD dated 2026-09-07**;
-  press coverage in mid-2026 described it as a ban, and the documented policy is a disclosure
-  regime. Re-read the live page before submitting.
+  the policy already flipped once (commit `992f57b`, 2026-05-29, briefly an outright ban) before
+  reverting to the disclosure regime quoted in §6.1. Re-read the live page immediately before
+  submitting, not just once during research.
+- **Azure Trusted Signing / Artifact Signing pricing and eligibility** ($9.99/$99.99 per month,
+  signature caps, and the "US/Canada individuals, EU/UK organisations" eligibility wording) come
+  from secondary sources, not the primary Microsoft pricing page — both
+  `azure.microsoft.com` and `learn.microsoft.com` are blocked from this environment. Re-verify
+  before it drives a cost decision (§6.4, §6.5).
+- **winget's "7-day timer before the bot closes an assigned PR"** could not be confirmed — the
+  primary `learn.microsoft.com` policy page is blocked from this environment, and the only
+  auto-close mechanism found in reachable sources is tied to the `Needs-Author-Feedback` label.
+  Drop or hedge this detail until read from the primary source (§6.4).
+- **The Flathub linter's specific "never granted" exception rule for
+  `--talk-name=org.mpris.MediaPlayer2.$FLATPAK_ID`** could not be confirmed — `docs.flathub.org`
+  is blocked from this environment. The *default sandbox policy* already allowing an app to own
+  `org.mpris.MediaPlayer2.$FLATPAK_ID` with no finish-arg at all is confirmed from a primary
+  source (§6.1); only the specific linter-rule wording about the talk-name exception is unverified.
+- **Whether Snap's `alsa` interface can be requested for auto-connection** for a media player, and
+  what the store review process requires, was not checked against `snapcraft.io/forum` (§6.2).
+- **GStreamer, Qt and fdk-aac licensing claims in §5.3** are correct in substance but several of
+  the specific source URLs originally cited in this document did not actually contain the quoted
+  text on direct inspection; §5.3 now attributes each quote to its actual source file/page. Where
+  the corrected source is itself unreachable from this environment (Qt, fdk-aac), the claim is
+  read via a search index rather than a primary fetch — re-verify before publishing if Qt or a
+  patent-encumbered codec is in scope.
 
 ---
 
@@ -1490,14 +1967,19 @@ Unverified items that must be checked before anything is published:
 - `ref:mopidy-tidal/tests/test_proxy.py` — `pytest_httpserver` + `trustme` + `pytest-cases`.
 - `ref:mopidy-tidal/integration_tests/{conftest.py,util.py,test_login_hack.py}` — pexpect-driven
   end-to-end test of the unauthenticated device-code path via `mpc`.
-- `ref:mopidy-tidal/.github/workflows/{test.yml,integration.yml}` — 3.12/3.13/3.14 × mopidy 3.3/3.4
-  matrix, `fail-fast: false`, uv cache keyed per leg, codecov, weekly cron.
+- `ref:mopidy-tidal/.github/workflows/test.yml` — Python-only unit-test matrix (3.12/3.13/3.14),
+  `fail-fast: false`, uv cache keyed per leg, codecov upload gated on the 3.13 leg.
+- `ref:mopidy-tidal/.github/workflows/integration.yml` — the separate 3.12/3.13/3.14 × mopidy 3.3/3.4
+  matrix (6 legs), `fail-fast: false`, no coverage upload, runs on push/PR **and**
+  `cron: "0 0 * * 0"` (weekly), executing the pexpect integration suite.
 - `ref:mopidy-tidal/mopidy_tidal/ext.conf` — `playback_cache=false`,
   `playback_cache_max_entries=1024`, `playback_cache_buffer_bytes=16777216`.
 - `ref:mopidy-tidal/mopidy_tidal/gstreamer_proxy/cache.py` — SQLite cache, LRU eviction by
   `last_used`, `manual` pin flag, `schema_version` in a metadata table.
 - `ref:sone/src-tauri/src/crypto.rs` — AES-256-GCM envelope, `"SONE"|version|nonce` header, keyring
-  (`sone`/`master-key`) then 0600 key file, zeroize, plaintext-passthrough migration.
+  (`sone`/`master-key`, lines 79-110 return immediately on success — no file write on that path)
+  then a 0600 key file written only at first-run key generation (lines 113-148), zeroize (line 28),
+  plaintext-passthrough migration, cache-entry encryption reusing the same envelope (lines 429-433).
 - `ref:sone/src-tauri/src/cache.rs` — 4-tier TTL/SWR table, 2 GiB cap, 90% evict target, SHA-256
   keys, `CacheResult::{Fresh,Stale,Miss}`, `CacheStats`.
 - `ref:sone/src-tauri/src/logging.rs` — flexi_logger 5 MB rotation, 9 kept files, stderr
@@ -1506,8 +1988,11 @@ Unverified items that must be checked before anything is published:
   absolute deadline, HTTP-date `Retry-After` rejected rather than mis-parsed.
 - `ref:sone/src-tauri/src/commands/updates.rs` — GitHub-releases update check, semver comparison,
   failures treated as "no update".
-- `ref:sone/src-tauri/src/tidal_api.rs` — pure `parse_*` functions with inline `json!` fixtures;
-  `("locale", "en_US")` at ~10 call sites; one `<redacted: account endpoint>` log line.
+- `ref:sone/src-tauri/src/tidal_api.rs` — pure `parse_*` functions with inline `json!` fixtures
+  (51 `#[test]` functions in this file, ~145 across all Rust sources); `("locale", "en_US")` at 21
+  call sites (lines 1808, 2307, 3074, 3258, 3336, 3381, 3429, 3489, 3528, 3576, 3874, 3957, 4173,
+  4240, 5048, 5185, 5211, 5235, 5273, 5458, 5858); one `<redacted: account endpoint>` log line at
+  line 1473.
 - `ref:sone/src-tauri/src/lib.rs` — config dir resolution, cache under config, encrypted settings,
   migration handling.
 - `ref:sone/scripts/gen_embedded.py`, `ref:sone/src-tauri/src/embedded_config.rs` — XOR
@@ -1588,7 +2073,10 @@ Unverified items that must be checked before anything is published:
 - `ref:tidal-sdk-web/packages/player/src/internal/helpers/manifest-parser.test.ts` — real base64
   DASH/BTS/EMU manifests as inline fixtures, including Widevine/PlayReady `cenc:pssh` and signed
   CDN URLs.
-- `ref:tidal-sdk-ios/.github/workflows/check-tidalapi-spec.yml` — daily OAS diff against
+- `ref:tidal-sdk-ios/.github/workflows/check-tidalapi-spec.yml`,
+  `ref:tidal-sdk-android/.github/workflows/check-tidalapi-spec.yml`,
+  `ref:tidal-sdk-web/.github/workflows/check-tidalapi-spec.yml` — all three (not two) run the
+  identical daily OAS diff against
   `https://tidal-music.github.io/tidal-api-reference/tidal-api-oas.json` and auto-regeneration PR.
 - `ref:tidal-sdk-ios/.github/workflows/changelog-check.yml`,
   `ref:tidal-sdk-ios/.agents/skills/prepare-release/` — CI invoking skill scripts from the skill
@@ -1612,67 +2100,151 @@ Unverified items that must be checked before anything is published:
 - `ref:tidal-cli/.github/workflows/release.yml` — `npm publish --access public --provenance`.
 - `ref:dotnet-tidal-usdk/LICENSE.md` — MIT plus a non-OSI anti-piracy clause.
 - `ref:TidaLuna/plugins/lib/src/classes/TidalApi/index.ts` — `countryCode`/`deviceType`/`locale`
-  query construction.
+  query construction (lines 76, 30).
+- `ref:tidalt/docs/client-server.md`, `ref:tidalt/cmd/tidalt/daemon.go` (lines 17-31, 44) — single-
+  server D-Bus-name-claim model, ALSA `hw:` single-owner rationale, systemd `--user` unit template.
+- `ref:tidalt/docs/docker.md` — container ALSA minimum (`--device /dev/snd`, `audio` group add).
+- `ref:tidalt/cmd/tidalt/tidalt.desktop` — `x-scheme-handler/tidal` registration,
+  `Exec=tidalt play %u`.
+- `ref:sone/src-tauri/src/lib.rs` (lines 546-548) — `tauri_plugin_single_instance` focuses the
+  existing window instead of opening a second one; (lines 346-348) settings-encryption migration
+  log lines.
+- `ref:sone/src-tauri/src/mcp/{mod.rs,server.rs,sanitizer.rs}` — opt-in loopback-bound,
+  UUIDv4-token-authenticated local MCP control surface with a field-sanitizing response layer.
+- `ref:sone/flake.nix`, `ref:high-tide/flake.nix` — Nix devShells with GStreamer/GTK dependency
+  sets exported via `shellHook`.
+- `ref:mopidy-tidal/DEVELOPMENT.md` — two-command `uv` dev workflow, `make test`/`make format`.
+- `ref:tidalt/Makefile` — CI-mirroring Makefile entry point.
+- `ref:tidal-hifi/.editorconfig` — `.editorconfig` convention.
+- `ref:tidal-sdk-web/.github/CODEOWNERS`, `ref:tidal-sdk-ios/.github/CODEOWNERS` — CODEOWNERS
+  convention.
+- `ref:tidal-sdk-android/.github/workflows/{pull-request.yml,post-merge.yml,publish-pages.yml}`,
+  `ref:tidal-sdk-web/.github/workflows/cypress.yml` — `concurrency:` groups with
+  cancel-in-progress.
 
 ### Upstream documentation
 
-- https://docs.flathub.org/docs/for-app-authors/requirements — inclusion policy (console software
-  rejected, minimal submissions rejected, insufficient development history), app ID rules,
-  license and license-file requirements, permissions/portals policy, no network during build,
-  build-from-source, stable-releases-only, localisation policy, trademark rules, and the
-  Generative AI policy. Read from the source repository `flathub-infra/documentation`
-  (`docs/02-for-app-authors/02-requirements.md`, HEAD dated 2026-09-07).
+- https://raw.githubusercontent.com/flathub-infra/documentation/master/docs/02-for-app-authors/02-requirements.md
+  — inclusion policy (console software rejected, minimal submissions rejected, insufficient
+  development history), app ID rules, license and license-file requirements, permissions/portals
+  policy, no network during build, build-from-source, stable-releases-only, localisation policy,
+  trademark rules, and the Generative AI policy. Read directly from the source repository
+  `flathub-infra/documentation` (HEAD dated 2026-09-07) after `docs.flathub.org` returned
+  EGRESS_BLOCKED from this environment.
 - https://docs.flathub.org/docs/for-app-authors/linter — finish-args rules including
   `finish-args-incorrect-secret-service-talk-name`, `finish-args-own-name-cpt`,
-  `finish-args-mpris-flatpak-id-talk-name`, `finish-args-x11-without-ipc`,
-  `metainfo-missing-screenshots`, `module-*-build-network-access`.
-- https://docs.flathub.org/docs/for-app-authors/metainfo-guidelines — metadata_license /
-  project_license requirements.
+  `finish-args-x11-without-ipc`, `metainfo-missing-screenshots`,
+  `module-*-build-network-access`. **This page itself is egress-blocked**; its content here comes
+  from a search index of the page, not a direct fetch — the specific
+  `finish-args-mpris-flatpak-id-talk-name` "never granted" rule name could not be confirmed this
+  way and is flagged unverified (§6.1). Also unconfirmed via this route: sandbox-escape exceptions
+  (home/host/flatpak-spawn/arbitrary bus names) reportedly not granted when there are "signs of LLM
+  usage in the software or in the exception PR" — corroborated only by a search snippet.
+- https://raw.githubusercontent.com/flathub-infra/documentation/master/docs/02-for-app-authors/03-metainfo-guidelines/index.md
+  and `.../01-quality-guidelines.md` — mandatory/recommended metainfo fields, name/summary/
+  screenshot/icon quality numbers (§6.1a).
+- https://raw.githubusercontent.com/flathub-infra/documentation/master/docs/02-for-app-authors/05-submission.md
+  — fork/branch/PR mechanics, `bot, build`, write-access invitation window (§6.1a).
+- https://raw.githubusercontent.com/flathub-infra/documentation/master/docs/02-for-app-authors/06-maintenance.md
+  — External Data Checker, `x-checker-data`, automerge levels, master/beta branches, EOL rules
+  (§6.1a).
+- https://raw.githubusercontent.com/flathub-infra/documentation/master/docs/02-for-app-authors/10-verification.md
+  — GitHub-owner verification for `io.github.*` IDs; domain/DNS/GitLab alternatives (§6.1a).
+- https://github.com/flathub-infra/documentation/commit/992f57b30de98ddbd5e80959e9672998c83c8c97 —
+  the 2026-05-29 commit that briefly replaced the Generative AI policy with an outright ban before
+  it reverted to the disclosure regime; evidence the policy is not settled (§6.1).
 - https://github.com/flatpak/flatpak-docs/blob/master/docs/sandbox-permissions.rst —
   `--socket=pulseaudio` includes `/dev/snd`; device table (`dri`, `kvm`, `shm`, `input`, `usb`,
-  `all`); `--persist=DIR` semantics; default D-Bus policy allowing
-  `org.mpris.MediaPlayer2.$FLATPAK_ID`.
-- https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Secret.html —
-  per-application master secret over a pipe FD, xdg-desktop-portal ≥ 1.5.0.
+  `all`); `--persist=DIR` semantics; default D-Bus policy allowing an app to own
+  `org.mpris.MediaPlayer2.$FLATPAK_ID` with no extra finish-arg (verbatim, verified by direct
+  fetch).
+- https://raw.githubusercontent.com/flatpak/xdg-desktop-portal/main/data/org.freedesktop.portal.Secret.xml
+  — per-application master secret over a pipe FD, stored in the user's keyring under the app ID.
+  The `xdg-desktop-portal >= 1.5.0` version is corroborated by secondary sources (ArchWiki, Snap
+  docs), not read from a primary changelog.
 - https://github.com/Homebrew/brew/blob/main/docs/Package-Acceptance-Policy.md — notability
-  thresholds 30/30/75 and 90/90/225, "a code repository less than 30 days old is normally not
-  eligible".
+  thresholds are **disjunctive**: "at least 30 forks, 30 watchers or 75 stars" (90/90/225 for a
+  self-submission by the repo owner); "a code repository less than 30 days old is normally not
+  eligible". An earlier draft of this document read the slash notation as a conjunction; corrected
+  throughout (Summary, §6.5, packaging sequence).
 - https://github.com/Homebrew/brew/blob/main/docs/Acceptable-Casks.md — Gatekeeper assessment
   requirement; no SIP/Gatekeeper bypass.
 - https://github.com/Homebrew/brew/blob/main/docs/Homebrew-Security-and-Supply-Chain.md —
   quarantine application, Developer ID + notarization rationale, deprecation of casks failing
   Gatekeeper.
-- https://developer.apple.com/support/developer-id — Developer ID certificate requires Apple
-  Developer Program membership; notarization included.
-- https://azure.microsoft.com/en-us/products/artifact-signing and
-  https://azure.microsoft.com/en-in/pricing/details/trusted-signing/ — $9.99/month Basic,
-  $99.99/month Premium, individual eligibility USA/Canada, organisations EU/UK.
-- https://learn.microsoft.com/en-us/windows/package-manager/package/repository — winget manifest
-  submission, `InstallerSha256` requirement, automated validation, 7-day PR timer.
-- https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentiala —
-  `CRED_MAX_CREDENTIAL_BLOB_SIZE`; https://github.com/jaraco/keyring/issues/355 — observed
-  failures past the limit.
-- https://gstreamer.freedesktop.org/documentation/frequently-asked-questions/licensing.html —
-  LGPL-2.1 core, GPL plugins in `-ugly`, "with GPL linked plugins GStreamer is for all practical
-  reasons under the GPL itself", FFmpeg build-mode caveat for gst-libav.
-- https://fedoraproject.org/wiki/Licensing/FDK-AAC — FDK-AAC license is GPL-incompatible.
-- https://doc.qt.io/qt-6/licensing.html and https://www.qt.io/faq/qt-open-source-licensing — Qt 6
-  mainly LGPLv3 with GPL-only modules; GPL-2.0-only and GPL-3.0-only modules must not be mixed.
+- https://developer.apple.com/programs/ and https://developer.apple.com/support/developer-id —
+  Developer ID certificate requires Apple Developer Program membership ($99/year); neither page
+  lists a separate notarization fee (an absence-of-evidence inference, not an explicit quote).
+- Azure Trusted Signing / Artifact Signing pricing and eligibility: **`azure.microsoft.com` and
+  `learn.microsoft.com` returned EGRESS_BLOCKED from this environment.** The $9.99/$99.99-per-month
+  figures, signature caps (5,000 / 100,000), and the "verified US, Canadian, EU and UK businesses
+  and self-employed individuals" eligibility wording come from secondary sources only: devclass
+  (2026-01-14), melatonin.dev, and a Microsoft Community Hub post ("Trusted Signing is now open for
+  individual developers"). Re-verify against the primary Microsoft page before this drives a cost
+  decision (§6.4, §6.5).
+- https://learn.microsoft.com/en-us/windows/package-manager/package/repository — this page returned
+  EGRESS_BLOCKED. `InstallerSha256`, the automated validation pipeline, and unattended-install
+  requirements are corroborated instead by the `microsoft/winget-pkgs` README/`doc/README.md` and
+  PR threads; the "7-day PR timer" claim is **not** corroborated by any reachable source and should
+  be dropped or hedged until read from this primary page (§6.4).
+- https://learn.microsoft.com/en-us/windows/win32/api/wincred/ns-wincred-credentiala — this page
+  returned EGRESS_BLOCKED; `CRED_MAX_CREDENTIAL_BLOB_SIZE` is instead verified against a mingw-w64
+  copy of `wincred.h` and AdysTech/CredentialManager issue #65;
+  https://github.com/jaraco/keyring/issues/355 — observed failures past the limit (§3.2).
+- https://raw.githubusercontent.com/GStreamer/gst-docs/master/markdown/frequently-asked-questions/licensing.md
+  — LGPL-2.1 core ("We require that all code going into our core packages is LGPL"), patent plugins
+  routed to `gst-plugins-ugly`. **Downloaded and grepped directly**: this file contains *neither*
+  "practical reasons under the GPL" *nor* any FFmpeg/libav guidance, despite both being attributed
+  to it in an earlier draft of this document. Those two claims are sourced instead from
+  `gst-plugins-base`'s `LICENSE_readme` ("When using GPL linked plugins, GStreamer is for all
+  practical reasons under the GPL itself") and `GStreamer/gst-libav`'s `README.md` ("If you are
+  distributing an application which has a non-GPL compatible license … you have to make sure not to
+  build FFmpeg with GPL code enabled") respectively — both read via GitHub, not a primary fetch.
+- FDK-AAC license (GPL-incompatible, non-free in Debian): `fedoraproject.org` returned
+  EGRESS_BLOCKED; corroborated via a search index of the Fedora Licensing/FDK-AAC wiki, plus
+  tookmund.com "AAC and Debian" and the Hydrogenaudio knowledge base.
+- Qt 6 module-by-module licensing (LGPLv3 core, GPL-2.0-only vs GPL-3.0-only modules must not be
+  mixed, with the Spatial Audio/TextToSpeech example): `doc.qt.io` returned EGRESS_BLOCKED;
+  corroborated via a search index of https://doc.qt.io/qt-6/licensing.html and
+  https://www.qt.io/faq/qt-open-source-licensing, not a primary fetch. Re-verify module-by-module
+  before Qt is chosen.
 - https://semver.org/spec/v2.0.0.html, https://keepachangelog.com/en/1.1.0/,
   https://www.conventionalcommits.org/en/v1.0.0/ — versioning, changelog and commit conventions.
 - https://github.com/dirs-dev/directories-rs — the canonical per-OS mapping for config/cache/data/
-  state/runtime directories used in §4.1.
-- https://tidal-music.github.io/tidal-api-reference/tidal-api-oas.json — the OpenAPI document both
-  official SDKs diff daily.
+  state/runtime directories used in §4.1; verified by direct fetch of its README.
+- https://tidal-music.github.io/tidal-api-reference/tidal-api-oas.json — the OpenAPI document all
+  three official SDKs (not two) diff daily.
 - https://github.com/tauri-apps/tauri/issues/207 (accessibility tracking) and
   https://github.com/tauri-apps/tauri/issues/4315 ("Could not determine the accessibility bus
   address") — the webview-stack accessibility risk noted in §9.2.
+- https://openssf.org/public-policy/eu-cyber-resilience-act/ and https://orcwg.org/cra/ — CRA
+  timeline (2026-06-11, 2026-09-11, 2027-12-11), open-source-steward duties under Article 24, and
+  the Article 64(10) fine exemption, used in §5.5.
+- `developer.tidal.com/documentation/guidelines-developer-terms-2_0` — both `developer.tidal.com`
+  and `tidal.com` returned EGRESS_BLOCKED. The "Player module only" playback restriction (§5.4) is
+  corroborated by an independent web search returning matching quoted text from that URL, not a
+  direct fetch — still not a primary read, and the document governs the official developer-program
+  SDK, not the unofficial-API route this project uses (§5.4 scope note).
 
 ### Not reachable from this environment (flagged as unverified)
 
 - `https://tidal.com/terms` and `https://developer.tidal.com/documentation/guidelines-developer-terms-2_0`
   — blocked by the egress proxy. All ToS/Developer-Terms claims in this document are second-hand
-  and must be confirmed by the legal research topic.
-- `https://docs.flathub.org` and `https://docs.flatpak.org` direct fetches were blocked; both were
-  read from their upstream source repositories instead (`flathub-infra/documentation`,
-  `flatpak/flatpak-docs`), which is equivalent or newer.
+  (independent web search corroborates the quoted text, §5.4) and must be confirmed by the
+  legal/ToS research topic before publication.
+- `https://docs.flathub.org` and `https://docs.flatpak.org` direct fetches were blocked; most
+  content was read instead from their upstream source repositories
+  (`flathub-infra/documentation`, `flatpak/flatpak-docs`), which is equivalent or newer. The
+  linter page specifically (`docs.flathub.org/docs/for-app-authors/linter`) was read only via a
+  search index, not a repository mirror — its `finish-args-mpris-flatpak-id-talk-name` rule name
+  and the "LLM usage" sandbox-escape caveat are correspondingly less certain (§6.1).
+- `https://azure.microsoft.com/*` and `https://learn.microsoft.com/*` — both blocked by the egress
+  proxy for every page cited in this document (Trusted Signing pricing/eligibility, winget
+  submission policy, `wincred.h`/`CREDENTIALA`). All claims from these domains are secondary-source
+  or search-index reconstructions and must be re-verified from an unblocked network before they
+  drive a cost or design decision (§3.2, §6.4, §6.5).
+- `https://doc.qt.io/*`, `https://fedoraproject.org/wiki/*`, and
+  `https://gstreamer.freedesktop.org/*` — all blocked. The Qt and fdk-aac licensing claims (§5.3)
+  are read via search indexes; the GStreamer FAQ was instead read successfully via its
+  `raw.githubusercontent.com` mirror, which is how the mis-citation in an earlier draft of §5.3
+  was caught and corrected.

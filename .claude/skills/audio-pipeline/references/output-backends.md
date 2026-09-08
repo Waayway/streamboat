@@ -1,0 +1,385 @@
+# Output backends and bit-perfect / exclusive modes
+
+Full narrative: `docs/research/audio-pipeline.md` §3, plus fact-check gap-fill in its §10.3-10.9,
+§10.12-10.13.
+
+## Table of contents
+
+1. Linux — ALSA `hw:` direct
+2. Linux — PipeWire/PulseAudio and device reservation
+3. Sandbox implications (Flatpak, Snap)
+4. Windows — WASAPI and ASIO
+5. macOS — CoreAudio
+6. mpv/libmpv exclusive-mode scope across platforms
+7. Bit-perfect as a feature: hardware volume, dither, and where DSP fits
+8. Position: correcting for buffered-but-unplayed frames
+9. Real-time thread scheduling for the writer thread
+10. Verifying bit-perfectness — a test plan
+11. Device identity and persistence across reboots/hot-plug
+
+---
+
+## 1. Linux — ALSA `hw:` direct
+
+Opening `hw:CARD,DEV` bypasses `dmix`, `plug`, and (with §2's D-Bus handshake) the sound server.
+
+**Sone** (`ref:sone/src-tauri/src/audio.rs`) — GStreamer decodes into an `appsink`; a dedicated
+`alsa-writer` thread owns the `snd_pcm_t`, bypassing GStreamer's own audio sinks entirely (build via
+`gstreamer`/`gstreamer-app` 0.23, ALSA I/O via the `alsa` 0.10 crate).
+
+Format probing (`probe_supported_gst_formats`, lines 483-507), priority order:
+`S32LE`, `S24LE` (= GStreamer `S24_32LE`), `S243LE` (= GStreamer `S24LE`), `FloatLE`, `S16LE`.
+**The naming is inverted between ALSA and GStreamer** — get this backwards and it's a silent 8-bit
+shift:
+
+```
+ALSA S24_LE  = 24-in-32 container = GStreamer S24_32LE (4 bytes/sample)
+ALSA S24_3LE = packed 24-bit      = GStreamer S24LE    (3 bytes/sample)
+```
+
+Rate probing (`probe_supported_rates`, lines 545-567):
+`44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000`.
+
+Bit-perfect format selection (`pick_capsfilter_format`, lines 516-544):
+
+1. pass through if the DAC accepts the source format;
+2. otherwise the narrowest **lossless** promotion the DAC accepts — `S16LE -> [S24LE, S24_32LE,
+   S32LE]`, `S24LE -> [S24_32LE, S32LE]`, `S24_32LE -> [S24LE, S32LE]` — pure integer container
+   changes, valid because `audioconvert` is `dithering=none noise-shaping=none`;
+3. otherwise the DAC's widest probed format, reported honestly to the UI as a lossy fallback.
+
+`configure_alsa_hwparams` (lines 569-751), copy this wholesale:
+
+- `set_access(RWInterleaved)`.
+- Bit-perfect: `set_format(requested)` must succeed, no fallback ladder.
+- Bit-perfect: `set_rate_resample(false)` — **the one call that makes ALSA bit-perfect.**
+- `set_rate(rate, Nearest)`, then read back `get_rate()` and **fail** if it differs — message:
+  "DAC doesn't support {n}kHz — turn off bit-perfect mode for compatibility".
+- Channel negotiation falls back to `get_channels_min()` — pro USB interfaces (Focusrite, Audient)
+  expose a fixed channel count and reject stereo.
+- `set_buffer_time_near(500_000)` (500 ms), `set_period_time_near(50_000)` (50 ms).
+- **`sw_params`: `snd_pcm_hw_params()` resets `start_threshold` to 1**, which underruns from the
+  first write. Restore `start_threshold = floor(buffer/period)*period` and `avail_min = period`
+  afterward.
+
+Writer loop (lines 830+): generation counters drop stale PCM from a torn-down pipeline; hardware
+pause via `snd_pcm_pause` when supported, else a software pause writing 50 ms silence buffers to
+pace the thread then `drop()`+`prepare()` to flush; XRUN recovery (`EPIPE` -> `prepare()` + silence
+kick), suspend recovery (`ESTRPIPE` -> `resume()` retry on `EAGAIN`), `ENODEV` -> "device
+disconnected"; full close-and-reopen of the PCM on format change (*"Some hardware (e.g. XMOS USB
+controllers) can't reconfigure HW params in-place after `snd_pcm_drop()`"*).
+
+**tidalt** (`ref:tidalt/internal/player/alsa.c`, `mpv.go`) — CGO, FFmpeg decode + libasound out.
+Different, equally instructive choices:
+
+- **16-bit format preference:** `S32_LE -> S16_LE -> S24_3LE -> S24_LE`, because *"many USB DACs
+  (e.g. CS43198-based devices) have a buggy or non-functional S16_LE USB endpoint but work correctly
+  via their native 32-bit endpoint."* **24-bit preference:** `S24_3LE -> S24_LE -> S32_LE`.
+- **Period size set first** (1024 frames), buffer afterward at `4x period`. Reason: querying
+  `period_size_min` after setting the buffer returns absurd values on some DACs ("87 frames on the
+  Hidizs S9 Pro Plus"), producing ~1000 interrupts/s and audible distortion.
+- `snd_pcm_hw_params_get_sbits()` reports the hardware's *significant* bit depth (e.g. 24 inside an
+  `S32_LE` container).
+- `open_hw_device` and `configure_hw_pcm` are **split** so "device busy" (retry on `hw:`) is
+  distinguishable from "format refused" (fall back to `plughw:`, mark the path no-longer-bit-perfect,
+  show a `(converted)` badge). Memoised per device.
+
+**Dither for narrowing conversions — the case §1's promotion ladder does not cover.** The ladder
+above only ever widens or does a lossless container change, so "no dither is ever needed" *inside
+that ladder* — but a 24/96 track on a **16-bit-only device** is a narrowing conversion, and
+undithered truncation there produces audible correlated distortion on fades and reverb tails. This
+case is real on target hardware: Raspberry Pi HDMI needs "16bit/44.1kHz" for hi-res content per
+`ref:tidal-connect/userconfig/README.md`, and
+`ref:tidal-connect/userconfig/xmos-dac-softvol-s16.asound.conf` pins `format S16_LE`. **Rule:**
+bit-perfect mode fails loudly on a narrowing device (consistent with §7 below); non-bit-perfect mode
+must enable dither on any bit-depth reduction — in GStreamer, that means *not* setting
+`audioconvert dithering=none` on that path (its default is TPDF, which is correct); the transparency
+panel should report "dithered 24->16". The same reasoning applies to in-place integer PCM volume
+scaling (`ref:sone/src-tauri/src/audio.rs:965-1010`): do gain in f32 and dither on the way back to
+integer, don't scale the integer PCM directly.
+
+## 2. Linux — PipeWire/PulseAudio and device reservation
+
+`autoaudiosink` picks `pipewiresink`/`pulsesink`/`alsasink` at runtime; the child is added
+asynchronously so it cannot be inspected synchronously (`ref:sone/src-tauri/src/audio.rs:1977-1979`).
+
+**Device reservation — copy tidalt's implementation exactly.** To take `hw:` while PipeWire holds
+it, speak `org.freedesktop.ReserveDevice1`. tidalt's `reserveALSADevice`
+(`ref:tidalt/internal/player/mpv.go:314-395`):
+
+1. Connect to the **session** bus; if none exists, skip reservation and try the device directly.
+2. Call `RequestRelease(int32 MaxInt32)` on `org.freedesktop.ReserveDevice1.Audio{N}` at
+   `/org/freedesktop/ReserveDevice1/Audio{N}`, 500 ms deadline.
+3. Distinguish three outcomes and keep them distinct:
+   - reply `released == false` -> explicit refusal, fail;
+   - deadline exceeded -> an owner exists but is slow; **back off, do not steal**
+     (`ReplaceExisting` stealing is exactly what the protocol exists to prevent);
+   - any other call error -> nobody owns the name, proceed.
+4. Wait 200 ms for the previous owner to actually close its handle.
+5. `RequestName(name, NameFlagReplaceExisting | NameFlagAllowReplacement)`, require
+   `RequestNameReplyPrimaryOwner`.
+6. Hold the name for the whole playback, release on stop.
+
+Timing budget so the whole handshake fits inside a 3 s shutdown window:
+`releaseCallTimeout 500ms + releaseSettleDelay 200ms + openBusyRetryBudget 800ms = 1.5s`, `EBUSY`
+retried every 100 ms.
+
+**`libmpv` has no `ReserveDevice1` support of any kind** — absent from both `DOCS/man/ao.rst` and
+`DOCS/man/options.rst`. A libmpv-based engine (Design B in `stacks-comparison.md`) needs this
+handshake done in the **host process** around libmpv — reserve, hand the now-free `hw:` device to
+mpv via `--audio-device`, release on stop — not inside libmpv. Skipping this makes exclusive mode a
+permanent "device busy" error for every PipeWire user, which is exactly the gap Sone has: it opens
+the PCM eagerly and maps `EBUSY` to a `device_busy` error string, telling the user in its FAQ to
+close whatever else holds the device (`ref:sone/src-tauri/src/audio.rs:770-779`).
+
+**Reading OS mixer state as ground truth.** Sone's `pipeline_probe.rs` shells out to `pactl info` /
+`pactl list sinks` (`LC_ALL=C` forced) for server name, default sink, sample spec, volume in dB
+(converted to a linear multiplier as `10^(dB/20)`, not trusted from the cubic-mapped percentage),
+mute state; maps the sink to `/proc/asound/<alsa.id>` and parses
+`/proc/asound/<card>/pcm{N}p/sub{M}/hw_params` for kernel ground truth (format, rate, channels,
+period_size, buffer_size, or the literal `closed`). This feeds the "signal path transparency" panel
+(`ref:sone/src-tauri/src/signal_path.rs`) — copy this idea; it is the single best user-facing
+feature in the reference set.
+
+**PipeWire's own capabilities** (from PipeWire docs, summarized — re-check exact config keys before
+publishing): the audio adapter supports a passthrough mode with no conversions, the mechanism behind
+exclusive access; `default.clock.rate`/`default.clock.allowed-rates` control which rates the graph
+switches to; per-device `audio.format` can be pinned in WirePlumber.
+
+## 3. Sandbox implications (Flatpak, Snap)
+
+- **Flatpak.** High Tide's manifest (`ref:high-tide/build-aux/io.github.nokse22.high-tide.json`)
+  declares `finish-args`: `--share=network`, `--share=ipc`, `--socket=fallback-x11`,
+  `--device=dri`, `--socket=wayland`, `--socket=pulseaudio`, `--filesystem=xdg-run/pipewire-0:ro`,
+  `--filesystem=xdg-run/discord-ipc-0`. No `--device=all`, so `/dev/snd` is not visible and raw ALSA
+  `hw:` is impossible inside the sandbox — even though the manifest bundles `alsa-utils`/`libasound`.
+  High Tide's ALSA sink option therefore only works outside Flatpak, or with a manually widened
+  permission set.
+- **Snap.** Sone ships `plugs: [audio-playback, alsa]` and instructs
+  `sudo snap connect sone:alsa` for exclusive output, because the `alsa` interface is not
+  auto-connected (`ref:sone/snap/snapcraft.yaml`).
+- **Consequence:** exclusive/bit-perfect mode is a *packaging* feature, not just a code feature.
+  Plan at least three Linux artefacts — an unconfined native package (deb/rpm/AUR/Nix) that can do
+  `hw:`, a Flatpak that cannot and must say so in the UI, and a Snap with the `alsa` plug connected.
+  Detect confinement at runtime and grey out the exclusive-mode toggle with an explanation rather
+  than failing at play time.
+
+## 4. Windows — WASAPI and ASIO
+
+- `wasapi2sink` (gst-plugins-bad) has a real `exclusive` boolean property alongside `device`,
+  `low-latency`, `mute`, `volume`, `dispatcher`, `continue-on-error`. **The property is new in
+  GStreamer 1.28** — its gtk-doc block is tagged `Since: 1.28` and does not exist on 1.26 or
+  earlier. Gate any code that sets it on a runtime GStreamer-version check.
+- sone-windows: `wasapi2sink` with `exclusive` from settings, `low-latency=true`, `device` from the
+  picker (`ref:sone-windows/src-tauri/src/audio.rs:1236-1246`). Toggling exclusivity mid-playback:
+  drop to `Ready`, set the properties, back to `Playing`, re-seek to the saved position — the device
+  must actually be released and re-acquired (`:1580-1602`).
+- Strawberry generalises: any sink with an `exclusive` property gets it set
+  (`ref:strawberry/src/engine/gstenginepipeline.cpp:721-727`), and *derives* exclusivity on Linux
+  from the device string starting `hw:`/`plughw:` (`:632-637`).
+- **Strawberry's default Windows sink is `directsoundsink`, not WASAPI** — `directsoundsink` is
+  raised to `GST_RANK_PRIMARY`, `wasapisink`/`wasapi2sink` demoted to `GST_RANK_SECONDARY`:
+  *"wasapisink does not support device switching and wasapi2sink has issues, see #1227"*
+  (`ref:strawberry/src/engine/gststartup.cpp:59-74`). A caution flag for GStreamer on Windows.
+- Device enumeration: Strawberry has `MMDeviceFinder` (wasapisink/wasapi2sink),
+  `UWPDeviceFinder` (`wasapi2sink_`), `DirectSoundDeviceFinder`. sone-windows enumerates via
+  GStreamer's `DeviceMonitor` filtered on `device.api ∈ {wasapi, wasapi2}`, reading `device.id`.
+- **ASIO.** Strawberry has an `AsioDeviceFinder` targeting `asiosink` — a GStreamer ASIO sink exists,
+  but no reference TIDAL client uses it. ASIO SDK redistribution carries its own Steinberg licence
+  terms `[unverified whether asiosink ships in mainstream Windows GStreamer builds]`.
+- Rust crate: `wasapi` 0.24.0 (MIT) exposes exclusive-mode format probing directly for a
+  non-GStreamer path.
+
+**WASAPI exclusive-mode failure states an implementer will hit on day two** (standard WASAPI
+territory, not project-specific):
+
+- Exclusive mode requires the per-endpoint *"Allow applications to take exclusive control of this
+  device"* checkbox enabled in Windows Sound settings. No API enables it; if off,
+  `IAudioClient::Initialize` returns `AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED` — surface a distinct,
+  actionable error, mirroring TIDAL's own `deviceexclusivemodenotallowed` native-player event
+  (`ref:tidal-sdk-web/packages/player/src/player/nativeInterface.ts`).
+- Probe format support per (rate, bit depth, container) with
+  `IAudioClient::IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, ...)` — the Windows analogue of §1's
+  ALSA format/rate probing ladder.
+- `AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED` -> re-query `GetBufferSize`, re-initialise with the aligned
+  duration (the classic exclusive-mode trap).
+- `AUDCLNT_E_DEVICE_IN_USE` is the Windows analogue of ALSA's `EBUSY` — same retry/report treatment
+  as §2.
+- Run event-driven (`AUDCLNT_STREAMFLAGS_EVENTCALLBACK`) with the feeding thread registered with
+  MMCSS (§9).
+
+## 5. macOS — CoreAudio
+
+The weakest platform in every reference implementation.
+
+- `osxaudiosink` properties (`gst-plugins-good/sys/osxaudio/gstosxaudiosink.c`): `device`,
+  `unique-id`, `configure-session`, `volume`. **No `exclusive` property, no hog-mode property.**
+- GStreamer's CoreAudio HAL *does* implement hog mode — `_audio_device_get_hog`/`_set_hog` around
+  `kAudioDevicePropertyHogMode`, plus `_audio_device_set_mixing(device, FALSE)` and physical-format
+  setting via `kAudioStreamPropertyPhysicalFormat` with a four-attempt confirm loop — but the only
+  call site is `_open_spdif()` (`gstosxcoreaudiohal.c:682-740`), reached only for passthrough.
+  **GStreamer cannot do hog-mode bit-perfect PCM on macOS.** Any GStreamer-based streamboat needs
+  either (a) an `appsink` -> own CoreAudio writer, mirroring the ALSA one, or (b) accept shared-mode
+  output on macOS and say so.
+- libmpv can: the `coreaudio` AO honours `--audio-exclusive=yes` and auto-redirects to the dedicated
+  `coreaudio_exclusive` AO for compressed formats. `--coreaudio-change-physical-format=yes` changes
+  the device's physical format system-wide (equivalent to Audio MIDI Setup's Format field). There is
+  also an `avfoundation` AO.
+- CamillaDSP (non-TIDAL Rust reference) exposes an `exclusive` (hog) flag on its CoreAudio playback
+  device, works internally in 32-bit float, lets CoreAudio convert unless an explicit physical
+  `format` (S16/S24/S32/F32) is requested, and warns hog mode breaks virtual devices like BlackHole.
+- `coreaudio-rs` 0.14.2 (MIT/Apache-2.0) is the Rust binding for a native CoreAudio backend.
+
+**Per-track sample-rate switching needs a nominal-rate change, not only a physical-format change.**
+A hi-res client's core operation — switching 44.1k -> 96k -> 192k between tracks — is a
+**`kAudioDevicePropertyNominalSampleRate`** change, which completes *asynchronously* on CoreAudio and
+must be waited on via a property listener. CamillaDSP's CoreAudio backend explicitly listens for
+these notifications and reopens
+(`https://github.com/HEnquist/camilladsp/blob/master/backend_coreaudio.md`, lines 58-66);
+GStreamer's own CoreAudio HAL shows the same asynchrony from the other side, with its four-attempt
+physical-format confirm loop (`gstosxcoreaudiohal.c:505-535`). Without this, a macOS writer racing
+the driver on every album that mixes sample rates is the concrete failure mode.
+
+The TIDAL web SDK's proprietary native-player component (not in any repo) has
+`selectDevice(device, mode)` where `mode: 'exclusive' | 'shared'`, and emits
+`deviceexclusivemodenotallowed`, `deviceformatnotsupported`, `devicelocked`, `devicenotfound`,
+`devicevolumenotsupported`, `devicedisconnected`, plus `active-device-pass-through-changed`
+(`ref:tidal-sdk-web/packages/player/src/player/nativeInterface.ts`). This is the error-state
+checklist TIDAL itself considers necessary — reuse it.
+
+## 6. mpv/libmpv exclusive-mode scope across platforms
+
+**`--audio-exclusive=yes` does not mean the same thing on every AO.** mpv's own docs: *"This only
+works for some audio outputs, such as `wasapi`, `coreaudio`, `pipewire` and `audiounit`. Other audio
+outputs silently ignore this option."* **The `alsa` AO is not in that list** — passing
+`--audio-exclusive` with `--ao=alsa` is a silent no-op. On Linux/libmpv, exclusivity comes only from
+device selection: `--audio-device=alsa/hw:X,Y` (plus `--alsa-resample=no`, which is mpv's own default
+anyway). On Windows: `--ao=wasapi --audio-exclusive=yes --wasapi-exclusive-buffer=default`. On
+macOS: `--ao=coreaudio --audio-exclusive=yes --coreaudio-change-physical-format=yes`.
+
+`--audio-spdif=<codecs>` supports passthrough for `ac3, dts, dts-hd, eac3, truehd, dsd` — the eac3
+value is the concrete Atmos-to-AVR path (see `atmos-and-immersive.md`). `dsd` passthrough
+"requires an audio output with exclusive device access (currently `wasapi`)" — DSD/DoP passthrough
+in mpv is Windows-only.
+
+## 7. Bit-perfect as a feature: hardware volume, dither, and where DSP fits
+
+**"Mute only, no attenuation" is not the only bit-perfect-compatible volume answer**, and for users
+without an analogue preamp it's a poor one. Many USB DACs and every Pi I2S HAT expose an ALSA mixer
+control that attenuates *in the DAC*, downstream of the digital bitstream — the stream itself stays
+bit-perfect:
+
+1. **libmpv:** `ao-volume` (RW) is *"System volume ... on ALSA this usually changes system-wide
+   audio volume on a linear curve"* — distinct from `volume` (*"the internal mixer (aka software
+   volume)"*). Mixer element selectable with `--alsa-mixer-device`, `--alsa-mixer-name` (default
+   `Master`), `--alsa-mixer-index`. **On a libmpv engine, `ao-volume` is the bit-perfect-compatible
+   control, not `volume`.**
+2. **Direct ALSA:** `snd_mixer_*` on the card's playback element — no reference client does this, it
+   is code streamboat would own.
+3. **The negative example.** tidal-connect layers an ALSA `type softvol` plugin over `hw:` and
+   explicitly warns about the resulting ambiguity: `ref:tidal-connect/bin/common.sh:141-152` checks
+   whether a real `Master` mixer control already exists and, if so, renames its own softvol control
+   to `SoftMaster`, printing *"*WARNING* Tidal volume slider might act on the hardware volume
+   control."* **streamboat's UI must state explicitly which control the slider is bound to.**
+
+Dither for narrowing conversions is covered in §1 above (the ALSA-specific case); the rule is the
+same on every platform: bit-perfect fails loudly rather than truncating silently, and any
+non-bit-perfect bit-depth reduction gets proper dither.
+
+**Bit-perfect mode also disables loudness normalization, not only the volume slider** — see
+`playback-behavior.md` §4 for the full ReplayGain interaction; the summary is that Sone's
+bit-perfect pipeline branch builds neither the user-volume nor the ReplayGain GStreamer element, and
+the transparency panel should say "ReplayGain: bypassed (bit-perfect)" rather than show an unapplied
+gain factor.
+
+**Is there any DSP ever — EQ, crossfeed, upsampling, room correction?** Any of it is incompatible
+with bit-perfect by definition. CamillaDSP (cited throughout this file for its CoreAudio backend) is
+the natural "we don't build this, users route through it externally" answer — deciding not to build
+a filter chain is cheaper than building one later, and worth stating explicitly as policy rather
+than leaving implicit. This, and whether bit-perfect ships on or off by default, are open owner
+decisions — see SKILL.md.
+
+## 8. Position: correcting for buffered-but-unplayed frames
+
+Every position readout in the reference set is derived from frames **written**
+(`frames_written / rate` in Sone, `ref:sone/src-tauri/src/audio.rs:2350,2377`), not frames
+**played**. `rg 'snd_pcm_delay|get_delay'` across every reference checkout returns nothing — no
+client corrects for the device buffer. With Sone's own ~500 ms ALSA buffer, this means the progress
+bar, MPRIS `Position`, and any scrobble timestamp can run up to half a second ahead of what is
+actually audible — and it is wrong at the exact moment a gapless transition is timed off it. **The
+fix is `snd_pcm_delay()`** (`PCM::delay()` in the Rust `alsa` crate): `played = frames_written -
+delay`. On libmpv this is already handled — `time-pos`/`playback-time` are AO-delay corrected — a
+concrete advantage of a libmpv-based engine and a required correction if a GStreamer/own-writer
+design ships.
+
+## 9. Real-time thread scheduling for the writer thread
+
+A ~500 ms ALSA buffer with 50 ms periods survives on a desktop and glitches on a loaded Pi without
+real-time-ish scheduling. Strawberry does this correctly:
+`ref:strawberry/src/engine/gstenginepipeline.cpp:1788-1803`, `GstEnginePipeline::TaskEnterCallback`:
+
+```cpp
+#ifdef Q_OS_UNIX
+sched_param param{}; param.sched_priority = 40;
+pthread_setschedparam(pthread_self(), SCHED_RR, &param);
+#endif
+#ifdef Q_OS_WIN32
+SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#endif
+```
+
+installed as GStreamer's task-enter hook, so every streaming thread gets it. Beyond what Strawberry
+does:
+
+- On Linux, an unprivileged process usually cannot call `sched_setscheduler(SCHED_RR)` without
+  `CAP_SYS_NICE` or an `rtprio` limit in `/etc/security/limits.d`; the portable route is RealtimeKit
+  (`org.freedesktop.RealtimeKit1.MakeThreadRealtime` on the system bus — the same mechanism PipeWire
+  and JACK use), falling back to `nice()`.
+- On Windows, join MMCSS: `AvSetMmThreadCharacteristics("Pro Audio", ...)`.
+- On macOS: `thread_policy_set` with `THREAD_TIME_CONSTRAINT_POLICY`.
+- The discipline that makes the priority worth having: no allocation, no locks, no logging inside
+  the writer loop. Sone follows this with a preallocated `silence_buf` and atomics.
+
+## 10. Verifying bit-perfectness — a test plan
+
+"Bit-perfect" is a claim about bytes; without an automated check, every refactor of the
+format-promotion ladder or the ALSA reopen path risks silently breaking it. Four headless-friendly
+mechanisms:
+
+1. **ALSA loopback:** load `snd-aloop`, play into `hw:Loopback,0`, capture from `hw:Loopback,1`
+   (`arecord -D hw:Loopback,1 -f S32_LE -r 96000`), byte-compare against the reference decode. The
+   only true end-to-end proof, and it runs headless.
+2. **Decoder self-check:** FLAC's `STREAMINFO` block carries an MD5 of the *unencoded* audio —
+   decode-and-hash proves the decoder half independent of the output path.
+3. **Kernel ground truth as an assertion, not just UI:** `/proc/asound/<card>/pcm<N>p/sub<M>/hw_params`
+   (§2) — assert on it in CI.
+4. **On libmpv:** `audio-out-params` is *"Same as `audio-params`, but the format of the data written
+   to the audio API"* — read back and assert it equals the source format/rate;
+   `current-ao`/`audio-device-list` complete the picture.
+
+Also write a unit test for the §1 24-bit ALSA/GStreamer naming inversion: `S24_LE` -> 4
+bytes/frame/channel, `S24_3LE` -> 3.
+
+## 11. Device identity and persistence across reboots/hot-plug
+
+ALSA card *indices* are assignment-order dependent: unplug and replug a USB DAC, or add a second
+card, and `hw:1,0` now points at something else. tidal-connect already configures by card **name**:
+`CARD_NAME=D10` (`ref:tidal-connect/samples/topping-d10.env`), and its asound.conf files resolve by
+card id string (`card DAC`, `card snd_rpi_hifiberry_dacplus`, `card "vc4hdmi"`). Sone, by contrast,
+enumerates through GStreamer's `DeviceMonitor` and falls back to composing `hw:C,D` from
+`alsa.card`+`alsa.device` — the index form (`ref:sone/src-tauri/src/audio.rs:3285-3287`).
+**Recommendation:** persist the ALSA card *id* (and, on Windows, the WASAPI endpoint id string; on
+macOS, the device UID — both already stable), resolve to an index at open time, and when the saved
+device is absent, refuse to silently fall back to `default` — offer the user the choice instead. A
+silent fallback to the motherboard codec on a missing DAC is exactly the failure that would make an
+audiophile client untrustworthy.
+
+No reference project implements true device hot-plug re-binding. Sone's ALSA writer detects
+`ENODEV` from `snd_pcm_writei` and emits `audio-error {kind: "device_disconnected"}`, tearing down
+the pipeline. GStreamer's `DeviceMonitor` emits added/removed bus messages and is the right source
+for a live device list, but Sone only polls it once with a 2 s timeout because *"GStreamer 1.28+
+starts providers async, so devices() may initially be empty"*
+(`ref:sone/src-tauri/src/audio.rs:3254-3266`). **This workaround is version-scoped and partly
+stale:** GStreamer 1.28.3 changed `devicemonitor` to wait for its start thread before listing
+devices, so this poll is only needed on 1.28.0-1.28.2 — scope any copied workaround to that window,
+and subscribe to `DeviceMonitor` bus messages rather than polling as the long-term design.

@@ -414,22 +414,47 @@ Home is a server-driven page of modules, not a hand-built screen. The client loa
 `eventTracking/SCROLL_PAGE`) and supports inline play (`homepage/PLAY_SINGLE_TRACK`) and
 "view all" expansion (`homepage/LOAD_AND_ENQUEUE_ALL_VIEW_ALL_TRACKS`). [verified-source]
 
-Backing endpoints reachable unofficially: `pages/home` and `pages/for_you`
-(ref:python-tidal/tidalapi/page.py; also surfaced as `tidal:home` and `tidal:for_you` in
-ref:mopidy-tidal/mopidy_tidal/library.py). [verified-source]
+**Two incompatible backend schemas are both live, and Home has tabs plus pagination that the first
+draft omitted entirely.** Full detail, including the complete module/section type vocabulary and
+every observed category title, is in `references/browse-and-pages.md`; the essentials:
 
-Known module types on Home/For You [verified-web, module names may vary by market]:
+- **Legacy (v1)**: `GET pages/home` → `{title, rows: [{modules: [{type, title, pagedList, ...}]}]}`.
+  Also surfaced as `tidal:home` / `tidal:for_you` in `ref:mopidy-tidal/mopidy_tidal/library.py`.
+- **Current (v2)**: `GET https://api.tidal.com/v2/home/feed/{slug}` with
+  `deviceType=BROWSER&locale=<locale>&platform=WEB` → `{header: {vibes: {items: [{name, type}]}},
+  items: [{type, title, items, viewAll, ...}], cursor}`. `header.vibes.items[]` **is the Home tab
+  bar** — observed `type` values `STATIC`, `EDITORIAL`, `UPLOADS` — and `slug` is the lowercased
+  `type`, so the endpoint is really `home/feed/static`, `home/feed/editorial`, `home/feed/uploads`.
+  Sections page with a top-level `cursor` (pass back as `?cursor=`) and each item carries `hasMore`
+  plus an `apiPath` used for "View All" expansion (the same thing
+  `homepage/LOAD_AND_ENQUEUE_ALL_VIEW_ALL_TRACKS` drives client-side).
+  `ref:python-tidal/tidalapi/session.py:1041-1060` implements exactly this v2 call and falls back to
+  the v1 one; `ref:sone/src-tauri/src/tidal_api.rs:1240-1268, 4161-4210` parses both shapes.
+- **`pages/for_you` still exists separately** as a v1 endpoint
+  (ref:python-tidal/tidalapi/session.py). Do not conflate it with the v2 Home feed — they return
+  different category sets.
 
-- Recently played (also `content/LOAD_RECENT_ACTIVITY`)
-- Mixes for you: **My Daily Discovery** (10 new tracks daily), **My New Arrivals** (30 tracks
-  weekly, Fridays), **My Mix** 1–8, **My Video Mix**
-- Suggested new albums / recommended new tracks
-- Because you listened to …, artist and genre rows
-- Editorial playlists, new releases, radio entries
-- Upload Spotlight promotions (since Nov 2025)
+Known module/category titles, doctest-verified against a live account by python-tidal
+(`ref:python-tidal/docs/pages.rst`): For You, Recently Played, Suggested New Tracks, Suggested New
+Albums, Mixes For You, Radio Stations for You, Your History, Trending Playlists, Popular
+Playlists, TIDAL Rising, The Charts, Popular Albums, **Podcasts** (see the note on podcasts in
+§4.12 — this category surviving in a page-module fixture is exactly the kind of thing that needs a
+fresh check against a live account), Producers & Songwriters, New Releases For You, Featured,
+Genres, Moods/Activities & Events, Suggested Albums for You, Suggested Artists for You. Add, from
+support-article summaries only (**[uncertain]**, not re-verified for 2026): **My Daily Discovery**
+(10 tracks/day) and **My New Arrivals** (30 tracks, Fridays); Upload Spotlight promotions (since
+Nov 2025, [verified-web]).
 
-Personalised mix types in the data model: `MixType = "VIDEO_MIX" | "TRACK_MIX" | "ALBUM_MIX" |
-"ARTIST_MIX"` (ref:TidaLuna/plugins/lib/src/redux/types/store/content/Mix.ts). [verified-source]
+Personalised mix types in the desktop client's own data model — **treat as a subset, not the
+complete set**: `MixType = "VIDEO_MIX" | "TRACK_MIX" | "ALBUM_MIX" | "ARTIST_MIX"`
+(ref:TidaLuna/plugins/lib/src/redux/types/store/content/Mix.ts). The live API returns more:
+Sone's `TidalMix.mix_type` also documents `HISTORY_ALLTIME_MIX`, `HISTORY_MONTHLY_MIX`,
+`HISTORY_YEARLY_MIX` and handles `NEW_HISTORY_MIX` (`ref:sone/src-tauri/src/tidal_api.rs:841-847`)
+— this is what backs the "Your History" Home category — and the official v2 spec models the
+personalised families as separate resources (`/userDailyMixes`, `/userDiscoveryMixes`,
+`/userNewReleaseMixes`, `/userOfflineMixes`) reachable from
+`/userRecommendations/{id}/relationships/{myMixes,discoveryMixes,newArrivalMixes,offlineMixes}`,
+and explicitly documents that new `MixType` values can appear at any time. [verified-source]
 
 #### 4.3 Explore
 
@@ -439,10 +464,15 @@ Personalised mix types in the data model: `MixType = "VIDEO_MIX" | "TRACK_MIX" |
 `tidal:explore`, `tidal:moods`, `tidal:genres`, `tidal:mixes`, `tidal:hires`
 (ref:mopidy-tidal/mopidy_tidal/library.py). [verified-source]
 
-Content on Explore [verified-web]: genres, Moods & Activities, TIDAL Rising (emerging/unsigned
-artists), charts, new releases, popular artists, editorial articles/interviews. The client models
-editorial articles as a first-class content type (`content.articles`, `content.articleLists`,
-`Article.ts`) — TIDAL Magazine content is inlined into the app. [verified-source]
+Content on Explore, upgraded from [verified-web] to [verified-source] for the two items that were
+previously guessed: genres, Moods & Activities, **TIDAL Rising** (emerging/unsigned artists — has
+its own dedicated `pages/rising` endpoint, `ref:sone/src-tauri/src/tidal_api.rs:4386-4406`, not
+merely "an Explore module" as first drafted), **The Charts** (a page category confirmed by
+python-tidal's doctest output, `ref:python-tidal/docs/pages.rst`, reachable as a `PageLink` rather
+than a dedicated endpoint — this part of the original conclusion holds), new releases, popular
+artists, editorial articles/interviews. The client models editorial articles as a first-class
+content type (`content.articles`, `content.articleLists`, `Article.ts`) — TIDAL Magazine content is
+inlined into the app. [verified-source]
 
 #### 4.4 Search
 
@@ -468,14 +498,25 @@ telemetry (`search/SEARCH_RESULT_CONSUMED`). There is also a dedicated track/alb
 search used by the Picks feature (`search/SEARCH_TRACK_FOR_TRACK_PICKER`, etc.). [verified-source]
 
 **API availability:** `GET search?query=&limit=&offset=&types=ARTISTS,ALBUMS,TRACKS,VIDEOS,PLAYLISTS`
-returning per-type arrays plus `topHit` (ref:python-tidal/tidalapi/session.py lines ~770–830).
-Limit ≤300 total results. **Uploads and userProfiles result types are not implemented by
+(exact param dict verified at ref:python-tidal/tidalapi/session.py:771-828) returning per-type
+arrays plus `topHit`. Limit ≤300 total results (the docstring says "there aren't more than 300
+items available in a search"). **Uploads and userProfiles result types are not implemented by
 python-tidal** — reaching them would need direct API work. [verified-source]
+
+**Recent searches and suggestions are server-side and cross-device, not local — the first draft
+tiered them as "later" on the mistaken premise that they were unreachable.** The v2 spec documents
+`/searchResults` (attributes `{query, trackingId, didYouMean}` — `trackingId` is the server-side
+counterpart of the client's own `searchSession.uuid`; relationships `topHits`, `albums`, `artists`,
+`playlists`, `tracks`, `videos`), `/searchSuggestions` (relationships `directHits`, `history`), and
+`/searchHistoryEntries/{id}` for individual entries. This means a client that wants "did you mean"
+and synced recent searches has a real endpoint family to target, not just the local `Search` Redux
+state. [verified-source]
 
 #### 4.5 Artist page
 
-Structure confirmed by High Tide, which reproduces the official layout from the same API
-(ref:high-tide/src/pages/artist_page.py): [verified-source]
+Structure confirmed against the API by two independent clients — **the videos row specifically was
+misattributed to High Tide in the first draft; correct it to TidaLuna/python-tidal**:
+[verified-source]
 
 - Header: artist picture, name, Play, Shuffle, Follow/Unfollow, Share, artist radio button
 - Top Tracks (`artists/{id}/toptracks`)
@@ -483,9 +524,14 @@ Structure confirmed by High Tide, which reproduces the official layout from the 
 - EP & Singles (`filter=EPSANDSINGLES`)
 - Appears On (`filter=COMPILATIONS` / "other")
 - Similar Artists (`artists/{id}/similar`)
-- Bio (`artists/{id}/bio`) — with source attribution, e.g. TiVo; the desktop shows it in a modal
-  (`modal/SHOW_ARTIST_BIO`)
-- Videos (`artists/{id}/videos`)
+- Bio (`artists/{id}/bio`) — with source attribution, e.g. TiVo (ref:TidaLuna/.../store/content/Artist.ts
+  `ArtistBio.source`); the desktop shows it in a modal (`modal/SHOW_ARTIST_BIO`). Note
+  python-tidal's `get_bio()` returns only `json['text']` and discards the `source` field — a
+  streamboat implementation that wants source attribution must read the raw response itself.
+- Videos (`artists/{id}/videos`) — ref:python-tidal/tidalapi/artist.py; **High Tide's own artist
+  page** (ref:high-tide/src/pages/artist_page.py) builds Top Tracks / Albums / EP & Singles /
+  Appears On / Similar Artists / bio / radio / follow / share carousels but has **no Videos
+  carousel** — do not cite High Tide for that row.
 - Artist Mix / Artist Radio (`artists/{id}/mix`, `artists/{id}/radio`)
 
 The client also models artist *roles* and *contributions*: `ArtistRoleCategory = "Artist" |
@@ -512,8 +558,8 @@ Album { id, title, cover, vibrantColor, videoCover,
         audioQuality, audioModes[], mediaMetadata.tags[],
         upload, artist, artists[], genre, recordLabel,
         + StreamingFlags }
-AlbumCredit { type, contributors: [{name, id}] }
-AlbumReview { text, source }   // e.g. source "TiVo"
+AlbumCredit { type, contributors: [{name, id}] }        // ref:.../store/content/index.ts:66-79, not Album.ts
+AlbumReview { text, source }   // e.g. source "TiVo"    // ref:.../store/content/index.ts:66-79, not Album.ts
 ```
 
 So the album page shows: cover (and animated `videoCover`), a dominant `vibrantColor` used for
@@ -579,8 +625,17 @@ Client capabilities [verified-source]:
 - Reorder by drag (`content/MOVE_PLAYLIST_MEDIA_ITEMS`), with ETag concurrency control
   (`etag/SET_PLAYLIST_ETAG`)
 - Delete (`content/DELETE_PLAYLIST`)
-- Public/private toggle (`userProfiles/TOGGLE_PUBLIC_PLAYLIST`; API `user-playlists/{id}/public`,
-  and `/set-public` / `/set-private` — ref:python-tidal/tidalapi/playlist.py)
+- Visibility toggle (`userProfiles/TOGGLE_PUBLIC_PLAYLIST` on the desktop client; legacy v1 API
+  `user-playlists/{id}/public`, `/set-public` / `/set-private` — ref:python-tidal/tidalapi/playlist.py).
+  **This is presented as a binary in the desktop client and in python-tidal, but the underlying
+  model is three-state**: the v2 spec's `Playlists_Attributes.accessType` is
+  `PUBLIC | UNLISTED | PRIVATE`. The legacy v1 boolean cannot represent `UNLISTED` — Sone's own
+  v1→v2 normaliser has to fake the mapping (`access_type: raw.public_playlist.map(|p| if p
+  {"PUBLIC"} else {"UNLISTED"})`, ref:sone/src-tauri/src/tidal_api.rs:526-533), which silently
+  turns every legacy "private" playlist into "unlisted". A client that models visibility as a
+  checkbox will get this wrong. `Playlists_Attributes` also carries `bounded`, `numberOfFollowers`,
+  `numberOfTrackItems`/`numberOfVideoItems` and `externalLinks`, none of which are in the desktop
+  Redux playlist model below. [verified-source]
 - **Suggested tracks** appended to a playlist page
   (`content/LOAD_PLAYLIST_SUGGESTED_MEDIA_ITEMS`, `content/ADD_SUGGESTED_ITEM_TO_PLAYLIST`,
   `eventTracking/CLICK_SUGGESTED_TRACKS_PLAYNOW`)
@@ -597,9 +652,17 @@ customImageUrl, promotedArtists[], popularity`
 (ref:TidaLuna/plugins/lib/src/redux/types/store/content/Playlist.ts). Editorial playlists have
 `type` values other than `"USER"`. [verified-source]
 
-**Collaborative playlists:** no `collaborat*` action or field appears anywhere in the desktop
-Redux namespace. Either the feature does not exist on desktop or it is expressed purely as
-public/shared playlists. **[uncertain]**
+**Collaborative playlists: confirmed to exist, correcting the first draft's "[uncertain] — maybe
+does not exist" conclusion.** No `collaborat*` action or field appears anywhere in the desktop
+Redux namespace, but the official v2 spec defines the full flow: `/collaborationInvites` (GET by
+`filter[code]`, POST create, DELETE — an owner mints an invite code),
+`/collaborationInviteRedemptions` (a redeemer redeems the code), and on the playlist itself
+`playlists/{id}/relationships/{collaborators,collaboratorProfiles}`. The generated Android SDK has
+a dedicated `CollaborationInvites` Kotlin interface
+(ref:tidal-sdk-android/tidalapi/src/main/kotlin/com/tidal/sdk/tidalapi/generated/apis/CollaborationInvites.kt).
+The desktop dump's silence most likely means the desktop UI does not (yet) expose it, not that the
+feature is absent from TIDAL — consistent with this being a mobile/web-first feature the way
+collaborative playlists usually roll out. [verified-source]
 
 **API:** `playlists/{uuid}`, `playlists/{uuid}/items`, `users/{id}/playlists`,
 `users/{id}/playlistsAndFavoritePlaylists`, `my-collection/playlists/folders`,
@@ -607,10 +670,23 @@ public/shared playlists. **[uncertain]**
 (ref:python-tidal/tidalapi/{playlist,user}.py). All implemented by python-tidal and therefore by
 High Tide, Sone and mopidy-tidal. [verified-source]
 
+**Reading folders at scale needs pagination, and the folder screen is a real route, not just a
+sidebar tree.** `GET https://api.tidal.com/v2/my-collection/playlists/folders` takes `folderId`,
+`offset`, `limit`, `order`, `orderDirection`, `countryCode`, `locale`, `deviceType`, optional
+`includeOnly`, and a `cursor` — the response carries a `cursor` for the next page. There is also
+`my-collection/playlists/folders/flattened`, returning every playlist across all folders with the
+same cursor pagination (Sone caps its own loop at 40 pages of 50,
+ref:sone/src-tauri/src/tidal_api.rs:3313-3400). The folder screen has its own client route,
+`route/LOADER_DATA__FOLDER` — treat it as a screen in its own right (see
+`references/screen-inventory.md`), not merely a disclosure triangle in the sidebar tree.
+[verified-source]
+
 #### 4.9 Mixes and radio
 
-Types: `TRACK_MIX`, `ALBUM_MIX`, `ARTIST_MIX`, `VIDEO_MIX`, plus editorial/personal "My Mix N",
-"My Daily Discovery", "My New Arrivals". Actions: `mix/PLAY_MIX`, `mix/LOAD_MIXES_SUCCESS`,
+Types: `TRACK_MIX`, `ALBUM_MIX`, `ARTIST_MIX`, `VIDEO_MIX` in the desktop client, plus
+editorial/personal "My Mix N", "My Daily Discovery", "My New Arrivals" — **treat `MixType` as
+open-ended, not a closed four-value enum; see §4.2 for the history-mix values (`HISTORY_ALLTIME_MIX`
+etc.) the desktop client doesn't carry.** Actions: `mix/PLAY_MIX`, `mix/LOAD_MIXES_SUCCESS`,
 `mix/LOAD_TRACK_LIST_FOR_MIX_ID`, `mix/LOAD_TRACK_MIX_ID`, `content/LOAD_DYNAMIC_MIX_PAGE`,
 routes `LOADER_DATA__MIX`, `LOADER_DATA__ARTIST_MIX`, `LOADER_DATA__ALBUM_TRACK_MIX`. Favouriting
 mixes uses a distinct endpoint family: `favorites/mixes/add`, `favorites/mixes/remove`.
@@ -645,6 +721,11 @@ Direction: `ASC` / `DESC`. Client state mirrors this as `List.currentOrder` /
 `limit/offset/order/orderDirection`, plus cursor pagination on some lists
 (ref:python-tidal/tidalapi/user.py). [verified-source]
 
+**A seventh collection type the six-list inventory above omits: Save for Later.** The v2 spec has
+`/userCollectionSaveForLaters/{id}` (`{numberOfItems, lastModifiedAt}` + an `items` relationship),
+and `/userCollectionFolders` generalises the folder concept past playlists specifically. Neither
+has an OSS-client implementation to point to yet. [verified-source]
+
 #### 4.11 History / recently played
 
 `content/LOAD_RECENT_ACTIVITY`, `accumulatedPlaybackTime` state (per-product accumulated listening
@@ -662,32 +743,45 @@ fields include `playbackSessionId`, `isPostPaywall`, `productType`, `requestedPr
 Videos are first-class media items alongside tracks: `ContentType = "track" | "video"`, a
 `Video` model with `quality: "MP4_1080P"`, `imageId`, `vibrantColor`, ad fields (`adsUrl`,
 `adsPrePaywallOnly`), a My Collection → Videos list, a `VIDEO_MIX` mix type, a `VIDEOS` search
-category and a `pages/videos` explore page. Catalogue is reported at 650k+ videos; video audio is
-AAC ~320 kbps, not lossless. Stream URLs come from `videos/{id}/urlpostpaywall` or
-`videos/{id}/playbackinfopostpaywall` returning HLS
-(ref:python-tidal/tidalapi/media.py). Sone plays them via a separate HLS decoder path.
-[verified-source + verified-web]
+category and a `pages/videos` explore page (ref:TidaLuna/.../store/content/Video.ts,
+ref:TidaLuna/.../store/content/Mix.ts, ref:TidaLuna/.../store/index.ts). Stream URLs come from
+`videos/{id}/urlpostpaywall` (ref:python-tidal/tidalapi/media.py:976) — **the
+`playbackinfopostpaywall` variant for videos is not in python-tidal; cite
+ref:sone/src-tauri/src/tidal_api.rs:3816 and ref:tidalswift/.../ContentUrls.swift:32 instead**.
+Sone plays videos via a separate HLS decoder path; its own README says only that video audio "does
+not use the bit-perfect lossless signal path" — **the commonly repeated "650,000+ videos" and
+"AAC ~320 kbps" figures are [uncertain, possibly stale]**, sourced only to a whathifi review of
+unstated vintage, and were not re-verified for 2026. [verified-source; catalogue size and audio
+codec **[uncertain]**]
 
 #### 4.13 Feed, profiles and social
 
-- **Feed**: `feed/LOAD_FEED`, `feed/CHECK_FEED_UPDATES`, `feed.hasNewFeedItems`,
+- **Feed — the first draft conflated this with the Home page; they are different endpoints with
+  different content.** `feed/LOAD_FEED`, `feed/CHECK_FEED_UPDATES`, `feed.hasNewFeedItems`,
   `view/SHOW_FEED_SIDEBAR` / `HIDE_FEED_SIDEBAR`, and a `FEED` play-queue source type — the Feed is
-  both a page and a right-hand sidebar you can play from. API: `home/feed/static`
-  (ref:python-tidal/tidalapi). [verified-source]
+  both a page and a right-hand sidebar you can play from. `home/feed/static` (cited as the Feed API
+  in the first draft) is actually the **v2 Home page** endpoint — see §4.2 — not the social Feed.
+  Sone fetches the real social Feed separately and parses `activities[]` /
+  `totalNotSeenActivities` rows (`flatten_feed_activity`, `parse_feed_body`,
+  ref:sone/src-tauri/src/tidal_api.rs:680-770, 4161-4210). Use that as the Feed API reference
+  instead. [verified-source]
 - **Public profile**: `UserProfile { userId, name, picture, color: [c1,c2,c3], numberOfFollowers,
-  numberOfFollows, followers[], followingUsers[], followingArtists[], publicPlaylists[] }`;
-  actions `user/UPDATE_PROFILE_NAME`, `user/UPDATE_PROFILE_PICTURE`,
+  numberOfFollows, followers, followingUsers, followingArtists, publicPlaylists }`. **Correction:
+  these last four are not bare arrays** — each is an object wrapping an `items` array (e.g.
+  `followers: { items: Following[] }`). `Following` itself carries `followType: "USER" | "ARTIST"`,
+  `blocked`, an `imFollowing` flag the first draft omitted, and a `trn:user:{id}` resource name.
+  Actions `user/UPDATE_PROFILE_NAME`, `user/UPDATE_PROFILE_PICTURE`,
   `user/UPDATE_PROFILE_SOCIAL_HANDLES`, `user/DELETE_PROFILE_PICTURE_BUTTON_CLICKED`, and picture
   sources from Facebook / Snapchat / TikTok
   (`user/{FACEBOOK,SNAPCHAT,TIKTOK}_PICTURE_BUTTON_CLICKED`, routes `LOADER_DATA__{FACEBOOK,
-  SNAPCHAT,TIKTOK}`). Following model has `followType: "USER" | "ARTIST"` and a `blocked` flag.
-  [verified-source]
+  SNAPCHAT,TIKTOK}`). [verified-source]
 - **Picks / track prompts**: a `trackPrompts/*` namespace — `SET_TRACK_FOR_PROMPT`,
   `REMOVE_TRACK_FOR_PROMPT`, `TOGGLE_PROMPTS`, `GENERATE_SHARE_IMAGES`,
   `STORE_GENERATED_SHARE_IMAGES`, `PLAY_MY_PICKS_ITEM`, with `ALBUM_PROMPT`/`ARTIST_PROMPT`/
   `TRACK_PROMPT` context menus. This is the "My Picks" profile feature (pinned favourites answering
-  prompts, shareable as generated images, on by default, disableable in settings).
-  [verified-source + verified-web]
+  prompts, shareable as generated images). [verified-source] The "public and on by default, with an
+  off switch in Settings" characterisation rests only on a search-summary of a blocked
+  support.tidal.com article — keep it **[verified-web, unfetched]**, not source-verified.
 - **Artist picker** onboarding (`artistPicker/*`, `route/LOADER_DATA__ARTIST_PICKER`) — the
   taste-onboarding flow for new accounts. [verified-source]
 - **Onboarding steps** the client tracks (ref:.../store/User.ts): `ADD_TO_FAVORITES`,
@@ -697,6 +791,29 @@ AAC ~320 kbps, not lossless. Stream URLs come from `videos/{id}/urlpostpaywall` 
   `PLAY_QUEUE_SUGGESTIONS`, `RELOCATION_SETTINGS`, `SETTINGS`, `SPRINT_REDESIGN_UPDATE`,
   `USER_PROFILE_ONBOARDED`, `WEB_3.0.0_UPDATE`. This list doubles as a checklist of features TIDAL
   itself considers headline. [verified-source]
+
+**A 2025–2026 social/creator layer that the first draft missed entirely** (all from the v2 spec,
+`ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json`; example timestamps in the schemas are
+2025-09/2025-11, i.e. this shipped around the TIDAL Upload launch already covered in §4.14):
+
+- **Comments** — `/comments` (GET/POST/PATCH/DELETE), attributes `{message (1..2000 chars),
+  createdAt, lastModifiedAt, likeCount, replyCount, moderationStatus: NOT_MODERATED|FLAGGED|
+  TAKEN_DOWN|OK|ERROR, startTime, endTime}`. `startTime`/`endTime` are ISO-8601 durations (e.g.
+  `PT1M30S`) — **SoundCloud-style time-anchored comments on a track**. Subjects are restricted to
+  `albums` and `tracks`; replies hang off `parentComment`.
+- **Reactions and appreciations** — `/reactions` (with a `CurrentUserReaction` schema) and
+  `/appreciations` (POST-only, `appreciatedItem` type enum = `artists`) are separate gesture types
+  from comments.
+- **Creator/monetisation** — `/artistClaims`, `/manualArtistClaims`, `/artistClaimStatuses`,
+  `/contentClaims`, `/trackStatistics/{id}`, `/albumStatistics/{id}`, `/purchases`,
+  `/priceConfigurations`, `/stripeConnections`, `/stripeDashboardLinks`, `/squareConnections`,
+  `/trackSourceFiles`.
+- **Reporting** — `/userReports` for reporting content.
+
+Each of these needs at minimum an explicit out-of-scope row in the feature matrix with a reason —
+they carry real moderation and privacy implications if streamboat ever renders them (see the
+"owner decisions" list at the end of this report). None has an OSS-client implementation to point
+to yet. [verified-source]
 
 #### 4.14 Uploads (TIDAL Upload)
 
@@ -722,10 +839,11 @@ Redux action list**, which strongly suggests the feature is not present in the c
 client. No announcement of its discontinuation was found. Status: **[uncertain]** — do not treat
 Live as an active feature; do not treat it as confirmed removed.
 
-Distinct from Live is the **DJ Extension add-on** (~$9/mo), which integrates TIDAL as a source in
-Serato DJ Pro (3.1.3+), rekordbox and similar, including **stem separation**. The item-level flags
-`djReady` and `stemReady` gate this. This is an integration with third-party DJ software, not an
-in-app feature. [verified-source + verified-web]
+Distinct from Live is the **DJ Extension add-on** (~$9/mo **[uncertain, possibly stale — see §2]**),
+which integrates TIDAL as a source in Serato DJ Pro (3.1.3+), rekordbox and similar, including
+**stem separation**. The item-level flags `djReady` and `stemReady` gate this — plausible but
+**[inferred]**, not stated anywhere in source. This is an integration with third-party DJ software,
+not an in-app feature. [verified-source + verified-web]
 
 #### 4.16 Settings (desktop)
 
@@ -756,8 +874,12 @@ release notes, logout (`modal/SHOW_LOGOUT_MODAL`), feature-flag user overrides
 (`featureFlags/TOGGLE_USER_OVERRIDE` — an internal/EAP surface), and the blocked-items page.
 [verified-source]
 
-Absent from settings, notably: **no crossfade, no equalizer, no gapless toggle, no cache-size
-control, no download/offline settings**. [verified-source, absence-based → **[inferred]**]
+Absent from *this* settings dump, notably: no crossfade, no equalizer, no gapless toggle, no
+cache-size control, no download/offline settings. Per the version caveat at the top of this report,
+read "no crossfade" here as "not in TidaLuna 1.16.6-beta (2026-09-02)" — TIDAL has since announced
+a crossfade toggle for iOS/Web (§Summary item 8) which is not reflected in this dump. The rest
+(equalizer, cache-size, download settings) has no counter-evidence and can still be treated as
+genuinely absent from the desktop client. [verified-source, absence-based → **[inferred]**]
 
 ### 5. Player and playback
 
@@ -803,12 +925,18 @@ tracks. TIDAL notes that not all TIDAL Connect devices support Autoplay. [verifi
 verified-web]
 
 **Gapless**: implemented by preloading — `player/PRELOAD_ITEM`, `player/PRELOAD_NEXT_ITEM`,
-`player/PRELOAD_SUCCESS`, `playbackControls.prefilled`,
-`playQueue`-driven `PREFILL_MEDIA_PRODUCT_TRANSITION`. tidal-hifi 8.1.0 had to fix its position
-reading because "TIDAL's gapless playback switches buffers" — direct evidence gapless is live in
-the web/desktop player. [verified-source]
+`player/PRELOAD_SUCCESS`, `playbackControls.prefilled` (ref:.../store/Playback.ts:42
+`prefilled: boolean`), and `PREFILL_MEDIA_PRODUCT_TRANSITION` — **this action lives in the
+`playbackControls/` namespace, not `playQueue/`** as an earlier draft implied. tidal-hifi 8.1.0 had
+to fix its position reading because "player state … is now read from the active audio buffer …
+after TIDAL's gapless playback switches buffers" (ref:tidal-hifi/CHANGELOG.md 8.1.0) — direct
+evidence gapless is live in the web/desktop player. [verified-source]
 
-**Crossfade**: not found in the desktop client. **[uncertain]** — see §Open questions.
+**Crossfade**: not found in *this* dump of the desktop client, but confirmed as a live, officially
+announced 2026 feature on iOS and Web (0–12 second slider, Settings toggle) — see §Summary item 8.
+Whether the Electron desktop client has shipped it yet is the genuinely open question; the dump's
+silence is far more likely to mean it predates the rollout than that desktop lacks it. **[uncertain
+— desktop status only; the feature's existence is [verified-web], not uncertain]**.
 
 #### 5.3 Audio output on desktop
 
@@ -818,11 +946,23 @@ device), `forceVolume` (per device), `hasPreloadedNextProduct`. Actions `player/
 `player/SET_DEVICE_MODE`, `player/SET_FORCE_VOLUME` and the `SELECT_SOUND_OUTPUT` context menu.
 [verified-source]
 
-Behavioural facts [verified-web]: Exclusive Mode takes exclusive control of the output device, so
-volume must be changed in TIDAL rather than the OS mixer; Exclusive Mode and Force Volume are
-mutually exclusive in the UI (turning on Exclusive greys out Force Volume). It matches the source
-rate/depth (16/44.1, 24/96, 24/192) via WASAPI exclusive on Windows and Core Audio hog mode on
-macOS.
+Behavioural facts [verified-web, from a search-summary of
+support.tidal.com/hc/en-us/articles/28548110049681-Exclusive-Mode]: Exclusive Mode takes exclusive
+control of the output device, so volume must be changed in TIDAL rather than the OS mixer;
+Exclusive Mode and Force Volume are mutually exclusive in the UI (turning on Exclusive greys out
+Force Volume — "cannot select both exclusive mode and forced volume simultaneously," corroborated
+independently by a forums.whathifi.com thread). It matches the source rate/depth (16/44.1, 24/96,
+24/192) via **WASAPI exclusive mode on Windows** — this half is well attested. The macOS mechanism
+is *not*: "Core Audio hog mode" is a plausible but **[inferred]** guess repeated in earlier drafts
+of this report; nothing reachable states how TIDAL implements exclusive output on macOS, so do not
+present it as fact.
+
+**Force Volume, precisely** (support.tidal.com wording, verbatim): "With Force Volume, Tidal keeps
+the app's volume at the maximum level, allowing you to control the sound output through external
+devices like your DAC or speakers." This is the *opposite* of a software-volume fallback — it pins
+the in-app level at 100% so an external DAC/amp is the sole volume control. The feature matrix in
+§Feature matrix below states this correctly; earlier drafts had a contradictory gloss in one row
+that has been corrected.
 
 #### 5.4 Remote playback: Connect, Chromecast, AirPlay
 
@@ -843,21 +983,32 @@ DEVICE_CONNECTED, DEVICE_DISCONNECTED, DISCONNECT_ALL_DEVICES, CONNECTION_LOST}`
 sub-namespaces including `remotePlayback/tidalConnect/{MEDIA_CHANGED, QUEUE_CHANGED,
 QUEUE_ITEMS_CHANGED, UPDATE_PLAYER_STATE, HANDLE_ERROR, DISCONNECT}` and
 `remotePlayback/remotePlaybackReceiver/{MEDIA_CHANGED, STATE_CHANGED, DISCONNECT}` — the
-`remotePlaybackReceiver` namespace implies the client can also *be* a receiver, but this is not
-corroborated. Discovery is mDNS (`_googlecast._tcp.local` visible in the type). AirPlay is not a
-client-side transport: on macOS it is an OS-level output device that shows up in the audio device
-list. [verified-source; receiver role **[uncertain]**]
+`remotePlaybackReceiver` namespace implies the client can also *be* a receiver. The evidence for
+this is stronger than a namespace name: `modal/REMOTE_PLAYBACK_RECEIVER_DISCONNECT_MODAL` is a
+**user-facing dialog** that only makes sense if the desktop app can be connected *to* as a target —
+this raises the stakes on Implication 11 below (do not build a Connect target): being a target may
+be technically reachable on the desktop client, it is just not open-source-reproducible via the
+vendor SDK path (§5.4 continues below). Discovery is mDNS (`_googlecast._tcp.local` visible in the
+type). AirPlay is not a client-side transport: on macOS it is an OS-level output device that shows
+up in the audio device list. [verified-source; receiver role **[uncertain, stronger evidence than
+before]**]
 
 `cloudConnect` + the `cloudQueue/*` namespace (`CREATE_CLOUD_QUEUE`, `GET_CLOUD_QUEUE_ITEMS`,
 `ADD_ITEMS_TO_CLOUD_QUEUE`, `MOVE_TRACKS`, `REMOVE_ELEMENT`, `SET_CURRENT_ITEM`, `SET_SHUFFLED`,
 `UPDATE_ITEMS_ETAG`, `FILL_CLOUD_QUEUE_WITH_HISTORY`) is server-side queue state with ETags — this
 is how the queue follows you between devices. [verified-source]
 
-**API availability:** none of the reference open-source clients implement TIDAL Connect
-controlling, cloud queue or Chromecast. tidal-connect (ref:tidal-connect) runs a **proprietary
-closed-source binary** (`tidal_connect_application`) with a vendor certificate to act as a Connect
-*target* — that path is not open-source-reproducible. This is the single largest capability gap for
-any third-party client. [verified-source]
+**API availability:** none of the reference open-source clients *implement* TIDAL Connect
+controlling, cloud queue or Chromecast — but "no OSS client implements it" is not the same claim as
+"undocumented", which the first draft conflated for cloud queue specifically. `/playQueues` and
+`/playQueues/{id}` are documented in the v2 spec (see §Summary item 12 for the exact attributes and
+the repeat/shuffle enum mismatch an implementer must handle). TIDAL Connect device
+control itself remains genuinely undocumented outside the vendor SDK. tidal-connect
+(ref:tidal-connect) runs a **proprietary closed-source binary** (`tidal_connect_application`) with
+a vendor certificate to act as a Connect *target* — that path is not open-source-reproducible. This
+remains the single largest capability gap for any third-party client on the *target* side; the
+*controller* side (cloud queue, discovery) has more documented surface than previously stated.
+[verified-source]
 
 #### 5.5 Now Playing, mini player, full screen
 
@@ -876,11 +1027,17 @@ miniplayer as a differentiator, which is evidence the official app lacks one.
 
 #### 5.6 Keyboard shortcuts, media keys, notifications
 
-TIDAL's own desktop shortcuts, as mirrored 1:1 by tidal-hifi from TIDAL's published list
-(ref:tidal-hifi/src/features/hotkeys/hotkeyConfig.ts, sourced from defkey.com/tidal-desktop-shortcuts):
-[verified-source]
+**Relabelled: this is tidal-hifi's default hotkey config, not an attested TIDAL document.**
+`ref:tidal-hifi/src/features/hotkeys/hotkeyConfig.ts` (`DEFAULT_HOTKEY_ACTIONS`) is a third-party
+wrapper's own configurable global-hotkey defaults, using tidal-hifi-specific action ids
+(`hardReload`, `sidebarMusic`, `openSettings1`/`openSettings2`), whose header comment says it is
+"Based on the hotkeys from https://defkey.com/tidal-desktop-shortcuts" — a crowd-sourced
+third-party aggregator, unreachable to verify directly. Treat the whole table as
+**[verified-web, single unverifiable aggregator]**, not [verified-source]; the desktop client's own
+in-app cheatsheet (`modal/SHOW_SHORTCUTS`, [verified-source]) is the thing to check on a live
+install if this matters:
 
-| Shortcut | Action |
+| Shortcut | Action (per tidal-hifi's defaults) |
 | --- | --- |
 | `Ctrl+A` | Toggle favourite on current track |
 | `Ctrl+L` | Log out |
@@ -894,6 +1051,10 @@ TIDAL's own desktop shortcuts, as mirrored 1:1 by tidal-hifi from TIDAL's publis
 | `Alt+M/E/F/U` | Music / Explore / Feed / Uploads |
 | `Alt+S` | Toggle sidebar |
 | `Alt+Shift+P/A/T/V/R/M` | Collection: Playlists / Albums / Tracks / Videos / Artists / Mixes & Radio |
+
+Note also a small discrepancy worth resolving before copying this: tidal-hifi's config describes
+`Ctrl+R` as cycling "off, one, all", whereas the client's own `RepeatMode` enum is ordered
+`Off=0, All=1, One=2` — the cycle direction/order is not independently confirmed either way.
 
 In-app cheatsheet: `modal/SHOW_SHORTCUTS`. Shortcuts are window-local, not global/system-wide.
 Hardware media keys are handled by the OS via the standard media-key path (`MediaPlayPause`,
@@ -922,6 +1083,11 @@ publicly; likely uses the Web Speech API. [verified-source, purpose **[inferred]
 
 ### 6. Streaming and manifests — what a client must implement
 
+**This section is a feature-level summary; the wire-format depth lives in `tidal-api.md`
+(§8 playbackinfo, §8.2 manifest types, §8.3 encryption, §8.4 the quality cascade, §11 images) —
+go there for anything beyond what's needed to see that the feature exists.** The first draft of
+this report re-derived that material here at length; keep it in one place going forward.
+
 The playback path every unofficial client uses (all **[verified-source]**):
 
 1. `GET https://api.tidal.com/v1/tracks/{id}/playbackinfopostpaywall`
@@ -937,8 +1103,10 @@ The playback path every unofficial client uses (all **[verified-source]**):
 3. BTS manifests base64-decode to JSON `{mimeType, codecs, encryptionType, keyId, urls[]}`;
    DASH manifests decode to MPD XML.
 4. Quality fallback cascade — request the highest tier, degrade on failure; distinguish terminal
-   sub-statuses (Sone treats 4005, 4010, 4030–4035 as permanently unplayable) from transient
-   errors.
+   sub-statuses from transient errors. **Correction: the terminal set is not a contiguous range.**
+   Sone's actual constant is `TERMINAL_SUB_STATUSES = [4005, 4010, 4030, 4031, 4032, 4034, 4035]`
+   (ref:sone/src-tauri/src/tidal_api.rs:18) — **4033 is deliberately absent**. Do not write this as
+   "4030–4035".
 5. The modern v2 path is `GET /trackManifests/{id}` with
    `formats=[HEAACV1,AACLC,FLAC,FLAC_HIRES]&manifestType=HLS|MPEG_DASH&uriScheme=DATA&usage=PLAYBACK&adaptive=`
    plus an `x-playback-session-id` header; manifests expire after ~1 hour
@@ -952,25 +1120,70 @@ for the subscriber's own account; Strawberry explicitly *refuses* to play anythi
 error instead (ref:strawberry/src/tidal/tidalstreamurlrequest.cpp). That is the correct posture for
 streamboat: **detect encryption and decline, never circumvent.** [verified-source]
 
+**Failure behaviour has a native-app model this report did not previously mine, and streamboat
+needs a parity target for it, not an invented one.** The desktop client has a whole
+`network/{CONNECT, CONNECTION_ESTABLISHED, CONNECTION_LOST, CONNECTION_REFRESH, FAILED_STARTUP}`
+namespace for connectivity state, and a typed notification system:
+`message/{MESSAGE_INFO, MESSAGE_WARN, MESSAGE_ERROR, MEDIA_NOT_PLAYABLE, MESSAGE_BLOCK,
+MESSAGE_RELEASE, MESSAGE_DESKTOP_RELEASE, CLEAR_MESSAGE, CLEAR_MESSAGES}`, backed by a
+`Notification { id, category: MUTE|NETWORK|OTHER|PLAYBACK, severity: DEBUG|INFO|WARN|ERROR,
+message, data }` model (ref:TidaLuna/.../store/Notification.ts) — i.e. a typed toast/notification
+system with dedicated `PLAYBACK` and `NETWORK` categories. Add
+`player/STREAMING_PRIVILEGES_REVOKED` (§Summary item 18) and `remotePlayback/CONNECTION_LOST`. This
+is enough to specify streamboat's whole error-surface as an explicit parity target instead of
+inventing one from scratch. [verified-source]
+
+**Region unavailability and TIDAL's own replacement mechanism are also worth building for from day
+one.** Every real library has tracks unplayable in the user's country, and TIDAL actively
+substitutes alternatives rather than showing dead rows: the v2 spec exposes a `replacement`
+relationship on `tracks`/`videos`/`albums` and a `replaceMedia=<relationship paths>` query
+parameter, with each identifier then carrying `meta.replacement: ORIGINAL|REPLACED|NOT_REPLACED`
+(flagged "BETA Internal only" in the spec as of this reading). On the v1 side the equivalent
+signals are the per-item `StreamingFlags` already in §4.7 (`streamReady`, `allowStreaming`,
+`premiumStreamingOnly`, `payToStream`) plus the user-facing `message/MEDIA_NOT_PLAYABLE` action —
+i.e. the native app surfaces a message and moves on rather than stalling on a dead track.
+`/usageRules` and `/tracks/{id}/relationships/usageRules` are the v2 home for per-item entitlement
+rules. [verified-source]
+
 ### 7. Sharing and deep links
 
-- Web URLs: `https://tidal.com/browse/{track|album|artist|playlist|video|mix|user}/{id}`.
-  tidal-hifi builds `${tidalUrl}/browse/track/${trackId}` (ref:tidal-hifi/src/features/tidal/url.ts).
-  [verified-source]
+- Web URLs: **only the track form is source-verified** — tidal-hifi builds
+  `${tidalUrl}/browse/track/${trackId}` (`getTrackURL`, ref:tidal-hifi/src/features/tidal/url.ts).
+  The album/artist/playlist/video/mix/user variants
+  (`https://tidal.com/browse/{album|artist|playlist|video|mix|user}/{id}`) are **[inferred]** by
+  pattern extrapolation, not individually attested. [verified-source for track; rest **[inferred]**]
 - Content models carry canonical `url` fields: `http://www.tidal.com/track/{id}`,
-  `/album/{id}`, `/artist/{id}`, `/playlist/{uuid}` (ref:.../store/content/*.ts). [verified-source]
+  `/album/{id}`, `/artist/{id}`, `/playlist/{uuid}` (ref:.../store/content/*.ts) — this is a
+  *different* scheme from the `/browse/` one above; both exist. [verified-source]
 - **Universal links**: appending `?u` (or `&u`) to a TIDAL share link turns it into a
-  cross-platform link that resolves to the listener's own streaming service
+  cross-platform link that resolves to the listener's own streaming service. `getUniversalLink`
+  appends `&u` when a query string already exists, else `?u`
   (ref:tidal-hifi/src/features/tidal/url.ts; TIDAL support: "Sharing music links across streaming
-  platforms"). TIDAL's own share menu produces these. [verified-source + verified-web]
-- Cover art: `https://resources.tidal.com/images/<cover-uuid-with-dashes-replaced-by-slashes>/<size>x<size>.jpg`,
-  sizes including 80 and 1280 (ref:tidal-hifi/src/features/tidal/url.ts). [verified-source]
-- **`tidal://` custom scheme**: the desktop app registers a protocol handler —
-  `settings.openLinksInDesktopApp` / `settings/SET_OPEN_LINKS_IN_DESKTOP_APP` and
-  `launchHandler/LAUNCH` in the client; Strawberry uses redirect URI `tidal://login/auth` for OAuth
-  (ref:strawberry/src/tidal/tidalservice.cpp); Sone and sone-windows advertise "open `tidal://`
-  URLs" as a feature. The **exact entity path grammar for `tidal://` is not documented anywhere I
-  could reach** — **[uncertain]**. Reachable evidence covers `tidal://login/auth` only.
+  platforms"). TIDAL's own share menu produces these. The v2 spec also models this server-side, not
+  just as a URL trick: `/dspSharingLinks` and `/dspSharingLinks/{id}/relationships/subject` return
+  `{spotify, appleMusic, amazonMusic, youTubeMusic}` link objects, and a separate `/shares` +
+  `/savedShares` resource family (GET/POST) models sharing as server-side state. Content resources
+  additionally carry `externalLinks` in their v2 attributes. Treat "universal share link" as more
+  than a trivial string append if streamboat ever wants to *resolve* a shared link or show which
+  other services a track is on. [verified-source + verified-web]
+- Cover art: `getCoverURL` builds
+  `https://resources.tidal.com/images/<cover-uuid-with-dashes-replaced-by-slashes>/<size>x<size>.jpg`,
+  sizes including 80 and 1280, and passes through absolute URLs untouched — needed for uploaded
+  content, which does not use this convention (see §4.14). (ref:tidal-hifi/src/features/tidal/url.ts).
+  [verified-source]
+- **`tidal://` custom scheme — grammar now confirmed, correcting the first draft's "undocumented
+  anywhere" conclusion.** The grammar was in two reference checkouts this report already cited but
+  had not read for this purpose: `tidal://{track|album|artist}/{numeric id}` and
+  `tidal://{playlist|mix}/{string id}`, implemented identically in
+  `ref:high-tide/src/lib/utils.py` (`open_tidal_uri`, a `match` over
+  artist/album/track/mix/playlist) and `ref:sone/src/lib/tidalUrl.ts` (`parseTidalUrl`, an
+  identical `switch`). There is at least one collection-link form too:
+  `tidal://my-collection/tracks`, handled in `ref:sone/src/utils/itemHelpers.ts` and its `Home.tsx`.
+  The desktop app registers the protocol handler via `settings.openLinksInDesktopApp` /
+  `settings/SET_OPEN_LINKS_IN_DESKTOP_APP` and `launchHandler/LAUNCH`; Strawberry uses redirect URI
+  `tidal://login/auth` for OAuth (ref:strawberry/src/tidal/tidalservice.cpp) — that remains the only
+  attested *auth* use of the scheme, distinct from the entity-navigation grammar above.
+  [verified-source]
 - Share context menus per entity: `ALBUM_SHARE`, `ARTIST_SHARE`, `PLAYLIST_SHARE`, `MIX_SHARE`,
   `USER_SHARE`, `CONTRIBUTOR_SHARE`. [verified-source]
 - Embeds: TIDAL publishes an official embed widget product (developer.tidal.com embeds). Not
@@ -1004,18 +1217,19 @@ robust for a native client than embedding the web player. [verified-source]
 
 [verified-web unless noted]
 
-- **Offline downloads**: albums, playlists, tracks; up to 3 devices; separate Download quality
-  setting (Low/High/Max); `offlineGracePeriod` on the subscription; per-device counters
-  `numberOfOfflineAlbums`/`numberOfOfflinePlaylists` [verified-source]; deleted MQA downloads had
-  to be manually re-downloaded as FLAC after 24 Jul 2024.
+- **Offline downloads**: albums, playlists, tracks; **5 devices offline simultaneously (1 online)**
+  — not 3, corrected throughout this report from support.tidal.com/hc/en-us/articles/201623252;
+  separate Download quality setting (Low/High/Max); `offlineGracePeriod` on the subscription;
+  per-device counters `numberOfOfflineAlbums`/`numberOfOfflinePlaylists` [verified-source]; deleted
+  MQA downloads had to be manually re-downloaded as FLAC after 24 Jul 2024.
 - **Separate Mobile-data vs Wi-Fi streaming quality** settings.
 - **Dolby Atmos playback** (not available on desktop).
 - **CarPlay**: full app projection; car volume controls; offline mode plays downloaded My
-  Collection content only.
+  Collection content only. **[verified-web, unfetched support article]**
 - **Android Auto**: same, plus voice search ("Play X on Tidal"), shuffle/repeat/track-radio on Now
-  Playing.
+  Playing. **[verified-web, unfetched support article]**
 - **Android Automotive**: no downloads, no offline mode, no quality badge on Now Playing, but
-  streaming quality is settable.
+  streaming quality is settable. **[verified-web, unfetched support article]**
 - **Casting**: Chromecast, AirPlay, and TIDAL Connect device picker.
 - **Apple Watch / Wear**: playback control and (Watch) offline listening.
 - **Sleep timer / car mode**: could not confirm on official TIDAL documentation. **[uncertain]**
@@ -1034,9 +1248,13 @@ robust for a native client than embedding the web player. [verified-source]
 - **Building a Connect target is not open-source-reproducible.** The only working Linux
   implementation (ref:tidal-connect) wraps a **proprietary** `tidal_connect_application` binary
   authenticated with a vendor device certificate (default: `IfiAudio_ZenStream.dat`), announced via
-  Avahi/mDNS, with ALSA output; capped at LOSSLESS (16/44.1) since July 2024. It is a Docker
-  wrapper around a closed binary, MIT-licensed itself but useless without the binary.
-  [verified-source]
+  Avahi/mDNS, with ALSA output. It is a Docker wrapper around a closed binary, MIT-licensed itself
+  but useless without the binary. **Quality nuance, corrected**: this is not simply "capped at
+  LOSSLESS since July 2024" — `ref:tidal-connect/README.md:59` says the implementation "could play
+  hi-res files only up to 24/48 and MQA content" historically, with in-app MQA unfolding to
+  24/88–24/96; after the 24 July 2024 MQA removal (§Notable changes below), HiRes FLAC is simply
+  unavailable to it, so the accurate framing is "historically 24/48 plus MQA; effectively
+  LOSSLESS-only since MQA's removal", not a deliberate LOSSLESS cap. [verified-source]
 - **TV apps** (Apple TV, Fire TV, Android TV, smart TVs, consoles) are Dolby Atmos targets and use
   device-code login (`auth/DEVICE_AUTH_CODE_RESPONSE_RECEIVED`, `auth/DEVICE_AUTH_CODE_EXPIRED`
   exist even in the desktop client). [verified-source + verified-web]
@@ -1045,18 +1263,19 @@ robust for a native client than embedding the web player. [verified-source]
 
 | When | Change | Evidence |
 | --- | --- | --- |
-| Mar–Apr 2024 | Tier consolidation: HiFi and HiFi Plus merged into one subscription; HiRes FLAC for all payers | [verified-web] |
-| Apr 2024 | Free ad-supported tier discontinued | [verified-web] |
-| 17 Jun 2024 (announced) → 24 Jul 2024 (effective) | **MQA removed**; **Sony 360 Reality Audio removed**; catalogue re-served as FLAC; offline MQA downloads had to be re-downloaded | [verified-web]; legacy enums still present [verified-source] |
+| 6 Mar 2024 (announced) → 10 Apr 2024 (effective) | Tier consolidation: HiFi and HiFi Plus merged into one subscription; HiRes FLAC for all payers; Student dropped to $4.99; **Free ad-supported tier discontinued**; Military/First-Responder discounts ended (10 Jun 2024) | [verified-web] |
+| 17 Jun 2024 (announced) → 24 Jul 2024 (effective) | **MQA removed**; **Sony 360 Reality Audio removed**; **all podcasts removed** (same change); catalogue re-served as FLAC; offline MQA downloads had to be re-downloaded | [verified-web] (ecoustics.com/news/tidal-drops-mqa-360ra-podcasts/ for the podcast removal date); legacy enums still present [verified-source] |
 | 2024→2026 | HiRes FLAC (24/192) becomes the "Max" tier name; Low/High/Max replaces Normal/High/HiFi/Master | [verified-web + verified-source] |
 | ~2024–2025 | Public profiles, Picks/prompts, Feed, blocking, user-profile search results mature | [verified-source] |
+| 2025 (some dates 2025-09/2025-11 in schema examples) | A social/creator API layer ships: comments (incl. time-anchored track comments), reactions, appreciations, artist claims, purchases, collaborative-playlist invites — see §4.13, §4.8 | [verified-source, from the v2 OpenAPI spec] |
 | 2025 | AI playlist creation (`folders/CREATE_AI_PLAYLIST`) present in the desktop client; no press confirmation found | [verified-source], product framing **[uncertain]** |
 | Nov 2025 | **TIDAL Upload** launches (creator uploads, Spotlight, $100k Upload Headliners contest); `Uploads` sidebar item and `UPLOADS` search category appear | [verified-web + verified-source] |
 | 2025–2026 | Desktop/web **UI redesign** rolls out; two UIs coexist long enough that wrappers must detect which is live | [verified-source] |
-| Aug 2026 | Price increase: Individual $10.99→$11.99, Family $16.99→$19.99, Student $5.49→$6.99 (US) | [verified-web] |
+| Uncertain, possibly during 2026 | DJ Extension pricing reportedly changed and stems were withdrawn/reinstated (title of digitaldjtips.com/big-price-increase-for-djs-using-tidal/) | **[uncertain]** — could not fetch; re-check before publishing a DJ Extension price |
+| Aug 2026 | Price increase: Individual $10.99→$11.99, Family $16.99→$19.99, Student $5.49→$6.99 (US), effective first billing date on/after 3 Aug 2026 | [verified-web] |
+| Mar–Jun 2026 | **Crossfade reintroduced** on iOS and Web (0–12 s slider, Settings toggle) — officially announced by TIDAL itself, not just third-party coverage; see §Summary item 8. Desktop-client status still open. | [verified-web]; desktop status **[uncertain]** |
 | Ongoing | Dolby Atmos remains mobile/TV/car only; **not on desktop** | [verified-web] |
 | Unclear | TIDAL **Live** (DJ sessions, launched Apr 2023) has no trace in the 2026 desktop client | **[uncertain]** |
-| Unclear | **Crossfade** reportedly returning in 2026 — only SEO-farm sources, no trace in the client | **[uncertain]** |
 
 ---
 
@@ -1072,128 +1291,131 @@ inside the official client — so the API column flags that.
 
 ### Authentication and account
 
-| Feature | Where in native app | Tier | API availability / who implements | Source |
-| --- | --- | --- | --- | --- |
-| OAuth device-code login (enter code at link.tidal.com) | All clients; TV/CLI-friendly | **MVP** | Fully available; PT, SO, TT, MO, tidalrs, libopenTIDAL | ref:python-tidal/tidalapi/session.py |
-| OAuth PKCE login (browser redirect) — required for HI_RES_LOSSLESS | Desktop/mobile | **MVP** | Available; PT, HT, MO, ST, tidal-cli, SDKs | ref:python-tidal/tidalapi/session.py; ref:high-tide |
-| Token refresh + secure token storage (keyring/libsecret/Keychain/DPAPI) | All | **MVP** | HT uses libsecret; SO uses OS keyring + AES-256-GCM file; TT uses keychain with age fallback | ref:high-tide/src/lib/secret_storage.py; ref:sone/README.md; ref:tidalt |
-| `GET sessions` → sessionId, userId, countryCode (mandatory on later calls) | All | **MVP** | Available; all clients | ref:python-tidal/tidalapi/session.py |
-| Subscription/entitlement read (`users/{id}/subscription`) — gate UI on `highestSoundQuality` | Settings/account | **v1** | Available; PT | ref:python-tidal/tidalapi/user.py |
-| Multiple accounts / account switching | Not in native app | out-of-scope | — | absence in Redux namespace |
-| Sign-up, payment, plan management | Native app links out to web | out-of-scope | Web-only | ref:.../store/index.ts `settings.urls` |
-| Facebook / Snapchat / TikTok linking | Profile settings | out-of-scope | Social-graph plumbing with no listening value | ref:.../actionTypes.ts `user/*` |
-| Streaming-privileges enforcement (one stream at a time; handle revocation) | All | **v1** | Server-enforced; must *handle* the error even if not subscribing to the socket. No OSS client implements the socket | ref:.../actionTypes.ts `player/STREAMING_PRIVILEGES_REVOKED`; ref:tidal-sdk-android/player/streaming-privileges |
+| Feature | Where in native app | Tier | Rationale | API availability / who implements | Source |
+| --- | --- | --- | --- | --- | --- |
+| OAuth device-code login (enter code at link.tidal.com) | All clients; TV/CLI-friendly | **MVP** | Nothing plays without a session; the only flow that works for headless/CLI | Fully available; PT, SO, TT, MO, tidalrs, libopenTIDAL | ref:python-tidal/tidalapi/session.py |
+| OAuth PKCE login (browser redirect) — required for HI_RES_LOSSLESS | Desktop/mobile | **MVP** | Required to unlock the top quality tier; desktop/GUI mode needs it from day one | Available; PT, HT, MO, ST, tidal-cli, SDKs | ref:python-tidal/tidalapi/session.py; ref:high-tide |
+| Token refresh + secure token storage (keyring/libsecret/Keychain/DPAPI) | All | **MVP** | Without it every restart is a re-login; plaintext token storage is a real credential-leak risk | HT uses libsecret; SO uses OS keyring + AES-256-GCM file; TT uses keychain with age fallback | ref:high-tide/src/lib/secret_storage.py; ref:sone/README.md; ref:tidalt |
+| `GET sessions` → sessionId, userId, countryCode (mandatory on later calls) | All | **MVP** | `countryCode` gates catalogue availability on every subsequent call | Available; all clients | ref:python-tidal/tidalapi/session.py |
+| Subscription/entitlement read (`users/{id}/subscription`) — gate UI on `highestSoundQuality` | Settings/account | **v1** | Needed to show the right quality ceiling and avoid requesting tiers the account can't get | Available; PT | ref:python-tidal/tidalapi/user.py |
+| Multiple accounts / account switching | Not in native app | out-of-scope | Not a parity gap — the native app doesn't do it either | — | absence in Redux namespace |
+| Sign-up, payment, plan management | Native app links out to web | out-of-scope | TIDAL itself punts this to a web page; no reason to build it natively | Web-only | ref:.../store/index.ts `settings.urls` |
+| Facebook / Snapchat / TikTok linking | Profile settings | out-of-scope | Social-graph plumbing with no listening value; adds three OAuth integrations for a profile-picture picker | Social-graph plumbing with no listening value | ref:.../actionTypes.ts `user/*` |
+| Streaming-privileges enforcement (one stream at a time; handle revocation) | All | **v1** | Server enforces this regardless of what streamboat does — an unhandled revocation looks like a crash/hang, not a clean stop | Server-enforced; must *handle* the error even if not subscribing to the socket. No OSS client implements the socket | ref:.../actionTypes.ts `player/STREAMING_PRIVILEGES_REVOKED`; ref:tidal-sdk-android/player/streaming-privileges |
 
 ### Playback
 
-| Feature | Where in native app | Tier | API availability / who implements | Source |
-| --- | --- | --- | --- | --- |
-| Play / pause / next / previous / stop | Player bar | **MVP** | Local | ref:.../actionTypes.ts `playbackControls/*` |
-| Seek (absolute, relative ±) | Progress bar | **MVP** | Local | `playbackControls/SEEK`, `SEEK_FORWARDS`, `SEEK_BACKWARDS` |
-| Volume, mute, unmute-to-previous | Player bar | **MVP** | Local | `playbackControls/SET_VOLUME`, `TOGGLE_MUTE`, `volumeUnmute` |
-| Manifest fetch + quality cascade (HI_RES_LOSSLESS→LOSSLESS→HIGH→LOW) | Internal | **MVP** | `playbackinfopostpaywall`; SO, HT, ST, TT, tidalrs | ref:sone/src-tauri/src/tidal_api.rs; ref:python-tidal/tidalapi/media.py |
-| DASH (MPD) and BTS manifest handling | Internal | **MVP** | PT, HT, SO, MO, ST | ref:python-tidal/tidalapi/media.py |
-| Detect encrypted manifests and refuse cleanly | Internal | **MVP** | ST does exactly this | ref:strawberry/src/tidal/tidalstreamurlrequest.cpp |
-| Shuffle (seeded, reversible) | Player bar | **MVP** | Local | ref:.../store/PlayQueue.ts `lastShuffleSeed` |
-| Repeat off / all / one | Player bar | **MVP** | Local | `RepeatMode {Off=0,All=1,One=2}` |
-| Queue view: reorder, remove, clear, play-next vs add-to-queue | Right sidebar | **MVP** | Local | `playQueue/ADD_NEXT` vs `ADD_LAST`, `MOVE_TRACK`, `REMOVE_AT_INDEX`, `CLEAR_QUEUE` |
-| Queue source attribution ("Playing from …") | Player bar | **v1** | Local | `playQueue.sourceName`, `sourceUrl` |
-| Lazy queue filling for huge lists | Internal | **v1** | Local | `playQueue/FETCH_REST_OF_THE_TRACKS_AND_ADD_TO_QUEUE` |
-| Queue persistence across restarts | Implicit | **v1** | Local; SO advertises it | ref:sone/README.md |
-| Gapless playback (preload next) | Internal | **MVP** | GStreamer `playbin3` about-to-finish (HT) or `concat` + GStreamer ≥1.24 (SO) | ref:high-tide; ref:sone/README.md |
-| Autoplay / continuation when queue ends | Setting + queue | **v1** | `content/LOAD_SUGGESTIONS`; SO implements | ref:sone/README.md |
-| Loudness normalization NONE/ALBUM/TRACK (ReplayGain from manifest) | Settings | **v1** | Gain + peak in playbackinfo; SO, HT implement | ref:.../store/index.ts; ref:sone/README.md |
-| Bit-perfect / exclusive output (WASAPI exclusive, Core Audio hog, ALSA hw:) | Sound output menu | **v1** | Local; SO (ALSA + WASAPI), TT (ALSA hw:) implement | ref:.../store/index.ts `PlayerDeviceMode`; ref:sone; ref:tidalt |
-| Audio device enumeration + selection | Sound output menu | **v1** | Local | `player.availableDevices`, `SELECT_SOUND_OUTPUT` |
-| Force-volume per device (software volume when device volume is uncontrollable) | Sound output menu | later | Local | `player.forceVolume`, `SET_FORCE_VOLUME` |
-| Signal-path transparency (show every conversion) | **Not in native app** | later (differentiator) | Local; SO implements | ref:sone/README.md |
-| Crossfade | Not found in native app | later | Purely local DSP if built | **[uncertain]** — see Open questions |
-| Equalizer | Not in native app | out-of-scope | Native app has none | absence in Redux namespace |
-| Audio spectrum visualiser | Settings toggle | later | Local | `settings.audioSpectrumEnabled` |
-| Video playback (music videos, HLS) | Video pages | later | `videos/{id}/urlpostpaywall`; SO implements with hls.js | ref:sone/README.md; ref:python-tidal/tidalapi/media.py |
-| Dolby Atmos playback | Mobile/TV only | out-of-scope | Native desktop does not do it; EAC3-JOC decode + renderer is a large lift for no parity gain | [verified-web] |
-| Play reporting (`play_log` → `ec.tidal.com/api/event-batch`) so Recently Played works | Invisible | **v1** | SO implements; no other OSS client does | ref:sone/src-tauri/src/tidal_report/event.rs |
+| Feature | Where in native app | Tier | Rationale | API availability / who implements | Source |
+| --- | --- | --- | --- | --- | --- |
+| Play / pause / next / previous / stop | Player bar | **MVP** | The whole point of the app | Local | ref:.../actionTypes.ts `playbackControls/*` |
+| Seek (absolute, relative ±) | Progress bar | **MVP** | Table stakes for any player | Local | `playbackControls/SEEK`, `SEEK_FORWARDS`, `SEEK_BACKWARDS` |
+| Volume, mute, unmute-to-previous | Player bar | **MVP** | Table stakes | Local | `playbackControls/SET_VOLUME`, `TOGGLE_MUTE`, `volumeUnmute` |
+| Manifest fetch + quality cascade (HI_RES_LOSSLESS→LOSSLESS→HIGH→LOW) | Internal | **MVP** | Nothing plays without this; retrofitting terminal-vs-transient error handling later is painful | `playbackinfopostpaywall`; SO, HT, ST, TT, tidalrs | ref:sone/src-tauri/src/tidal_api.rs; ref:python-tidal/tidalapi/media.py |
+| DASH (MPD) and BTS manifest handling | Internal | **MVP** | Both manifest types occur in normal use; missing one means some tracks silently fail | PT, HT, SO, MO, ST | ref:python-tidal/tidalapi/media.py |
+| Detect encrypted manifests and refuse cleanly | Internal | **MVP** | Legal posture, not just a feature — document it so nobody files "add Widevine support" | ST does exactly this | ref:strawberry/src/tidal/tidalstreamurlrequest.cpp |
+| Shuffle (seeded, reversible) | Player bar | **MVP** | Users notice immediately when shuffle is destructive or unseeded | Local | ref:.../store/PlayQueue.ts `lastShuffleSeed` |
+| Repeat off / all / one | Player bar | **MVP** | Table stakes | Local | `RepeatMode {Off=0,All=1,One=2}` |
+| Queue view: reorder, remove, clear, play-next vs add-to-queue | Right sidebar | **MVP** | Play-next vs add-to-queue as distinct insert positions is one of the first things users test | Local | `playQueue/ADD_NEXT` vs `ADD_LAST`, `MOVE_TRACK`, `REMOVE_AT_INDEX`, `CLEAR_QUEUE` |
+| Queue source attribution ("Playing from …") | Player bar | **v1** | Small, cheap, and expected once the queue exists | Local | `playQueue.sourceName`, `sourceUrl` |
+| Lazy queue filling for huge lists | Internal | **v1** | Without it, playing a 10,000-track collection stalls on load | Local | `playQueue/FETCH_REST_OF_THE_TRACKS_AND_ADD_TO_QUEUE` |
+| Queue persistence across restarts | Implicit | **v1** | Expected baseline behaviour once a queue exists | Local; SO advertises it | ref:sone/README.md |
+| Gapless playback (preload next) | Internal | **MVP** | A native client's core reason to exist — the web player structurally cannot always guarantee this | GStreamer `playbin3` about-to-finish (HT) or `concat` + GStreamer ≥1.24 (SO) | ref:high-tide; ref:sone/README.md |
+| Autoplay / continuation when queue ends | Setting + queue | **v1** | Visible UX parity item; depends on catalogue recommendation endpoints, so not MVP | `content/LOAD_SUGGESTIONS`; SO implements | ref:sone/README.md |
+| Loudness normalization NONE/ALBUM/TRACK (ReplayGain from manifest) | Settings | **v1** | A checkbox implementation is a known-wrong shape (three states, not two) | Gain + peak in playbackinfo; SO, HT implement | ref:.../store/index.ts; ref:sone/README.md |
+| Bit-perfect / exclusive output (WASAPI exclusive, ALSA hw:; macOS mechanism **[inferred]**) | Sound output menu | **v1** | The reason a native client exists at all — the web player cannot do this | Local; SO (ALSA + WASAPI), TT (ALSA hw:) implement | ref:.../store/index.ts `PlayerDeviceMode`; ref:sone; ref:tidalt |
+| Audio device enumeration + selection | Sound output menu | **v1** | Required before exclusive output means anything | Local | `player.availableDevices`, `SELECT_SOUND_OUTPUT` |
+| Force Volume per device — **pins the app's own volume at 100% so an external DAC/amp is the sole volume control** (corrected: this is the opposite of a software-volume fallback) | Sound output menu | later | Cheap once exclusive-mode plumbing exists; not needed for a usable v1 | Local | `player.forceVolume`, `SET_FORCE_VOLUME` |
+| Signal-path transparency (show every conversion) | **Not in native app** | later (differentiator) | Nice audiophile-facing extra, no schema risk, doesn't block anything else | Local; SO implements | ref:sone/README.md |
+| Crossfade | **Confirmed shipping on iOS/Web in 2026 — this is parity work, not a differentiator; re-tier once desktop status is confirmed** | later (pending desktop confirmation) | Purely local DSP if built; low risk either way, but should not be dismissed as "not a TIDAL feature" | Purely local DSP if built | [verified-web] — see §Summary item 8 |
+| Equalizer | Not in native app | out-of-scope | Not a parity gap — the native app has none either | Native app has none | absence in Redux namespace |
+| Audio spectrum visualiser | Settings toggle | later | Cosmetic, no schema risk | Local | `settings.audioSpectrumEnabled` |
+| Video playback (music videos, HLS) | Video pages | later | Separate HLS pipeline for a scope the owner hasn't committed to (§Open questions) | `videos/{id}/urlpostpaywall`; SO implements with hls.js | ref:sone/README.md; ref:python-tidal/tidalapi/media.py |
+| Dolby Atmos playback | Mobile/TV only | out-of-scope | Native desktop does not do it; EAC3-JOC decode + renderer is a large lift for no parity gain | Native desktop does not do it | [verified-web] |
+| Play reporting (`play_log` → `ec.tidal.com/api/event-batch`) so Recently Played works | Invisible | **v1** | Without it the user's own TIDAL account degrades (dead Recently Played, stale Daily Discovery) from using streamboat — bigger than any missing screen | SO implements; no other OSS client does | ref:sone/src-tauri/src/tidal_report/event.rs |
 
 ### Browse and content
 
-| Feature | Where in native app | Tier | API availability / who implements | Source |
-| --- | --- | --- | --- | --- |
-| Home page (dynamic modules) | Music tab | **v1** | `pages/home`; HT, SO, MO | ref:python-tidal/tidalapi/page.py |
-| For You page | Music tab | **v1** | `pages/for_you`; MO | ref:mopidy-tidal/mopidy_tidal/library.py |
-| Explore: genres, moods, charts, TIDAL Rising, new releases | Explore tab | **v1** | `pages/explore`, `pages/moods`, `pages/genre_page`, `pages/hires`, `pages/videos`; HT, MO | ref:high-tide/src/pages/explore_page.py |
-| Editorial articles inline | Explore | later | `content.articles` exists in client; python-tidal has no article model | ref:.../store/content/Article.ts |
-| Search: top hit + tracks/videos/artists/albums/playlists | Search field | **MVP** | `GET search?types=…` (≤300 results); PT, HT, SO, MO, CL | ref:python-tidal/tidalapi/session.py |
-| Search: uploads and user-profile result types | Search filters | later | **Not in python-tidal** — needs direct API work | ref:.../store/index.ts `searchResultFilterOrder` |
-| Recent searches, suggestions, "did you mean" | Search popover | later | Server-side suggestion endpoints not implemented by any OSS client | ref:.../store/index.ts `Search` |
-| Artist page: top tracks, albums, EP & singles, appears on, similar, bio, videos, radio, follow, share | Artist route | **v1** | All endpoints available; HT implements all | ref:high-tide/src/pages/artist_page.py |
-| Contributor/credits page (songwriter, producer, engineer …) | Contributor route | later | `content/LOAD_DYNAMIC_CONTRIBUTOR_PAGE`; not in any OSS client | ref:.../store/content/Artist.ts |
-| Album page: multi-volume tracks, credits, review, similar, UPC/label/date, quality badges | Album route | **v1** | `albums/{id}/items`, `/review`, `/similar`, `pages/album`; HT, SO | ref:.../store/content/Album.ts |
-| Track credits panel | Now Playing / album | **v1** | `content/LOAD_ITEM_CONTRIBUTORS`; not in PT high-level API | ref:.../actionTypes.ts |
-| Lyrics — plain and time-synced (`subtitles`), RTL aware | Now Playing | **v1** | `tracks/{id}/lyrics`; HT, SO implement synced lyrics | ref:.../store/Lyrics.ts; ref:high-tide/src/widgets/lyrics_widget.py |
-| Track radio / artist radio / album mix | Context menus | **v1** | `tracks/{id}/radio`, `artists/{id}/radio`, `*/mix`; HT, SO | ref:python-tidal/tidalapi/{media,artist}.py |
-| Mixes: My Mix N, Daily Discovery, New Arrivals, Video Mix | Home + Collection | **v1** | `pages/mix`, `pages/my_collection_my_mixes`; HT, SO, MO | ref:python-tidal/tidalapi/mix.py |
-| My Collection: Tracks/Albums/Artists/Playlists/Videos/Mixes with sort + direction | Collection group | **MVP** (tracks/albums/artists/playlists), **v1** (videos/mixes) | `users/{id}/favorites/*`; PT, HT, SO, MO | ref:python-tidal/tidalapi/{user,types}.py |
-| Favourite / unfavourite anything (incl. favouriting users) | Everywhere | **MVP** | `users/{id}/favorites/*` add/remove; `favorites/mixes/{add,remove}` for mixes | ref:python-tidal/tidalapi/user.py |
-| Recently played | Home | **v1** | `content/LOAD_RECENT_ACTIVITY`; depends on play reporting | ref:sone/README.md |
-| Charts | Explore | later | Reachable as an Explore module, no dedicated endpoint in PT | **[inferred]** |
-| Podcasts | **Not a TIDAL feature** | out-of-scope | TIDAL discontinued podcasts; no content type exists (`ContentType = track|video` only) | ref:.../store/content/BaseMediaItem.ts |
+| Feature | Where in native app | Tier | Rationale | API availability / who implements | Source |
+| --- | --- | --- | --- | --- | --- |
+| Home page (dynamic modules, incl. tabs and cursor pagination — §4.2) | Music tab | **v1** | The first screen the user sees; a defensive module renderer here pays off across every other page | `pages/home` and/or `home/feed/{slug}`; HT, SO, MO | ref:python-tidal/tidalapi/page.py |
+| For You page | Music tab | **v1** | Distinct endpoint from Home; expected on parity but not blocking | `pages/for_you`; MO | ref:mopidy-tidal/mopidy_tidal/library.py |
+| Explore: genres, moods, charts, TIDAL Rising, new releases | Explore tab | **v1** | Second most-used nav destination after Home | `pages/explore`, `pages/moods`, `pages/genre_page`, `pages/hires`, `pages/videos`; HT, MO | ref:high-tide/src/pages/explore_page.py |
+| Editorial articles inline | Explore | later | Content type with no playback value; safe to defer | `content.articles` exists in client; python-tidal has no article model | ref:.../store/content/Article.ts |
+| Search: top hit + tracks/videos/artists/albums/playlists | Search field | **MVP** | Users expect to find things immediately; the app is unusable without it | `GET search?types=…` (≤300 results); PT, HT, SO, MO, CL | ref:python-tidal/tidalapi/session.py |
+| Search: uploads and user-profile result types | Search filters | later | Small result-type gap, low value until Uploads/social scope is decided | **Not in python-tidal** — needs direct API work | ref:.../store/index.ts `searchResultFilterOrder` |
+| Recent searches, suggestions, "did you mean" | Search popover | later | **Re-tiered: these are server-side/cross-device endpoints (`/searchSuggestions`, `/searchHistoryEntries`), not unreachable as first drafted** — still "later" because no OSS client has exercised them yet, but the work is "call a documented endpoint," not "reverse-engineer one" | `/searchResults`, `/searchSuggestions`, `/searchHistoryEntries/{id}` documented in the v2 spec; no OSS client implements them yet | ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json |
+| Artist page: top tracks, albums, EP & singles, appears on, similar, bio, videos, radio, follow, share | Artist route | **v1** | One of the most-visited page types; all endpoints already available | All endpoints available; HT implements everything except the Videos row (cite TidaLuna/python-tidal for that one, §4.5) | ref:high-tide/src/pages/artist_page.py; ref:python-tidal/tidalapi/artist.py |
+| Contributor/credits page (songwriter, producer, engineer …) | Contributor route | later | Deep-cut feature with real value for credits nerds but low traffic | `content/LOAD_DYNAMIC_CONTRIBUTOR_PAGE`; not in any OSS client | ref:.../store/content/Artist.ts |
+| Album page: multi-volume tracks, credits, review, similar, UPC/label/date, quality badges | Album route | **v1** | Second most-visited page type after artist/home | `albums/{id}/items`, `/review`, `/similar`, `pages/album`; HT, SO | ref:.../store/content/Album.ts |
+| Track credits panel | Now Playing / album | **v1** | Visible, cheap once the album page exists | `content/LOAD_ITEM_CONTRIBUTORS`; not in PT high-level API | ref:.../actionTypes.ts |
+| Lyrics — plain and time-synced (`subtitles`), RTL aware | Now Playing | **v1** | High visible value per unit of effort; both HT and SO ship synced lyrics | `tracks/{id}/lyrics`; HT, SO implement synced lyrics | ref:.../store/Lyrics.ts; ref:high-tide/src/widgets/lyrics_widget.py |
+| Track radio / artist radio / album mix | Context menus | **v1** | Expected context-menu action, cheap once the underlying page exists | `tracks/{id}/radio`, `artists/{id}/radio`, `*/mix`; HT, SO | ref:python-tidal/tidalapi/{media,artist}.py |
+| Mixes: My Mix N, Daily Discovery, New Arrivals, Video Mix, history mixes | Home + Collection | **v1** | User-visible personalisation the owner has not asked to cut | `pages/mix`, `pages/my_collection_my_mixes`; HT, SO, MO | ref:python-tidal/tidalapi/mix.py |
+| My Collection: Tracks/Albums/Artists/Playlists/Videos/Mixes with sort + direction | Collection group | **MVP** (tracks/albums/artists/playlists), **v1** (videos/mixes) | A user's own library is core to "using TIDAL"; video/mix collections depend on scope decisions | `users/{id}/favorites/*`; PT, HT, SO, MO | ref:python-tidal/tidalapi/{user,types}.py |
+| Favourite / unfavourite anything (incl. favouriting users) | Everywhere | **MVP** | The single most-used library-mutation action in any music app | `users/{id}/favorites/*` add/remove; `favorites/mixes/{add,remove}` for mixes | ref:python-tidal/tidalapi/user.py |
+| Recently played | Home | **v1** | Depends on play reporting (Playback table) being implemented first | `content/LOAD_RECENT_ACTIVITY`; depends on play reporting | ref:sone/README.md |
+| Charts | Explore | later | A page category (confirmed, not inferred — see §4.3), reachable once Explore renders modules | Reachable as an Explore `PageLink`, no dedicated endpoint | ref:python-tidal/docs/pages.rst |
+| Podcasts | **Discontinued 24 Jul 2024 — [uncertain] whether any trace survives as an editorial page link** | out-of-scope | TIDAL's own removal announcement is dispositive for building podcast playback; the residual doctest category is a documentation-staleness question, not a design question | Removed 24 Jul 2024 (ecoustics.com/news/tidal-drops-mqa-360ra-podcasts/); a "Podcasts…" category still appears in python-tidal's page-module doctest output (ref:python-tidal/docs/pages.rst) — likely a stale fixture, re-check `pages/explore` on a live account before relying on either claim | [verified-web] removal; **[uncertain]** residual category |
 
 ### Library management
 
-| Feature | Where in native app | Tier | API availability / who implements | Source |
-| --- | --- | --- | --- | --- |
-| Create / rename / delete playlist | Sidebar, context menus | **v1** | `playlists`, `my-collection/playlists/folders/create-playlist`; PT, HT, SO | ref:python-tidal/tidalapi/playlist.py |
-| Add / remove playlist items | Context menus | **v1** | `playlists/{uuid}/items`; PT | ref:python-tidal/tidalapi/playlist.py |
-| Reorder playlist items (with ETag concurrency) | Playlist page drag | **v1** | `playlists/{uuid}/items/{index}` move; PT | ref:python-tidal/tidalapi/playlist.py |
-| Edit playlist title/description/cover | Edit modal | **v1** | PT supports metadata edit; custom cover upload **[uncertain]** | ref:python-tidal/tidalapi/playlist.py |
-| Public / private toggle | Playlist menu | **v1** | `/set-public`, `/set-private`, `user-playlists/{id}/public`; PT | ref:python-tidal/tidalapi/playlist.py |
-| Playlist folders (create, rename, move, remove) | Sidebar | **v1** | `my-collection/playlists/folders/*`; PT, SO | ref:python-tidal/tidalapi/user.py |
-| Suggested tracks for a playlist | Playlist page footer | later | `content/LOAD_PLAYLIST_SUGGESTED_MEDIA_ITEMS`; not in PT | ref:.../actionTypes.ts |
-| AI playlist creation | Create menu | out-of-scope (for now) | `folders/CREATE_AI_PLAYLIST`; no OSS client; endpoint unknown | ref:.../actionTypes.ts |
-| Block track / artist (+ blocked-items page) | Context menu | later | `blocks/*`; no OSS client implements | ref:.../actionTypes.ts |
-| Multi-select operations on track lists | Track lists | **v1** | Local | `selection/*`, `MULTI_MEDIA_ITEM` menu |
-| TIDAL Upload (upload your own tracks) | Uploads tab | out-of-scope | Creator tooling, not a player feature; would need undocumented upload endpoints | ref:.../actionTypes.ts `creatorContent/*` |
-| Play uploaded content that others shared with you | Uploads tab | later | `upload` flag on items; cover URLs are absolute | ref:tidal-hifi/src/features/tidal/url.ts |
+| Feature | Where in native app | Tier | Rationale | API availability / who implements | Source |
+| --- | --- | --- | --- | --- | --- |
+| Create / rename / delete playlist | Sidebar, context menus | **v1** | Core library-management action | `playlists`, `my-collection/playlists/folders/create-playlist`; PT, HT, SO | ref:python-tidal/tidalapi/playlist.py |
+| Add / remove playlist items | Context menus | **v1** | Core library-management action | `playlists/{uuid}/items`; PT | ref:python-tidal/tidalapi/playlist.py |
+| Reorder playlist items (with ETag concurrency) | Playlist page drag | **v1** | Skipping ETag guards risks silently clobbering a concurrent edit from another device | `playlists/{uuid}/items/{index}` move; PT | ref:python-tidal/tidalapi/playlist.py |
+| Edit playlist title/description/cover | Edit modal | **v1** | Expected once create/delete exists | PT supports metadata edit; custom cover upload **[uncertain]** | ref:python-tidal/tidalapi/playlist.py |
+| Visibility: **three-state PUBLIC / UNLISTED / PRIVATE**, not a binary toggle (§4.8) | Playlist menu | **v1** | Modelling this as a checkbox silently turns UNLISTED playlists into PUBLIC or PRIVATE — get the enum right from the start | Legacy binary: `/set-public`, `/set-private`, `user-playlists/{id}/public` (PT); v2 three-state: `Playlists_Attributes.accessType` | ref:python-tidal/tidalapi/playlist.py; ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json |
+| Playlist folders (create, rename, move, remove; read at scale via cursor pagination — §4.8) | Sidebar + its own `FOLDER` route | **v1** | Common for users with many playlists; the folder screen is a real route, not just a sidebar tree | `my-collection/playlists/folders/*` (create/list in `user.py`, rename/move in `playlist.py`); PT, SO | ref:python-tidal/tidalapi/{user,playlist}.py |
+| Collaborative playlists (invite/redeem) | Not in desktop client; confirmed in the v2 API (§4.8, §Summary item 10) | later | Real feature, but no OSS client has implemented it and the desktop UI itself may not expose it yet | `/collaborationInvites`, `/collaborationInviteRedemptions`, `playlists/{id}/relationships/collaborators`; no OSS client | ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json |
+| Suggested tracks for a playlist | Playlist page footer | later | Recommendation-quality feature, not core library management | `content/LOAD_PLAYLIST_SUGGESTED_MEDIA_ITEMS`; not in PT | ref:.../actionTypes.ts |
+| AI playlist creation | Create menu | out-of-scope (for now) | Endpoint and rollout state are both unconfirmed (§Open questions); revisit once documented | `folders/CREATE_AI_PLAYLIST`; no OSS client; endpoint unknown | ref:.../actionTypes.ts |
+| Block track / artist (+ blocked-items page) | Context menu | later | Permanently reshapes account-wide recommendations — a write with real consequences, worth building deliberately rather than early | `blocks/*`; no OSS client implements | ref:.../actionTypes.ts |
+| Multi-select operations on track lists | Track lists | **v1** | Expected once any track-list UI exists | Local | `selection/*`, `MULTI_MEDIA_ITEM` menu |
+| TIDAL Upload (upload your own tracks) | Uploads tab | out-of-scope | Creator tooling, not a player feature | Would need undocumented upload endpoints | ref:.../actionTypes.ts `creatorContent/*` |
+| Play uploaded content that others shared with you | Uploads tab | later | Playback-only consumption of a feature streamboat won't produce content for | `upload` flag on items; cover URLs are absolute | ref:tidal-hifi/src/features/tidal/url.ts |
+| Save for Later (a 7th collection type, distinct from the six in §4.10) | Not implemented by any OSS client | later | Real collection type in the v2 model; low priority until the core six lists are solid | `/userCollectionSaveForLaters/{id}`; no OSS client | ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json |
 
 ### Remote playback and integrations
 
-| Feature | Where in native app | Tier | API availability / who implements | Source |
-| --- | --- | --- | --- | --- |
-| Be controlled by MPRIS (Linux) / SMTC (Windows) / Now Playing (macOS) | Not TIDAL's — OS layer | **MVP** | `souvlaki` crate unifies all three; SO, sone-windows, HT, TH | ref:sone-windows/README.md; ref:high-tide/src/mpris.py |
-| Hardware media keys | OS | **MVP** | Via the media-controls integration above | ref:tidal-hifi/src/constants/mediaKeys.ts |
-| Desktop notifications on track change | Wrapper feature | later | Local | ref:tidal-hifi/README.md |
-| System tray + minimise/close to tray + autostart | Desktop settings | **v1** | `settings.desktop.closeToTray`, `autoStartMode`; SO, TH | ref:.../store/index.ts |
-| TIDAL Connect **controller** (discover + hand off to speakers) | Device picker | later | mDNS discovery + undocumented control protocol; **no OSS client implements it** | ref:.../store/RemotePlayback.ts |
-| TIDAL Connect **target** (be a Connect endpoint) | Third-party hardware | out-of-scope | Requires a proprietary binary + vendor certificate | ref:tidal-connect/bin/entrypoint.sh |
-| Chromecast | Device picker | later | `chromeCast/*` in native; no OSS client | ref:.../actionTypes.ts |
-| AirPlay (macOS) | OS audio device | later | Comes free via CoreAudio device selection | **[inferred]** |
-| Cloud queue / continue listening across devices | Invisible | later | `cloudQueue/*`; no OSS client; endpoints undocumented | ref:.../store/PlayQueue.ts |
-| Last.fm scrobbling | Built into TIDAL | **v1** | Native has `lastFm/*`; SO adds Last.fm + Libre.fm + ListenBrainz | ref:.../actionTypes.ts; ref:sone/README.md |
-| Discord Rich Presence | Not in native app | later (differentiator) | SO, TH, HT | ref:sone/README.md |
-| Local HTTP control API / MCP / OBS overlay | Not in native app | later (differentiator, but natural for headless mode) | TH exposes `/player/*` REST; SO exposes MCP on 5577 and OBS overlay on 5578 | ref:tidal-hifi/src/features/api/swagger.json; ref:sone/README.md |
-| Proxy support (HTTP/HTTPS/SOCKS5) | Not in native app | later | SO | ref:sone/README.md |
+| Feature | Where in native app | Tier | Rationale | API availability / who implements | Source |
+| --- | --- | --- | --- | --- | --- |
+| Be controlled by MPRIS (Linux) / SMTC (Windows) / Now Playing (macOS) | Not TIDAL's — OS layer | **MVP** | Expected baseline OS integration on every desktop platform | **Corrected: no single crate unifies all three.** sone-windows uses the `souvlaki` crate (`ref:sone-windows/src-tauri/Cargo.toml:64`, not its README, which never mentions it) for **Windows SMTC only**; Sone on Linux uses `mpris-server` instead (`ref:sone/src-tauri/Cargo.toml:66`); High Tide implements MPRIS itself via Python D-Bus (`ref:high-tide/src/mpris.py`); tidal-hifi (Node) has its own MPRIS service. Budget for three separate integrations, or `souvlaki` for Windows+macOS plus a Linux MPRIS library, not one crate for everything. | ref:sone-windows/src-tauri/Cargo.toml; ref:sone/src-tauri/Cargo.toml; ref:high-tide/src/mpris.py |
+| Hardware media keys | OS | **MVP** | Comes largely free once OS media-control integration exists | Via the media-controls integration above | ref:tidal-hifi/src/constants/mediaKeys.ts |
+| Desktop notifications on track change | Wrapper feature | later | Nice-to-have, no schema risk | Local | ref:tidal-hifi/README.md |
+| System tray + minimise/close to tray + autostart | Desktop settings | **v1** | Expected desktop-app behaviour on Windows/macOS/Linux | `settings.desktop.closeToTray`, `autoStartMode`; SO, TH | ref:.../store/index.ts |
+| TIDAL Connect **controller** (discover + hand off to speakers) | Device picker | later | Real feature owners of TIDAL Connect hardware expect, but the control protocol is undocumented and unimplemented anywhere — real research cost | mDNS discovery documented; cloud-queue mechanism now confirmed documented (`/playQueues`, see below); the device *control* protocol itself remains undocumented and **no OSS client implements it** | ref:.../store/RemotePlayback.ts |
+| TIDAL Connect **target** (be a Connect endpoint) | Third-party hardware | out-of-scope | Requires a proprietary binary + vendor certificate — not reproducible without it | Requires a proprietary binary + vendor certificate | ref:tidal-connect/bin/entrypoint.sh |
+| Chromecast | Device picker | later | Real feature, moderate research cost, no OSS precedent | `chromeCast/*` in native; no OSS client | ref:.../actionTypes.ts |
+| AirPlay (macOS) | OS audio device | later | Comes free via CoreAudio device selection — low cost, why not | Comes free via CoreAudio device selection | **[inferred]** |
+| Cloud queue / continue listening across devices | Invisible | later | **Re-tiered: the mechanism is documented (`/playQueues`, `PlayQueues_Attributes`), just not implemented by any OSS client — this is "call a documented endpoint," not "reverse-engineer an undocumented one."** Still later because it needs the local queue model solid first, and because its repeat/shuffle enum differs from the desktop client's (§Summary item 12) | `cloudQueue/*` client-side; `/playQueues`/`/playQueues/{id}` server-side (v2 spec); no OSS client implements it yet | ref:.../store/PlayQueue.ts; ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json |
+| Last.fm scrobbling | Built into TIDAL | **v1** | TIDAL itself treats this as a headline feature (own onboarding step, own route) | Native has `lastFm/*`; SO adds Last.fm + Libre.fm + ListenBrainz | ref:.../actionTypes.ts; ref:sone/README.md |
+| Discord Rich Presence | Not in native app | later (differentiator) | Cheap, popular with the OSS clients, no schema risk | SO, TH, HT | ref:sone/README.md |
+| Local HTTP control API / MCP / OBS overlay | Not in native app | later (differentiator, but natural for headless mode) | Directly serves the owner's headless/CLI requirement; define the contract before writing either front end | TH exposes `/player/*` REST; SO exposes MCP on 5577 and OBS overlay on 5578 | ref:tidal-hifi/src/features/api/swagger.json; ref:sone/README.md |
+| Proxy support (HTTP/HTTPS/SOCKS5) | Not in native app | later | Niche but cheap; no schema risk | SO | ref:sone/README.md |
 
 ### UI, settings and platform
 
-| Feature | Where in native app | Tier | API availability / who implements | Source |
-| --- | --- | --- | --- | --- |
-| Sidebar nav: Home, Explore, Feed, Uploads, Collection groups | Sidebar | **v1** (Home/Explore/Collection), later (Feed/Uploads) | Local | ref:tidal-hifi/src/TidalControllers/DomController/constants.ts |
-| Now Playing full screen with art, lyrics, credits | Player | **v1** | Local | `view/ENTER_NOWPLAYING` |
-| Native fullscreen | Player | later | Local | `view/ENTER_NATIVE_FULLSCREEN` |
-| Mini player (floating) | **Not in native app** | later (differentiator) | SO, sone-windows | ref:sone/README.md |
-| Keyboard shortcuts + in-app cheatsheet | Whole app | **v1** | Local; match TIDAL's own bindings where sensible | ref:tidal-hifi/src/features/hotkeys/hotkeyConfig.ts |
-| Streaming-quality selector | Settings + player menu | **MVP** | `settings/SET_STREAMING_QUALITY` | ref:.../store/index.ts |
-| Explicit-content filter | Settings | **v1** | `explicit` flag on every item; filter client-side | ref:.../store/index.ts |
-| Language / localisation | Settings | later | Client ships i18n bundles (`locale.bundles`) | ref:.../store/index.ts |
-| Deep links: `https://tidal.com/browse/...` and `tidal://` | Protocol handler | **v1** (open), later (register handler) | SO, sone-windows implement `tidal://` | ref:sone/README.md |
-| Universal share links (`?u`) | Share menus | **v1** | Trivial string append | ref:tidal-hifi/src/features/tidal/url.ts |
-| Theming / custom colours | **Not in native app** | later (differentiator) | SO (15 presets + picker), TH (themes) | ref:sone/README.md |
-| Offline downloads | Mobile only | out-of-scope for parity; a *logged-in subscriber cache* is a separate design question | No native desktop equivalent | [verified-web] |
-| Ads / ad-supported playback | Vestigial | out-of-scope | — | **[uncertain]** |
-| Voice commands | Desktop `speech/*` | out-of-scope | Undocumented | ref:.../actionTypes.ts |
-| Live / DJ sessions | Status unclear | out-of-scope | — | **[uncertain]** |
-| Feature-flag / experiment platform | Internal | out-of-scope | `experimentationPlatform/*`, `featureFlags/*` | ref:.../actionTypes.ts |
-| Analytics/event tracking (`eventTracking/*`) | Invisible | out-of-scope **except** play_log | Only `play_log` has user-visible consequences | ref:.../actionTypes.ts |
+| Feature | Where in native app | Tier | Rationale | API availability / who implements | Source |
+| --- | --- | --- | --- | --- | --- |
+| Sidebar nav: Home, Explore, Feed, Uploads, Collection groups (28 screens total — §4.1) | Sidebar | **v1** (Home/Explore/Collection), later (Feed/Uploads) | Music/Explore/Collection are the primary navigation loop; Feed/Uploads depend on the owner's social/creator scope decisions | Local | ref:tidal-hifi/src/TidalControllers/DomController/constants.ts |
+| Now Playing full screen with art, lyrics, credits | Player | **v1** | High-visibility screen, cheap once the underlying data (lyrics, credits) exists | Local | `view/ENTER_NOWPLAYING` |
+| Native fullscreen | Player | later | Nice-to-have window-management feature | Local | `view/ENTER_NATIVE_FULLSCREEN` |
+| Mini player (floating) | **Not in native app** | later (differentiator) | Cheap, popular with OSS clients, no schema risk | SO, sone-windows | ref:sone/README.md |
+| Keyboard shortcuts + in-app cheatsheet | Whole app | **v1** | Expected desktop-app affordance; match TIDAL's *reported* bindings loosely, not as gospel (§5.6 — the published list is one wrapper's copy of one crowd-sourced aggregator, not TIDAL's own documentation) | Local; match TIDAL's reported bindings where sensible | ref:tidal-hifi/src/features/hotkeys/hotkeyConfig.ts |
+| Streaming-quality selector | Settings + player menu | **MVP** | Users choosing quality is core to why they pay for TIDAL | `settings/SET_STREAMING_QUALITY` | ref:.../store/index.ts |
+| Explicit-content filter | Settings | **v1** | Client-side only in practice (owner decision — §Open questions), but cheap once the flag is read | `explicit` flag on every item; filter client-side | ref:.../store/index.ts |
+| Language / localisation | Settings | later | Nice-to-have, large surface area, no functional blocker | Client ships i18n bundles (`locale.bundles`) | ref:.../store/index.ts |
+| Deep links: `https://tidal.com/browse/...` and `tidal://` | Protocol handler | **v1** (open the URL scheme), later (register the OS-level handler) | **The `tidal://` grammar is now confirmed (§7), removing the excuse to defer this** — `tidal://{track,album,artist}/{numeric id}` and `tidal://{playlist,mix}/{string id}` are implemented identically in two reference clients | HT, SO implement `tidal://`; grammar confirmed in both | ref:high-tide/src/lib/utils.py; ref:sone/src/lib/tidalUrl.ts |
+| Universal share links (`?u`) and cross-DSP resolution | Share menus | **v1** (produce the link), later (resolve incoming cross-service links via `/dspSharingLinks`) | **Correction: producing a `?u` link is a trivial string append, but the feature is not** — `/dspSharingLinks` (`{spotify, appleMusic, amazonMusic, youTubeMusic}`) and `/shares`/`/savedShares` model sharing as real server-side state, relevant if streamboat ever wants to *resolve* an incoming shared link | Producing: trivial. Resolving: `/dspSharingLinks`, `/shares`, `/savedShares` (v2 spec, no OSS client) | ref:tidal-hifi/src/features/tidal/url.ts; ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json |
+| Theming / custom colours | **Not in native app** | later (differentiator) | Cheap, visible, no schema risk | SO (15 presets + picker), TH (themes) | ref:sone/README.md |
+| Offline downloads / logged-in subscriber cache | Mobile only (native desktop has none) | out-of-scope for desktop-parity; a *logged-in subscriber cache* is a separate, owner-scoped design question (§Open questions) | TIDAL's own offline model (`/offlineTasks` STORE/REMOVE + `/installations/.../offlineInventory`) is a candidate shape if the owner wants a cache — mirroring it beats inventing one | No native desktop equivalent; v2 spec models `/offlineTasks`, `/downloads`, `/installations` | ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json |
+| Ads / ad-supported playback | Vestigial plumbing after the free tier's 2024 removal | out-of-scope | No live ad-supported tier exists to build against | — | **[uncertain]** |
+| Voice commands | Desktop `speech/*` | out-of-scope | Undocumented, likely Web Speech API, low value relative to cost | Undocumented | ref:.../actionTypes.ts |
+| Live / DJ sessions | Status unclear | out-of-scope | Cannot safely build against a feature whose current existence is unconfirmed | — | **[uncertain]** |
+| Feature-flag / experiment platform | Internal | out-of-scope | TIDAL-internal tooling with no user-facing equivalent to build | `experimentationPlatform/*`, `featureFlags/*` | ref:.../actionTypes.ts |
+| Analytics/event tracking (`eventTracking/*`) | Invisible | out-of-scope **except** play_log | Only `play_log` has user-visible consequences (Recently Played, recommendations); the rest is TIDAL's own product telemetry, not streamboat's concern | Only `play_log` has user-visible consequences | ref:.../actionTypes.ts |
+| Comments, reactions, appreciations, artist claims, purchases (§4.13) | Not in desktop client; documented in v2 API | out-of-scope (needs an explicit owner decision, not a default) | Real 2025–2026 features with moderation/privacy implications if rendered; the owner has not scoped social this far (§Open questions) | `/comments`, `/reactions`, `/appreciations`, `/artistClaims`, `/purchases`; no OSS client | ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json |
 
 ---
 
@@ -1208,8 +1430,9 @@ inside the official client — so the API column flags that.
    `audioQualityToFormats`.
 3. **Build the playback core as a quality cascade with terminal-error classification** from day one
    (Sone's model: try HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW; treat playbackinfo sub-statuses
-   4005/4010/4030–4035 as permanently unplayable and skip, retry only transient errors). Retrofitting
-   this is painful.
+   **4005, 4010, 4030, 4031, 4032, 4034, 4035** — not a contiguous "4030–4035" range, 4033 is
+   deliberately absent — as permanently unplayable and skip, retry only transient errors).
+   Retrofitting this is painful.
 4. **Refuse encrypted manifests explicitly and visibly**, as Strawberry does. This is both the legal
    posture and a clean failure mode. Document it in the README so nobody files "add Widevine
    support" issues.
@@ -1240,8 +1463,12 @@ inside the official client — so the API column flags that.
     `albumReplayGain`/`trackReplayGain` and the peak values from the manifest response, with album
     context when playing an album and track context otherwise.
 11. **Do not build a Connect target.** It is not reproducible without a proprietary binary and a
-    vendor certificate. A Connect *controller* is reproducible in principle but undocumented and
-    unimplemented by anyone; treat it as research-later.
+    vendor certificate — and the evidence that the desktop app itself may be able to act as a
+    receiver is now stronger (a user-facing disconnect modal, §5.4), which raises the stakes on
+    getting this decision right rather than changing it. A Connect *controller* has more documented
+    surface than first thought (the cloud-queue mechanism is a real, spec'd resource, §Summary item
+    12) but the device discovery/control protocol itself remains undocumented and unimplemented by
+    anyone; treat it as research-later.
 12. **Mobile is future scope but two decisions bind now**: the core must be usable from a non-desktop
     runtime (so: no GTK/Qt assumptions in the core, no desktop-only crypto for token storage), and
     the offline story must be designed as a *cache for a logged-in subscriber* — bounded, encrypted
@@ -1252,11 +1479,43 @@ inside the official client — so the API column flags that.
 14. **Expect two TIDAL UIs and API drift.** tidal-hifi had to add runtime UI-version detection.
     streamboat does not touch the DOM, but the same instability applies to page-module shapes: parse
     defensively, log unknown shapes, never hard-fail a page because one module changed.
-15. **Feature-parity scope reality check.** Of the ~40 Redux namespaces in the official desktop
-    client, roughly 12 are user-visible features streamboat should match, ~8 are social/creator
-    surfaces that are optional, and the rest are analytics, experiments, onboarding, session
-    plumbing and modals. "Everything the native client does" is a smaller target than it first
-    appears — the hard parts are audio output quality, queue fidelity, and page-module rendering.
+15. **Feature-parity scope reality check.** Of the 48 Redux namespaces in the official desktop
+    client (TidaLuna 1.16.6-beta, 2026-09-02 — see the version caveat), roughly a dozen are
+    user-visible features streamboat should match, another dozen or so are social/creator surfaces
+    that are optional, and the rest are analytics, experiments, onboarding, session plumbing and
+    modals. "Everything the native client does" is a smaller target than it first appears — the
+    hard parts are audio output quality, queue fidelity, and page-module rendering.
+16. **Use the vendored OpenAPI spec as a first-class source, not a curiosity.**
+    `ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json` (TIDAL API 1.10.104, 256 paths, 993
+    schemas) is a first-party, machine-readable document sitting on disk, not a web summary — it
+    resolves several of this report's own open questions (collaborative playlists, playlist
+    visibility, cloud queue, offline model, search history) and documents a whole 2025–2026 layer
+    (comments, reactions, purchases, artist claims) this report's first draft missed entirely. Any
+    future research pass on this codebase should start there before falling back to web search.
+17. **Specify the error/failure surface as a parity target, not an afterthought.** The native
+    client's own `Notification { category: MUTE|NETWORK|OTHER|PLAYBACK, severity }` model plus
+    `message/MEDIA_NOT_PLAYABLE` and the `network/*` connectivity namespace (§6) is a ready-made
+    spec for streamboat's toasts/error states. Third-party clients are most visibly worse than the
+    native app exactly at failure moments (dead track, lost connection, revoked session) — copy the
+    native app's categorisation rather than inventing streamboat's own.
+18. **The route table, not the sidebar, is the actual screen inventory.** 28 `route/LOADER_DATA__*`
+    screens exist, four of them (standalone Track, standalone Video, Folder, another user's public
+    Profile) unreachable from the sidebar (§4.1, `references/screen-inventory.md`). Use the route
+    table when scoping IA/routing work, not a DOM screenshot of the sidebar.
+19. **Pick a UI-generation target deliberately, not by accident.** Two TIDAL UIs coexist through
+    2025–2026 (tidal-hifi's `OLD_UI_OVERRIDES` vs `NEW_UI_OVERRIDES`, §1). streamboat renders its own
+    UI and consumes the same underlying data either way, which means — unlike a DOM-scraping
+    wrapper — it is genuinely free to choose its own information architecture. That freedom should
+    be an explicit product decision ("simple but beautiful," per the owner's brief), not an accident
+    of whichever TIDAL screenshots the implementer happened to have open. See §Open questions.
+20. **Decide the write-scope policy as one tiered decision, not feature-by-feature.** Favouriting,
+    playlist mutation, blocking, Picks, profile edits, play_log reporting and (if ever adopted)
+    comments all *write* to the subscriber's real TIDAL account through an unofficial API — a bug in
+    streamboat then damages the account, not just the local app. Recommended tiers: read-only →
+    read + library writes (favourites/playlists/queue) → read + library + profile/recommendation
+    writes (Block, Picks, AI playlists) → + reporting (play_log). Use an `Idempotency-Key` on every
+    v2 mutation (the spec documents replay-safety within 1h) and respect playlist ETags — a stale
+    write can clobber a concurrent edit from the user's phone.
 
 ---
 
@@ -1265,13 +1524,18 @@ inside the official client — so the API column flags that.
 **Only the owner can decide:**
 
 1. **Social scope.** Feed, public profiles, followers, Picks/prompts, favouriting other users — a
-   coherent slice of the native app, but large and unrelated to playing music well. Include, defer,
-   or never?
-2. **Video scope.** TIDAL has 650k+ music videos, a Videos collection list, a Video Mix type and
+   coherent slice of the native app, but large and unrelated to playing music well. The scope is
+   now bigger than the first draft suggested: a 2025–2026 layer of comments (incl. time-anchored
+   track comments), reactions, appreciations and artist claims exists too (§4.13). Include, defer,
+   or never — and if included, at what depth?
+2. **Video scope.** TIDAL has music videos (catalogue size and audio codec are **[uncertain]**, not
+   confirmed at "650k+ / AAC ~320 kbps" — see §4.12), a Videos collection list, a Video Mix type and
    video search results. Videos need an entirely separate HLS pipeline. Include, defer, or never?
 3. **Offline caching posture.** Native desktop has none. Owner has explicitly allowed *discussing*
-   caching for a logged-in subscriber. What is the intended shape — ephemeral read-through cache,
-   pinned-for-offline with encryption-at-rest, or nothing at all?
+   caching for a logged-in subscriber. TIDAL's own offline model (`/offlineTasks` STORE/REMOVE +
+   `/installations/.../offlineInventory`, §6/§9) is now a concrete candidate shape to mirror. What is
+   the intended shape — ephemeral read-through cache, pinned-for-offline with encryption-at-rest
+   modelled on TIDAL's own store/remove tasks, or nothing at all?
 4. **Play reporting default.** Reporting plays to TIDAL makes the user's account work properly but is
    telemetry to a third party. Sone defaults it on with a toggle. Same default for streamboat?
 5. **Last.fm / ListenBrainz scrobbling** — the native client has Last.fm built in; the OSS clients
@@ -1282,25 +1546,29 @@ inside the official client — so the API column flags that.
 7. **Headless mode's control contract**: REST like tidal-hifi, MPD-compatible like mopidy, MPRIS-only,
    MCP, or several? This choice constrains the core API more than any UI decision.
 8. **Explicit-content filtering** is client-side only in practice. Ship it in v1 or later?
+9. **Write-scope policy** (Implication 20): how far does streamboat write to the user's real TIDAL
+   account — read-only, + library writes, + profile/recommendation writes (Block, Picks, AI
+   playlists), + play_log reporting? This is one cross-cutting decision, not eight independent
+   feature calls, because a bug at the "writes" tier damages the subscriber's actual account.
+10. **Which TIDAL UI generation streamboat targets for parity** (Implication 19): the new UI, the
+    old UI, or streamboat's own design that merely consumes the same data (in keeping with "simple
+    but beautiful")? streamboat doesn't touch the DOM, so unlike the wrapper clients it is free to
+    choose — but every screen-layout decision in the feature matrix silently assumes an answer.
 
 **Unverified / needs confirmation before it goes into a spec:**
 
-9. **Crossfade.** Not present anywhere in the 2026 desktop client's state or actions. Claims that
-   TIDAL reintroduced crossfade in 2026 (starting with iOS/Android) come only from content-farm
-   sites. Needs confirmation from TIDAL release notes or a first-hand account before being treated
-   as a parity target.
-10. **TIDAL Live / DJ sessions.** Launched April 2023; no trace in the 2026 desktop Redux namespace;
+11. **Crossfade on the desktop client specifically.** The feature's *existence* is now confirmed
+    ([verified-web], iOS/Web, 2026) — this is no longer an open question. What remains open is
+    whether the Electron desktop client has shipped it; the TidaLuna 1.16.6-beta dump (2026-09-02)
+    has no trace of it, which is more likely a stale snapshot than evidence of absence.
+12. **TIDAL Live / DJ sessions.** Launched April 2023; no trace in the 2026 desktop Redux namespace;
     no discontinuation announcement found. Present-but-mobile-only, or removed?
-11. **Dolby Atmos on desktop.** Documentation says desktop is unsupported, but the client carries
-    `modal/SHOW_DOLBY_ATMOS` and a `DOLBY_ATMOS` onboarding step. Most likely an upsell modal, but
-    unconfirmed.
-12. **`tidal://` URL grammar.** Only `tidal://login/auth` is attested. The entity paths
-    (`tidal://track/123`? `tidal://browse/album/…`?) are undocumented; Sone implements *something*
-    and its source is the place to check.
-13. **TIDAL Connect: can the desktop app be a target now?** TIDAL support said "coming soon"; the
-    client has a `remotePlaybackReceiver` namespace. Unresolved.
-14. **Collaborative playlists.** No trace in the desktop client. Does the feature exist at all in
-    2026, or only public/shared playlists?
+13. **Dolby Atmos on desktop.** Documentation says desktop is unsupported, and the client evidence is
+    now stronger (only one action, `modal/SHOW_DOLBY_ATMOS`, plus an onboarding step, most likely an
+    upsell modal) — confidence raised to ~0.85, but still not a source-confirmed absence.
+14. **TIDAL Connect: can the desktop app be a target now?** TIDAL support said "coming soon"; the
+    client evidence for a receiver role is now stronger than a namespace name (a dedicated
+    `modal/REMOTE_PLAYBACK_RECEIVER_DISCONNECT_MODAL`), but this remains unresolved.
 15. **AI playlist creation.** `folders/CREATE_AI_PLAYLIST` and `modal/SHOW_CREATE_AI_PLAYLIST` exist
     in the shipping client, but no press coverage or support article was found. Rollout state,
     market availability and endpoint are all unknown.
@@ -1314,7 +1582,25 @@ inside the official client — so the API column flags that.
 19. **Sleep timer and car mode** on mobile — commonly listed by third parties, not confirmed on
     TIDAL's own documentation.
 20. **Search result types `UPLOADS` and `USERPROFILES`** — present in the client's filter order, not
-    implemented by python-tidal; the `types=` parameter values are unverified.
+    implemented by python-tidal; the `types=` parameter values are unverified. (Recent
+    searches/suggestions/did-you-mean, by contrast, are now confirmed as documented v2 endpoints —
+    §4.4 — and are no longer open in the same way.)
+21. **DJ Extension pricing and stems availability in 2026.** The ~$9/mo figure and Serato-stems note
+    may be stale — a 2026 trade-article title suggests a price change and a stems
+    withdrawal/reinstatement during 2026 that could not be fetched here
+    (digitaldjtips.com/big-price-increase-for-djs-using-tidal/). Re-check before publishing a price.
+22. **Album normalization's -14 LUFS target and "on by default on mobile."** Sourced only to
+    2019–2020 rollout coverage, not re-verified for 2026 (§3). streamboat only needs the
+    ReplayGain/peak fields, which are solid independent of this number.
+23. **Whether "Podcasts" survives anywhere as a page-module category.** python-tidal's own doctest
+    fixture lists a "Podcasts…" Home/Explore category (`ref:python-tidal/docs/pages.rst`) despite
+    TIDAL's 24 Jul 2024 podcast removal (§4.12, §11). Likely a stale fixture; worth one live-account
+    check on `pages/explore` before treating either claim as settled.
+24. **Mix cadence/count figures** ("My Daily Discovery: 10 tracks/day," "My New Arrivals: 30
+    tracks/Friday") rest only on unfetched support-article summaries (§4.2).
+25. **The macOS mechanism for exclusive/bit-perfect output.** "Core Audio hog mode," repeated in
+    earlier drafts of this report, is an **[inferred]** guess with no source backing it (§5.3) —
+    only the Windows WASAPI-exclusive half is attested.
 
 ---
 
@@ -1323,10 +1609,12 @@ inside the official client — so the API column flags that.
 ### Reference checkouts (strongest evidence)
 
 - `ref:TidaLuna/plugins/lib/src/redux/types/actions/actionTypes.ts` — the complete sorted list of
-  ~600 Redux action types dumped from the shipping official TIDAL desktop client. Primary source for
-  every "the native app does/does not have X" claim: sidebar structure, queue semantics, settings,
-  remote playback, uploads, blocking, Picks, Last.fm, voice, AI playlists, and the *absence* of
-  crossfade/offline/Live.
+  **694 Redux action types across 48 namespaces** dumped from the shipping official TIDAL desktop
+  client, TidaLuna `v1.16.6-beta` (commit `d8cd6bc`, cloned 2026-09-02) — record this version/date
+  next to any re-verification. Primary source for every "the native app does/does not have X"
+  claim: sidebar structure, queue semantics, settings, remote playback, uploads, blocking, Picks,
+  Last.fm, voice, AI playlists — and every *absence* claim (crossfade, offline, Live) is only as
+  current as this one build (proven by the crossfade case, §Summary item 8).
 - `ref:TidaLuna/plugins/lib/src/redux/types/actions/index.ts` — action payload shapes; source for
   queue operation parameters, settings payload types, remote-playback payloads.
 - `ref:TidaLuna/plugins/lib/src/redux/types/store/index.ts` — the whole store shape. Source for
@@ -1380,10 +1668,12 @@ inside the official client — so the API column flags that.
 - `ref:python-tidal/tidalapi/session.py` — device-code and PKCE flows, `GET sessions`,
   `GET search?query&limit&offset&types` with `topHit`, 300-result cap.
 - `ref:python-tidal/tidalapi/user.py` — `users/{id}/favorites`, `users/{id}/playlists`,
-  `users/{id}/playlistsAndFavoritePlaylists`, `users/{id}/subscription`, and the folder API
-  `my-collection/playlists/folders/{,add-favorites,create-folder,create-playlist,move,remove,rename}`.
+  `users/{id}/playlistsAndFavoritePlaylists`, `users/{id}/subscription`, and the folder-creation
+  half of the folder API (`create-playlist` 224, `create-folder` 247, `add-favorites` 332,
+  `remove` 539, folder listing 737/782/799).
 - `ref:python-tidal/tidalapi/playlist.py` — playlist CRUD, `/items`, `/set-public`, `/set-private`,
-  `user-playlists/{id}/public`.
+  `user-playlists/{id}/public`, and **the rename (428) and move (519) halves of the folder API** —
+  not `user.py`, which the report's summary claim originally implied.
 - `ref:python-tidal/tidalapi/{album,artist,media,mix}.py` — `albums/{id}/{items,tracks,review,similar}`,
   `artists/{id}/{albums,bio,similar,toptracks,videos,mix,radio}`,
   `tracks/{id}/{lyrics,mix,radio,playbackinfopostpaywall,urlpostpaywall}`,
@@ -1396,16 +1686,51 @@ inside the official client — so the API column flags that.
 - `ref:sone/README.md` and `ref:sone-windows/README.md` — the most complete third-party feature set:
   bit-perfect ALSA/WASAPI exclusive, DAC format matching, signal-path transparency, ReplayGain with
   album/track context, autoplay, gapless (GStreamer ≥1.24), video playback, miniplayer, full-screen
-  player, queue persistence, MPRIS/SMTC, themes, scrobbling, play reporting, proxy, MCP server, OBS
-  overlay, `tidal://` deep links, playlist folders, profile editing.
+  player, queue persistence, themes, scrobbling, play reporting, proxy, MCP server, OBS overlay,
+  `tidal://` deep links, playlist folders, profile editing. **Correction: neither README mentions
+  MPRIS/SMTC implementation detail** — that lives in the Cargo manifests, not the READMEs (see
+  next entry); do not cite these READMEs for the media-controls crate claim.
+- `ref:sone/src-tauri/Cargo.toml:66` (`mpris-server = "0.9"`) and
+  `ref:sone-windows/src-tauri/Cargo.toml:64` (`souvlaki = "0.8.3"`) — the actual media-controls
+  dependencies: Sone (Linux) uses `mpris-server` directly; sone-windows uses `souvlaki` for Windows
+  SMTC only (`ref:sone-windows/README.md:69` describes only "Windows SMTC Integration", no MPRIS/
+  Now Playing claim). Neither crate "unifies all three" platforms as an earlier draft of this
+  report stated.
 - `ref:sone/src-tauri/src/tidal_report/{event.rs,mod.rs,queue.rs}` — the play-reporting pipeline:
   `https://ec.tidal.com/api/event-batch`, group `play_log`, payload fields
   (`playbackSessionId`, `isPostPaywall`, `actualQuality`, `startAssetPosition`/`endAssetPosition`,
   `sourceType`/`sourceId`), headers (`client-id`, `app-version`, `consent-category: NECESSARY`).
+- `ref:sone/src-tauri/src/tidal_api.rs` — also: `TERMINAL_SUB_STATUSES` (line 18, the exact
+  non-contiguous list), playlist `accessType` normalisation (526-533), TIDAL Connect quality
+  history reference, v1/v2 Home-feed parsing (1240-1268, 4161-4210), playlist-folder pagination and
+  the `/flattened` endpoint (3313-3400), Feed-vs-Home-page distinction (680-770, 4161-4210),
+  `pages/rising` (4386-4406), `TidalMix.mix_type` including history-mix values (841-847).
+- `ref:sone/src/lib/tidalUrl.ts` (`parseTidalUrl`) and `ref:high-tide/src/lib/utils.py`
+  (`open_tidal_uri`, lines 486-518) — two independent, matching implementations of the `tidal://`
+  entity-path grammar: `{track,album,artist}/{numeric id}`, `{playlist,mix}/{string id}`. Also
+  `ref:sone/src/utils/itemHelpers.ts` for the `tidal://my-collection/tracks` collection-link form.
 - `ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts` — the official
   v2 manifest path: `GET /trackManifests/{id}` with `formats`, `manifestType`, `uriScheme=DATA`,
   `usage=PLAYBACK`, `adaptive`, `x-playback-session-id`; `audioQualityToFormats` /
   `audioFormatsToQuality`; 1-hour manifest expiry.
+- **`ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json`** (identical copy at
+  `ref:tidal-sdk-android/tidalapi/bin/tidal-api.json`) — **the full official v2 OpenAPI spec, TIDAL
+  API 1.10.104, server `https://openapi.tidal.com/v2`, 256 paths, 993 schemas.** Under-used in the
+  first research pass; now the primary source for collaborative playlists
+  (`/collaborationInvites`, `/collaborationInviteRedemptions`), playlist visibility
+  (`Playlists_Attributes.accessType: PUBLIC|UNLISTED|PRIVATE`), cloud queue
+  (`/playQueues`, `PlayQueues_Attributes`), offline (`/offlineTasks`, `/downloads`,
+  `/installations`), search history (`/searchResults`, `/searchSuggestions`,
+  `/searchHistoryEntries`), the social/creator layer (`/comments`, `/reactions`, `/appreciations`,
+  `/artistClaims`, `/purchases`), and media replacement/region unavailability
+  (`.../relationships/replacement`, `replaceMedia=`, `/usageRules`). See
+  `references/openapi-v2-catalogue.md` for the fuller path/schema catalogue this report draws on.
+- `ref:tidal-sdk-android/tidalapi/src/main/kotlin/com/tidal/sdk/tidalapi/generated/apis/CollaborationInvites.kt`
+  — the generated Kotlin client confirming the collaboration-invite flow is a real, code-generated
+  API surface, not merely a spec fragment.
+- `ref:TidaLuna/plugins/lib/src/redux/types/store/Notification.ts` — the `Notification {category:
+  MUTE|NETWORK|OTHER|PLAYBACK, severity: DEBUG|INFO|WARN|ERROR}` model and the `message/*` /
+  `network/*` action namespaces — the native app's own failure/error-surface design (§6).
 - `ref:tidal-sdk-android/player/streaming-privileges/` — a whole module dedicated to
   one-stream-at-a-time enforcement, confirming it is server-driven and must be handled.
 - `ref:strawberry/src/tidal/tidalstreamurlrequest.cpp` — the four stream-URL endpoints and the
@@ -1413,9 +1738,11 @@ inside the official client — so the API column flags that.
 - `ref:mopidy-tidal/mopidy_tidal/library.py` — a proven headless browse tree: `tidal:home`,
   `tidal:for_you`, `tidal:explore`, `tidal:moods`, `tidal:genres`, `tidal:mixes`, `tidal:hires`,
   `tidal:my_{artists,albums,playlists,mixes,tracks}`.
-- `ref:tidal-connect/bin/entrypoint.sh` and `ref:tidal-connect/build/Dockerfile` — proof that a
-  TIDAL Connect *target* requires the proprietary `tidal_connect_application` binary plus a vendor
-  device certificate, capped at LOSSLESS since July 2024.
+- `ref:tidal-connect/bin/entrypoint.sh`, `ref:tidal-connect/build/Dockerfile` and
+  `ref:tidal-connect/README.md:59` — proof that a TIDAL Connect *target* requires the proprietary
+  `tidal_connect_application` binary plus a vendor device certificate; README.md:59 gives the
+  quality nuance ("could play hi-res files only up to 24/48 and MQA content") that the July 2024
+  MQA removal then reduced to effectively LOSSLESS-only.
 - `ref:tidalt/internal/tidal/api.go`, `ref:tidalt/internal/player/alsa.c` — an ALSA-direct headless
   reference: `tracks/{id}/urlpostpaywall` with quality ladder, `hw:` device with format negotiation.
 
@@ -1428,20 +1755,41 @@ inside the official client — so the API column flags that.
   24-bit/192 kHz, platform support.
 - https://support.tidal.com/hc/en-us/articles/25876825185425-Audio-Format-Updates — MQA and Sony
   360RA removal.
-- https://www.whathifi.com/news/tidal-scraps-mqa-and-spatial-audio-format-heres-what-that-means-for-subscribers
-  and https://www.headphonesty.com/2024/06/tidal-officially-dumps-mqa/ — announced 17 Jun 2024,
-  effective 24 Jul 2024; FLAC replacement; offline re-download requirement.
-- https://www.digitalmusicnews.com/2024/03/06/tidal-simplifies-subscription-options/ — March 2024
-  tier consolidation and end of the free tier.
+- https://www.whathifi.com/news/tidal-scraps-mqa-and-spatial-audio-format-heres-what-that-means-for-subscribers,
+  https://www.headphonesty.com/2024/06/tidal-officially-dumps-mqa/,
+  https://www.strata-gee.com (MQA/360RA removal coverage) and
+  https://www.techradar.com (MQA/360RA removal coverage) — announced 17 Jun 2024, effective
+  24 Jul 2024; FLAC replacement; offline re-download requirement; 360RA tracks greyed out.
+- https://www.ecoustics.com/news/tidal-drops-mqa-360ra-podcasts/ — **the same 24 Jul 2024 change also
+  removed all podcasts**; use this dated primary fact in place of the absence-based
+  `ContentType = track|video` argument for why podcasts are out of scope (§4.12, §11).
+- https://www.digitalmusicnews.com/2024/03/06/tidal-simplifies-subscription-options/,
+  https://musicbusinessworldwide.com/tidal-streamlines-offerings-merging-hifi-and-hifi-plus-into-single-10-99-a-month-tier/
+  and https://musically.com/2025/11/14/... (2024/03/06 archive) — announced 6 Mar 2024, effective
+  10 Apr 2024: HiFi/HiFi Plus consolidation, Student to $4.99, Free tier discontinued, Military/
+  First-Responder discounts ended 10 Jun 2024.
 - https://www.ecoustics.com/news/good-news-audiophiles-tidal-hifi/ — HiFi Plus price drop to
   $10.99 as part of the consolidation.
-- Pricing aggregators (subscriptionscompare.com, jaideepass.com, freeyourmusic.com) — Aug 2026 price
-  increase to $11.99 / $19.99 / $6.99. Treat as indicative.
-- https://support.tidal.com/hc/en-us/articles/28548110049681-Exclusive-Mode — exclusive control of
-  the audio device; volume must be changed in-app; mutual exclusion with Force Volume.
+- https://www.ecoustics.com/news/tidal-price-increase-2026/ and
+  https://www.neowin.net/news/tidal-is-getting-a-price-hike/ — **replace the earlier pricing
+  aggregators (subscriptionscompare.com, jaideepass.com, freeyourmusic.com) with these**: Aug 2026
+  price increase to $11.99 / $19.99 / $6.99, effective the first billing date on/after 3 Aug 2026.
+  Confidence raised from the first draft's 0.6 to solid [verified-web] — two independent trade
+  sources agree on the exact figures.
+- https://support.tidal.com/hc/en-us/articles/28548110049681-Exclusive-Mode and
+  https://forums.whathifi.com (thread 127860) — exclusive control of the audio device; volume must
+  be changed in-app; mutual exclusion with Force Volume, corroborated independently. Exact quote:
+  "With Force Volume, Tidal keeps the app's volume at the maximum level, allowing you to control the
+  sound output through external devices like your DAC or speakers" — use this wording, not "software
+  volume when device volume is uncontrollable" (an earlier draft's incorrect gloss, now corrected
+  throughout §5.3 and the feature matrix).
 - https://support.tidal.com/hc/en-us/articles/360004565898-Tidal-Connect — how Connect works,
   same-network requirement, iOS 15 / Android 7 minimums, Autoplay not universal on targets, and the
   "can't control your desktop app from mobile … coming soon" note.
+- https://support.tidal.com/hc/en-us/articles/201623252-How-Many-Devices-Can-I-Use-Simultaneously —
+  **the offline-device-count source**: 1 device online, **5 devices offline** simultaneously — not
+  3, which was wrong in three places in the first draft (summary, §2, §9) and is corrected
+  throughout this version.
 - https://tidal.com/connect and https://tidal.com/supported-devices?filter=tidal-connect — Connect
   device partners.
 - https://support.tidal.com/hc/en-us/articles/360004255778-Dolby-Atmos — Atmos platform support
@@ -1462,15 +1810,28 @@ inside the official client — so the API column flags that.
   and https://www.musicradar.com/music-tech/software-apps/... — Upload launch Nov 2025, 5 GB/track,
   200-track cap, no royalties, US/UK/EEA/CH/CA, Spotlight and Upload Headliners contest.
 - https://support.tidal.com/hc/en-us/articles/27563493690129-DJ-Extension-Add-On and
-  https://tidal.com/djs — DJ Extension add-on (~$9/mo), stems, Serato/rekordbox integration.
+  https://tidal.com/djs — DJ Extension add-on (~$9/mo), stems, Serato/rekordbox/djay Pro/VirtualDJ/
+  DJUCED integration; base-plan requirement (not confirmed as "Individual or Student only"
+  specifically).
 - https://support.serato.com/hc/en-us/articles/360000588435-Serato-DJ-Pro-TIDAL-Music-Frequently-Asked-Questions
   — Serato DJ Pro 3.1.3+ required for TIDAL stems.
+- https://www.digitaldjtips.com/big-price-increase-for-djs-using-tidal/ — **title alone indicates a
+  2026 DJ Extension price change and a stems withdrawal/reinstatement; could not be fetched
+  (EGRESS_BLOCKED) or corroborated. Re-check this before publishing the ~$9/mo figure** —
+  §Open questions item 21.
 - https://techcrunch.com/2023/04/04/tidals-new-live-feature-will-let-you-host-a-live-djing-session/
   and https://djmag.com/news/tidal-testing-new-dj-sessions-feature — TIDAL Live / DJ sessions, April
   2023 launch. No discontinuation source found.
+- **https://tidal.com/magazine/article/what-were-working-on-and-why/1-98678** (TIDAL Magazine, June
+  2026) and **https://piunikaweb.com/2026/03/23/tidal-is-bringing-back-the-much-requested-crossfade-feature/**
+  (23 Mar 2026) — **crossfade is officially confirmed reintroduced on iOS and Web** with a 0–12
+  second slider, toggled in Settings. This replaces the first draft's dismissal of crossfade
+  reports as "SEO content farms" — that was the report's single most damaging error (§Summary item
+  8). Re-verify current desktop-client status before finalising any feature matrix built on this.
 - https://productionadvice.co.uk/tidal-normalization-upgrade/ and
   https://audioxpress.com/news/tidal-implements-album-loudness-normalization-and-activates-it-by-default-for-mobile-players
-  — album normalization to −14 LUFS, on by default on mobile.
+  — album normalization to −14 LUFS, on by default on mobile. **Both predate 2021; not re-verified
+  for 2026 — keep as [uncertain] (§3, §Open questions item 22).**
 - https://support.tidal.com/hc/en-us/articles/23553629074193-Sharing-music-links-across-streaming-platforms
   — universal share links across services.
 - https://support.tidal.com/hc/en-us/articles/18906946496017-CarPlay,
@@ -1478,11 +1839,15 @@ inside the official client — so the API column flags that.
   https://support.tidal.com/hc/en-us/articles/18907133150993-Android-Automotive — car integrations
   and their offline limits.
 - https://support.tidal.com/hc/en-us/sections/115001636665-Web-Player — web player section.
-- https://defkey.com/tidal-desktop-shortcuts — TIDAL desktop shortcut list (direct fetch blocked;
-  the bindings are corroborated verbatim by ref:tidal-hifi/src/features/hotkeys/hotkeyConfig.ts,
-  which cites this page as its source).
+- https://defkey.com/tidal-desktop-shortcuts — a third-party, crowd-sourced shortcut aggregator
+  (direct fetch blocked); `ref:tidal-hifi/src/features/hotkeys/hotkeyConfig.ts` cites this page as
+  *its own* source for its default hotkey config. **This is one wrapper's copy of one unverifiable
+  aggregator page, not TIDAL documentation — downgrade any claim built on it from
+  [verified-source] to [verified-web, single unverifiable aggregator]** (§5.6).
 - https://www.whathifi.com/tidal/review and https://www.digitaltrends.com/home-theater/what-is-tidal/
-  — 650k+ music videos, catalogue size, video audio quality.
+  — 650k+ music videos, catalogue size, video audio quality. **Vintage unstated; treat as
+  [uncertain, possibly stale]** (§4.12, §Open questions item 2) — Sone's own README only says video
+  audio "does not use the bit-perfect lossless signal path," which is weaker than "AAC ~320 kbps."
 - https://www.stereofox.com/articles/explore-the-best-tidal-music-editorial-playlists/ — Explore page
   composition: genres, Moods/Activities, TIDAL Rising, editorial content.
 - https://developer.tidal.com/documentation and https://tidal-music.github.io/tidal-api-reference/ —
@@ -1493,6 +1858,12 @@ inside the official client — so the API column flags that.
 
 `support.tidal.com`, `tidal.com` and `developer.tidal.com` are blocked by the network egress proxy in
 this environment, so every TIDAL-owned page above is cited through a search-engine summary rather
-than a full read. `defkey.com` and `reddit.com` are likewise unreachable. Anyone re-verifying this
-report from a normal network should re-read the TIDAL support articles directly, particularly for
-the Open Questions in §Open questions items 9–20.
+than a full read — **except that `developer.tidal.com`'s own OpenAPI document is not actually
+unreachable**: it is vendored on disk (see the Reference-checkouts section above,
+`tidal-sdk-web/packages/api/bin/tidal-api-oas.json`) and should be the first stop for anything this
+report marks undocumented. `defkey.com`, `digitaldjtips.com` and `reddit.com` are likewise
+unreachable from this environment. Anyone re-verifying this report from a normal network should:
+(1) re-read the TIDAL support articles directly, particularly for the Open Questions in
+§Open questions items 11–25; (2) fetch digitaldjtips.com's DJ-pricing article (item 21); and
+(3) read `ref/tidal-api-docs` and `ref/tidal-fokka-engineering-`, the two reference checkouts this
+report never consulted (see the coverage-boundary note at the top of this document).
