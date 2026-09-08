@@ -44,7 +44,7 @@ one if streamboat ever talks to `openapi.tidal.com/v2` directly:
 | Offline / downloads | `/offlineTasks`, `/downloads`, `/installations`, `/installations/{id}/relationships/offlineInventory` | `entitlements-tiers-history.md` §3 |
 | Search history/suggestions | `/searchResults`, `/searchSuggestions`, `/searchHistoryEntries/{id}` | `browse-pages-screens.md` §5 |
 | Social/creator layer | `/comments`, `/reactions`, `/appreciations`, `/artistClaims`, `/purchases`, etc. | `social-feed-creator.md` §6 |
-| Personalised mix families | `/userDailyMixes`, `/userDiscoveryMixes`, `/userNewReleaseMixes`, `/userOfflineMixes`, `/userRecommendations` | `browse-pages-screens.md` §4 |
+| Personalised mix families (item paths only, no collection `GET`) | `/userDailyMixes/{id}`, `/userDiscoveryMixes/{id}`, `/userNewReleaseMixes/{id}`, `/userOfflineMixes/{id}` (+ each `/relationships/items`), ids discovered via `/userRecommendations/{id}/relationships/{myMixes,discoveryMixes,newArrivalMixes,offlineMixes}` | `browse-pages-screens.md` §4 |
 | Media replacement / region unavailability | `.../relationships/replacement`, `replaceMedia=`, `/usageRules` | `quality-playback-queue.md` §3 |
 | Cross-DSP sharing | `/dspSharingLinks`, `/shares`, `/savedShares` | `remote-playback-connect-controls.md` §7 |
 

@@ -96,6 +96,13 @@ be confirmed in this pass and must be checked before it is relied on.
 - Sub-statuses in the 4xxx range on a playbackinfo 401 are content errors, not auth errors: 4005,
   4010, 4030, 4031, 4032, 4034, 4035 are terminal (do not retry, do not refresh the token);
   4006 (streaming privileges lost) and 4033 (subscription up-sell) recover. **[verified]**
+- **This report and `docs/research/tech-stack.md` currently recommend opposite primary audio
+  engines** (libmpv-first here, GStreamer-first there) and disagree on mpv's own gapless flag. Neither
+  document currently states this conflict or resolves it — see the new owner decision in Open
+  questions and §12.5. Also newly surfaced: linking libmpv makes streamboat a GPL work, which is
+  incompatible with iOS App Store distribution — a direct conflict with the "mobile must not be
+  precluded" constraint that neither document's engine recommendation currently weighs. **[verified —
+  quoted directly from both documents; see §12.4/§12.5]**
 
 ---
 
@@ -235,10 +242,9 @@ The manifest-type choice is DRM-driven: the web SDK asks for HLS when
 `shaka.drm.FairPlay.isFairPlaySupported()` is true (Safari/Apple) and MPEG-DASH otherwise
 (`ref:tidal-sdk-web/.../playback-info-resolver.ts:358,373`) — both halves independently confirmed.
 Android always asks for `MPEG_DASH` unconditionally
-(`ref:tidal-sdk-android/.../PlaybackInfoRepositoryDefault.kt:58`) — confirmed. iOS asks for `.hls`.
-**[unverified in this pass — this rests on this report's own earlier citation of
-`PlaybackInfoFetcher.swift`, which was not re-opened during fact-check; treat as likely but not
-independently re-confirmed]**
+(`ref:tidal-sdk-android/.../PlaybackInfoRepositoryDefault.kt:58`) — confirmed. iOS asks for `.hls`
+(`ref:tidal-sdk-ios/Sources/Player/Common/PlaybackInfo/PlaybackInfoFetcher.swift:87`,
+`manifestType: .hls`). **[verified — re-opened and confirmed during the third fact-check pass]**
 
 #### 1.3 Manifest MIME types
 
@@ -330,6 +336,24 @@ ambiguity — with a second, independent bug in it that the original pass did no
 
 Neither reads `SegmentTemplate@startNumber` (default **1** per the DASH spec). Any hand-rolled DASH
 assembler for streamboat must read it rather than guessing. **[inferred]**
+
+**A third, more serious issue: python-tidal's `urls` list likely never contains a usable init
+segment.** `DashInfo` parses `SegmentTemplate@initialization` into `DashInfo.first_url`
+(`ref:python-tidal/tidalapi/media.py:786-796`), but `get_urls()` never emits it — it substitutes
+`$Number$` only into the **media** template, for `range(segments_count)`
+(`ref:python-tidal/tidalapi/media.py:833-875`). So the URL list this method returns has no init
+segment at all, unless TIDAL's media template evaluated at `$Number$=0` happens to be byte-identical
+to the separately-parsed `initialization` URL — which no captured fixture in this reference set
+proves either way. Combined with the `1 + 1` prefix in `segments_count = 1 + 1 + Σ(...)` (two segments
+counted up front, for what is really "one init URL, handled separately, plus N media URLs"), the
+practical effect is that a stream assembled purely from `get_urls()`'s output is missing its `moov`/
+`dfLa` box and is undecodable unless segment 0 happens to serve as the init segment, and additionally
+generates one URL past the end of a single-run `<S d="…" r="N"/>` timeline (correct media count for
+one run is `N + 1`; the `1 + 1` prefix makes it `N + 2`) — i.e. a trailing 404 on a well-formed
+timeline. This is a stronger reason than "the numbering disagrees with tidal-cli" for the rule already
+stated below: **do not copy python-tidal's segment-URL generation as-is.** **[uncertain — read
+directly from `media.py`'s source, but not exercised against a real TIDAL manifest in this pass; the
+byte-identity possibility for segment 0 cannot be ruled out without a captured fixture, see §11.21]**
 
 **Second bug: `@r` itself is mis-accumulated by python-tidal.** Per the DASH spec, `SegmentTimeline/S@r`
 is the number of *additional* consecutive repeats of that `S` element — so one `S` element with a
@@ -477,6 +501,17 @@ TIDAL's own web SDK maps a subset to user-facing errors
 | — HTTP 5xx or 429 | `PERetryable` |
 | — HTTP 4xx other | `PENotAllowed` |
 
+**Open question: should streamboat request the legacy `HI_RES` tier at all?** Sone's shipped cascade
+still requests it as the second tier (below), even though this report's own Summary and §5/§1.7 record
+that `HI_RES` (MQA) content was retired on 24 July 2024 and the tier now maps to plain FLAC or nothing.
+Whether a live `audioquality=HI_RES` request today returns downgraded FLAC, an error, or the same
+answer as `LOSSLESS` was not resolved in any fact-check pass — no reference client's code comment
+addresses it, and it requires one live request per tier against the real API. Including a dead tier in
+the ladder costs a wasted request per track if it silently downgrades; dropping it risks nothing, since
+`HI_RES_LOSSLESS` and `LOSSLESS` already bracket it. **Decide this explicitly rather than copying
+Sone's `ORDER` array unexamined** — it is the same fixture-capture task §11.21 already recommends, and
+belongs on the Open questions list below. **[gap]**
+
 **Quality cascade.** Sone tries tiers highest→lowest and stops early on classes of error that a
 lower tier cannot fix (`ref:sone/src-tauri/src/commands/playback.rs:48-90`):
 
@@ -503,7 +538,7 @@ underlying **API-behaviour** claim — that over-requesting quality always retur
 downgraded `audioQuality` and never an error — is only Sone's own code comment, with no second
 reference asserting it. **[unverified]** It is also in tension with tidalt's own descending ladder:
 tidalt does the same walk, `HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW`
-(`ref:tidalt/docs/architecture.md:41`), and a descending retry ladder only makes sense if
+(`ref:tidalt/docs/architecture.md:17`), and a descending retry ladder only makes sense if
 over-requesting sometimes *does* fail rather than silently downgrading. Do not assume the
 downgrade-not-error behaviour without observing it directly against the live API. TIDAL's own SDKs do
 **not** cascade — they send the whole `formats` array in one request and let the server pick, then
@@ -728,12 +763,17 @@ docs — see Open questions]** mpv exposes `--audio-exclusive=yes` for its `pipe
 - **Flatpak.** High Tide's manifest (`ref:high-tide/build-aux/io.github.nokse22.high-tide.json`)
   declares `finish-args`: `--share=network`, `--share=ipc`, `--socket=fallback-x11`,
   `--device=dri`, `--socket=wayland`, `--socket=pulseaudio`,
-  `--filesystem=xdg-run/pipewire-0:ro`, `--filesystem=xdg-run/discord-ipc-0` — eight entries. It
-  grants no device access beyond `--device=dri` (GPU). There is no `--device=all`, so `/dev/snd` is
-  not visible and raw ALSA `hw:` is impossible inside that sandbox — even though the manifest bundles
-  `alsa-utils` and `libasound`. High Tide's ALSA sink option therefore only works outside Flatpak, or
-  with a manually widened permission set. **[verified for the manifest contents; the /dev/snd
-  conclusion is [inferred] from Flatpak's documented permission model]**
+  `--filesystem=xdg-run/pipewire-0:ro`, `--filesystem=xdg-run/discord-ipc-0` — eight entries.
+  **Correction, previously stated backwards here**: `--socket=pulseaudio` alone already grants
+  `/dev/snd` — Flatpak's own sandbox helper (`common/flatpak-run-pulseaudio.c`, `flatpak/flatpak`
+  upstream) binds `/dev/snd` into the sandbox whenever `--socket=pulseaudio` is requested and the
+  host has it, "since the practical permission of ALSA and PulseAudio are essentially the same...
+  we reinterpret pulseaudio to also mean ALSA." Raw ALSA `hw:` **is** reachable inside this
+  manifest as shipped; there is no `--device=all` requirement for it, and no manually widened
+  permission set is needed. What genuinely is absent is `--device=all` itself, so non-audio device
+  access beyond the explicit `--device=dri` grant is not available — but that was never what
+  exclusive ALSA needed. **[verified — direct fetch of Flatpak's own sandbox source, not an
+  inference from its documented permission model]**
 - High Tide detects confinement with `Xdp.Portal.running_under_flatpak()` and skips the keyring
   auto-unlock when confined (per the project survey; the pattern is the right one for any
   sandbox-conditional behaviour).
@@ -811,10 +851,20 @@ This is the weakest platform in every reference implementation.
   changes the setting system-wide. There is also an `avfoundation` AO. **[verified from mpv's
   `DOCS/man/ao.rst` and `DOCS/man/options.rst`]**
 - CamillaDSP (Rust, a good non-TIDAL reference) exposes an `exclusive` flag on its CoreAudio playback
-  device, works internally in 32-bit float and lets CoreAudio convert unless an explicit physical
-  `format` (S16/S24/S32/F32) is requested, monitors CoreAudio notifications for device rate changes
-  and closes/reopens on change, and warns that hog mode breaks virtual devices like BlackHole.
-  **[verified from `camilladsp/backend_coreaudio.md`]**
+  device ("also known as hog mode"), works internally in 32-bit float and lets CoreAudio convert
+  unless an explicit physical `format` (S16/S24/S32/F32) is requested, and warns that hog mode breaks
+  virtual devices like BlackHole. **Correction: it does not "close and reopen" on a device rate
+  change.** A prior pass of this report said so in three places (here, §6 "Hot-plug", §10.7); all
+  three were wrong the same way. CamillaDSP's own docs are explicit that a rate change **stops**
+  playback outright and requires an external config reload to resume — it does not self-heal:
+  *"If the capture device sample rate changes, then CamillaDSP will stop. … To continue from this
+  state, the capture device needs to be closed and reopened. For CamillaDSP this means that the
+  configuration must be reloaded."* There is no shipped precedent in this reference set for a player
+  that detects a CoreAudio rate change and transparently reopens the device itself — §10.7's
+  recommendation that streamboat's macOS writer should do exactly that is still sound, but it must be
+  labelled **[inferred]**, not "matches CamillaDSP's design." **[verified against
+  `github.com/HEnquist/camilladsp/blob/master/backend_coreaudio.md`, "Sample rate change
+  notifications" section — corrects a claim repeated in §6 and §10.7 below]**
 - `coreaudio-rs` 0.14.2 (MIT/Apache-2.0) is the Rust binding if a native CoreAudio backend is
   written. **[verified from crates.io]**
 - The TIDAL web SDK's *native* player component (a proprietary C++ blob, not in the repo) has
@@ -1161,7 +1211,11 @@ Seeking is also where the gapless preroll is easiest to break; see §4.1(b).
 
 Server-side, DASH seeking is just a matter of jumping to the right `$Number$` — but the whole
 `SegmentTimeline` is in the manifest, so the segment for any timestamp is computable offline. GStreamer
-1.28 fixed "seeking in dashdemux2 for streams with gaps". **[verified from 1.28 release reporting]**
+1.28 release reporting is cited elsewhere for "seeking in dashdemux2 for streams with gaps", but this
+specific sub-claim could not be corroborated on re-check: both of its citations
+(`lists.freedesktop.org`, `phoronix.com`) and `gstreamer.freedesktop.org` itself are blocked from this
+research environment, and targeted search found nothing else naming this fix. **[downgraded from
+"verified" to unverified — treat as unconfirmed until read from an unblocked network]**
 
 #### 4.8 Network resilience, token refresh, and privileges
 
@@ -1316,9 +1370,10 @@ empty on 1.28.3+ (linuxiac.com/gstreamer-1-28-3-released-with-security-and-playb
 9to5linux.com/gstreamer-1-28-3-adds-nxp-i-mx-8m-plus-hardware-accelerated-h-265-encoding: "devicemonitor
 now waits for the start thread to finish when listing devices"). Sone's poll (and any streamboat
 workaround copied from it) is only needed on GStreamer 1.28.0-1.28.2; scope it to that version window
-rather than inheriting it as a permanent hack. CamillaDSP's CoreAudio backend listens for device
-rate-change notifications and reopens. **streamboat should subscribe to `DeviceMonitor` bus messages
-rather than polling.** **[inferred]**
+rather than inheriting it as a permanent hack. **streamboat should subscribe to `DeviceMonitor` bus
+messages rather than polling.** **[inferred]** (A prior pass of this report cited CamillaDSP's
+CoreAudio backend here as precedent for "listens for rate-change notifications and reopens" — that is
+wrong; CamillaDSP stops on a rate change rather than reopening. See §3.5's correction and §10.7.)
 
 **Notifications.** Not implemented in the audio layer in any reference; MPRIS metadata is what
 desktop shells surface.
@@ -1735,12 +1790,19 @@ Design A's macOS bullet (§9) lists hog mode, `SupportsMixing=false` and
 `kAudioStreamPropertyPhysicalFormat`, but a hi-res client's core operation — switching
 44.1k -> 96k -> 192k between tracks — is a **nominal sample-rate change**
 (`kAudioDevicePropertyNominalSampleRate`) that completes asynchronously on CoreAudio and must be
-waited on via a property listener. CamillaDSP's CoreAudio backend explicitly listens for these
-change notifications and reopens (`https://github.com/HEnquist/camilladsp/blob/master/backend_coreaudio.md`,
-lines 58-66); GStreamer's own CoreAudio HAL shows the same class of asynchrony from the other side —
-a four-attempt physical-format confirm loop (`gstosxcoreaudiohal.c:505-535`, already cited in §3.5).
-Without this, a macOS writer racing the driver on every album that mixes sample rates is the
-concrete failure mode. **[verified]**
+waited on via a property listener. **Correction: CamillaDSP is not a shipped precedent for
+"listen and reopen."** Its CoreAudio backend does listen for these change notifications, but its
+documented response is to **stop** playback and require a config reload, not to reopen the device
+itself (`https://github.com/HEnquist/camilladsp/blob/master/backend_coreaudio.md`, "Sample rate
+change notifications" — see the correction in §3.5). GStreamer's own CoreAudio HAL shows the same
+class of asynchrony from the other side — a four-attempt physical-format confirm loop
+(`gstosxcoreaudiohal.c:505-535`, already cited in §3.5), which *is* a real precedent for waiting on
+the async completion, just not for the reopen-and-continue behaviour. **The recommendation itself
+(add a property listener, wait for the async completion, then resume writing) is still right, but no
+reference client in this set actually does the reopen half — mark it [inferred], not
+[verified-by-precedent].** Without a listener at all, a macOS writer racing the driver on every album
+that mixes sample rates is the concrete failure mode. **[verified for the CamillaDSP correction;
+the design recommendation is [inferred]]**
 
 #### 10.8 Position must be corrected for buffered-but-unplayed frames
 
@@ -1802,11 +1864,21 @@ covers `SegmentTemplate`+`SegmentTimeline` and stops. tidal-cli has a documented
 `initialization=`/`media=`/`<S d=…>`, it tries `decoded.match(/<BaseURL>([^<]+)<\/BaseURL>/)` and, if
 present, returns `{ type: 'direct', url: baseUrlMatch[1], codecs }` — handled identically to a BTS
 manifest (`ref:tidal-cli/src/playback.ts:100-152`, union type `type: 'direct' | 'dash'`). No
-reference client uses DASH `SegmentBase`/`indexRange`, so that byte-range form is probably absent
-from TIDAL MPDs — but HTTP `Range` on **direct** (BTS/BaseURL) URLs is real and is how seeking works
-there; see mopidy-tidal's cache proxy above. streamboat needs an explicit position on both: parse
-`<BaseURL>` as a fallback MPD shape, and support `Range` on direct URLs so a seek does not re-download
-from byte 0. **[verified for tidal-cli's fallback and mopidy-tidal's Range handling]**
+reference client uses DASH `SegmentBase`/`indexRange` — but **that absence is weaker evidence than it
+looks, and a third-pass fact-check downgrades it accordingly.** Neither reference parser is a real XML
+parser: tidal-cli matches the MPD with plain regexes (`initialization="([^"]+)"`, `media="([^"]+)"`,
+`<S d="(\d+)"(?:\s+r="(\d+)")?\/>`) and python-tidal blindly indexes
+`representations[0].segment_templates[0].segment_timelines[0]`, raising `ManifestDecodeError`
+otherwise. An MPD using `SegmentBase`/`indexRange`, or even an ordinary `<S t="0" d="…" r="…"/>` with a
+`t` attribute, would produce **zero segments** from tidal-cli's regex and a hard failure from
+python-tidal — neither client would notice such a manifest, so their silence is evidence about their
+parsers' narrowness, not about what TIDAL actually sends. **Do not read "probably absent" as licence
+to skip the shape; the only thing that actually settles it is a captured fixture (§11.21).** HTTP
+`Range` on **direct** (BTS/BaseURL) URLs is real and is how seeking works there regardless; see
+mopidy-tidal's cache proxy above. streamboat needs an explicit position on both: parse `<BaseURL>` as
+a fallback MPD shape, and support `Range` on direct URLs so a seek does not re-download from byte 0.
+**[verified for tidal-cli's fallback and mopidy-tidal's Range handling; the "probably absent"
+inference is downgraded to uncertain — the reference parsers cannot detect the shape either way]**
 
 #### 10.12 Dither is required, not "never needed", when the DAC is narrower than the source
 
@@ -1998,14 +2070,17 @@ a `.app` bundle) should be costed and scheduled as **unproven, not merely "needs
 set"** as previously written. **[verified for the Windows recipe; the macOS gap is verified as an
 absence across all 21 checkouts]**
 
-#### 11.5 Whether bit-perfect output is achievable *through* PipeWire at all — unresolved, and it decides Flatpak's fate
+#### 11.5 Whether bit-perfect output is achievable *through* PipeWire at all — unresolved, a second path alongside raw ALSA `hw:`
 
-Implication #17 concludes Flatpak cannot do exclusive mode because `/dev/snd` is invisible without
-`--device=all`, and tells streamboat to grey the toggle out entirely under Flatpak confinement. That
-closes off the most important Linux distribution channel for a GTK/Tauri desktop app on the strength
-of one mechanism (raw device grab). If PipeWire-native bit-perfect output is good enough, the Flatpak
-build keeps the feature via `--filesystem=xdg-run/pipewire-0`, which High Tide's own manifest already
-grants (`ref:high-tide/build-aux/io.github.nokse22.high-tide.json`). **This is not resolvable from the
+**Correction to Implication #17, which previously concluded Flatpak cannot do exclusive mode
+because `/dev/snd` is invisible without `--device=all`: that premise is wrong.**
+`--socket=pulseaudio` alone already grants `/dev/snd` inside the Flatpak sandbox (Flatpak's own
+sandbox helper binds it whenever that socket is requested — see §3.3's corrected text), so raw
+ALSA `hw:` is already reachable under Flatpak confinement; do not grey the toggle out on
+confinement grounds alone. What this section is actually about is whether a PipeWire-native path
+is *also* bit-perfect and therefore a viable alternative to grabbing the raw device directly, via
+`--filesystem=xdg-run/pipewire-0`, which High Tide's own manifest already grants
+(`ref:high-tide/build-aux/io.github.nokse22.high-tide.json`). **This is not resolvable from the
 reference checkouts** — `docs.pipewire.org` is blocked from this research environment, so it could not
 be checked in either fact-check pass, and web search returned only forum-level material
 (`bbs.archlinux.org/viewtopic.php?id=290859`, "[SOLVED] Get bit-perfect audio with PipeWire"). Before
@@ -2403,6 +2478,288 @@ in §1.2]**
 
 ---
 
+### 12. Findings added by a third independent fact-check
+
+Same convention as §10/§11: corrections to what came before, plus real gaps neither prior pass closed.
+
+#### 12.1 Gapless + ReplayGain: a single post-`concat` volume element cannot change gain at a sample-accurate boundary
+
+§4.4 presents Sone's "gain applied before `play_url`" as the solved pattern to copy, but that is true
+only for a cold start. On the gapless path (§4.1(b)), Sone applies the *next* track's gain from the
+`concat.connect_notify("active-pad")` handler onto a single `volume` element (`norm_vol`) that sits
+**downstream of `concat`** in the shared chain `concat → audioconvert → audioresample → norm_vol →
+user_vol → sink` (`ref:sone/src-tauri/src/audio.rs:1833-1863`, gain application at `:2656-2668` with
+the comment *"concat is upstream of norm_vol, so the gain applies to the now-active branch"*).
+`active-pad` fires once the last buffer of track A has passed `concat` — not once it has been heard.
+Whatever is still queued in `audioconvert`/`audioresample`/the sink's own ring buffer at that instant
+is track A's tail, and it gets track B's gain applied to it: an audible level jump on the wrong side of
+the track boundary, on every gapless transition where the two tracks' ReplayGain values differ. The
+same class of bug exists in High Tide's design (`taginject`/`rgvolume` swapped on `about-to-finish`).
+**Fix for streamboat:** put a per-branch `volume` element *inside* each decode branch, upstream of
+`concat` — gain then travels with its own buffers and switches exactly when `concat` switches — rather
+than one shared gain element downstream. (An alternative is a `GstControlBinding`/timed value keyed to
+the boundary's running time, but the per-branch element is simpler and matches the two-branch
+`concat` topology already in use.) This interacts with §4.1(b)'s already-documented `track-finished`
+early-fire bug: both are consequences of doing per-track work on a shared element downstream of the
+mixing point instead of inside the per-track branch. **[uncertain — read directly from Sone's source;
+the defect is a straightforward consequence of the documented topology, but not exercised against a
+real ReplayGain-differing track pair in this pass]**
+
+#### 12.2 DASH `SegmentTemplate` substitution has more identifiers than any reference client implements
+
+§1.4 tells streamboat to "implement the spec, not either reference implementation" for `$Number$`
+numbering, but understates how much more of the spec surface a real assembler needs. Per ISO/IEC
+23009-1 §5.3.9.4.4, `SegmentTemplate` URLs may use `$$` (a literal `$`), `$RepresentationID$`,
+`$Number$`, `$Bandwidth$`, and `$Time$` — each optionally with a printf-style width tag, e.g.
+`$Number%05d$` or `$Time%011d$`. `$Time$` is used *instead of* `$Number$` when driven by a
+`SegmentTimeline`, and its value is the segment's `S@t` (start time in timescale units), not a
+sequence index — a different substitution rule from `$Number$`, not a formatting variant of it. **No
+reference client handles any of this**: a grep for `RepresentationID|\$Bandwidth\$|\$Time\$|%0[0-9]d`
+across every checkout in the reference set returns zero hits in manifest code, and both reference
+parsers do a single literal `.replace('$Number$', …)`
+(`ref:python-tidal/tidalapi/media.py:833-845`, `ref:tidal-cli/src/playback.ts:165`). Two more gaps in
+the same area: `SegmentTemplate` may be declared at `Period` or `AdaptationSet` level and inherited by
+`Representation`s — python-tidal only ever reads
+`representations[0].segment_templates[0]` and would silently produce nothing on an MPD that puts the
+template one level up; and `SegmentTemplate@startNumber` exists in python-tidal's parsed fields but is
+**deliberately commented out** at the call site (`media.py:797`) rather than merely unread — the
+author saw it and chose to ignore it, which is a stronger signal than an oversight. **Recommendation:
+use a real XML parser with full identifier, format-tag and inheritance handling (`dash-mpd` for Rust,
+or a hand-rolled reader over `quick-xml`/`roxmltree`), never a regex, and validate it against the
+§11.21 captured fixtures before trusting it on a live account.** **[verified for the reference-client
+absence and the ISO spec identifier set; whether TIDAL's own MPDs ever use `$Time$`/`$Bandwidth$` is
+unknown and is exactly what §11.21's fixture capture would settle]**
+
+#### 12.3 Seek is specified as a policy, not as arithmetic — and duration has no single authoritative source
+
+§4.7 says "the segment for any timestamp is computable offline" and stops there; an implementer needs
+the actual mapping and the precision it delivers, since seek is one of the five operations any engine
+trait must expose (§9). The mapping: for segment index `k`, start time
+`t_k` = the previous segment's end (or `SegmentTemplate@presentationTimeOffset`, default 0, for `k=0`)
+and `$Number$` = `startNumber + k` (default `startNumber` = 1, per §1.4/§12.2); segment `k` covers
+`[t_k, t_k + d)` in timescale units. **None of `@t`, `@presentationTimeOffset`, or `@startNumber` is
+read by any reference client** (same grep as §12.2). **Precision:** this mapping gets a seek to a
+segment boundary, plus the fMP4 init segment — sample-accurate seeking additionally requires decoding
+and discarding audio from the segment start to the requested position; the report does not currently
+say this anywhere, so a hand-rolled Design C seek would silently be coarse to the segment length
+(commonly several seconds) rather than sample-accurate. **The reference clients disagree on seek
+accuracy and the report has not picked a side:** Sone and High Tide seek with
+`FLUSH | KEY_UNIT` — i.e. accept snapping to a keyframe/segment boundary
+(`ref:sone/src-tauri/src/audio.rs:2330,2353`; `ref:high-tide/src/lib/player_object.py:815-816`) —
+while Strawberry uses `FLUSH` alone, i.e. accurate seeking
+(`ref:strawberry/src/engine/gstenginepipeline.cpp:2370`). Pick one for streamboat and say why (FLAC
+frames are short, so `KEY_UNIT` snapping is likely inaudible on the lossless tiers and much simpler to
+implement — but state that as a decision, not an accident). **After any seek in a hand-rolled
+assembler, the init segment must be re-fed before the new media segment** — §9 Design C mentions
+re-feeding in passing; state it as a hard requirement, not an implementation detail. **Duration is also
+ambiguous and consumed in at least three places that need it to agree:** the track object's integer
+`duration` (seconds), the MPD's `MPD@mediaPresentationDuration` (e.g. `PT2M26.47S`), and the decoded
+sample count can all disagree by up to a second; §11.11's prefetch trigger (`remaining = length -
+position`), MPRIS `mpris:length` (§11.8), and §11.13's flat 30-second play threshold all depend on
+picking one authoritative source and using it consistently. **Recommendation: use the track object's
+`duration` as authoritative for UI/reporting (it is what TIDAL itself reports back against), and the
+MPD's own duration only to detect a manifest that disagrees enough to be suspicious.** **[verified for
+the seek-flag disagreement between Sone/High Tide and Strawberry; the rest is spec arithmetic and
+inference, not independently re-observed against a live manifest]**
+
+#### 12.4 libmpv's own distribution story was never examined — and the recommended engine turns out to foreclose the App Store
+
+§9 recommends libmpv (Design B) as the primary engine, but never asks how `libmpv-2.dll`/`libmpv.dylib`
+is actually obtained and shipped on Windows/macOS — the exact question §11.4 asks (and answers, at
+length) for GStreamer. **No project in the entire reference set links libmpv at all**: a search for
+`libmpv|mpv_` across every checkout, excluding vendored directories, returns nothing; the file named
+`ref:tidalt/internal/player/mpv.go` is misleadingly named — its actual content is `#cgo LDFLAGS:
+-lasound` plus tidalt's ALSA/D-Bus-reservation code, not any mpv usage. **So Design B's runtime is, in
+this reference set, exactly as unproven as Design A's macOS packaging — the report should say so with
+the same candour it applies to GStreamer.** Concretely unanswered: the libmpv version floor implied by
+the options Design B already depends on (`--volume-gain`, `--prefetch-playlist`,
+`coreaudio_exclusive`, `--wasapi-exclusive-buffer`) against what Debian 13/Raspberry Pi OS actually
+ship as `libmpv2` — the same arithmetic §1.4 does for GStreamer 1.26.2 vs the 1.26.10 floor, not yet
+done for mpv; how `libmpv-2.dll` is obtained on Windows (mpv publishes no official libmpv build; the
+ecosystem in practice uses third-party build artefacts such as shinchiro's mpv-winbuild) and
+`libmpv.dylib` on macOS (Homebrew's mpv, or an owned build); and that an LGPL libmpv (`-Dgpl=false`,
+§2.2) also needs an **LGPL-built FFmpeg underneath it**, so a distro's default libmpv cannot be relied
+on for the LGPL escape hatch — a distro build is very likely linked against a GPL FFmpeg.
+
+**The licence consequence this report has not drawn out anywhere: linking libmpv (GPLv2+) makes
+streamboat a GPL work, and GPL is incompatible with Apple's App Store terms.** The owner's constraint
+is that mobile must not be architecturally precluded (project context); §9's recommended engine
+forecloses iOS distribution specifically, and §8's "mobile path" column for Design B ("mpv builds for
+Android; iOS is awkward") understates this — "awkward" reads as an engineering problem, but the actual
+blocker is a licence/store-policy conflict that no amount of engineering effort removes. **[verified
+for the absence of libmpv usage across the reference set (a directly run search, not an inference) and
+for the LGPL-FFmpeg dependency stated in mpv's own `Copyright` file (§2.2); the GPL/App-Store
+consequence is standard licensing knowledge, not read from a reference client]**
+
+#### 12.5 Owner-facing conflict: this report and `tech-stack.md` recommend opposite primary audio engines
+
+This report's §9 "Recommendation" says: *"Start with **Design B (libmpv)** … Then, if and when the
+signal path or the macOS behaviour proves inadequate, add **Design A** as a second engine
+implementation."* `docs/research/tech-stack.md` recommends the reverse: `| Audio engine | `gstreamer`
+0.25 + `gstreamer-app`, behind an `AudioEngine` trait; libmpv as backend #2 |` (tech-stack.md:1206),
+and separately: `| Exclusive output | Linux: `alsa` 0.10 + appsink writer thread. Windows:
+`wasapi2sink exclusive=true`. macOS: unresolved — evaluate `coreaudio_exclusive` via libmpv |`
+(tech-stack.md:1207). The two documents also disagree on mpv's own gapless flag: this report says
+`--gapless-audio=weak`, never `yes` (§4.1(d), confirmed correct against mpv's documented semantics by
+this fact-check); `tech-stack.md:225` states gapless "must be **disabled** for strict bit-perfect
+(`--gapless-audio=no`)" — `no` is unnecessarily strict (it closes the device between every track,
+forfeiting exclusive-mode gapless, Implication #12, for no bit-perfection benefit `weak` does not
+already provide) and contradicts this report's own recommendation. **An owner reading both documents
+gets two different day-one architectures with no signal that they disagree.** Engine choice drives
+packaging, licensing (§12.4), macOS scope and headless-binary shape — it is the single most expensive
+decision to reverse later. **Resolve this explicitly** (see the new owner decision in Open questions
+below) using the facts already assembled across both documents: §11.19's packaging-collapse argument
+for libmpv, §11.4's "GStreamer-on-macOS is unproven" finding, §12.4's "libmpv-on-anything is equally
+unproven, and it forecloses iOS" finding, and note which document is authoritative on this question so
+it is decided once, not twice. **[verified — the conflicting text is quoted directly from both
+documents]**
+
+#### 12.6 No DAC warm-up / re-lock settle delay anywhere in the reference set — the first audible defect of per-track rate switching
+
+The report's exclusive-mode design closes and reopens the PCM device on every format/rate change
+(§3.6) and Implication #12 proposes exclusive-mode gapless across same-format tracks — meaning a
+hi-res album that mixes 44.1 kHz and 96 kHz tracks exercises a rate-change reopen routinely, not as an
+edge case. Many USB/I2S DACs mute their analogue output for tens to a few hundred milliseconds while
+the receiver's PLL re-locks to the new clock; writing real audio immediately after
+`snd_pcm_prepare()`/`IAudioClient::Start()` at the new rate loses the first fraction of a second of the
+track. **No reference client in this set implements any settle/warm-up delay around a device open or
+reconfigure.** A search for sleep/delay calls around device open in
+`ref:sone/src-tauri/src/audio.rs`, `ref:tidalt/internal/player/alsa.c`, and
+`ref:tidalt/internal/player/mpv.go` finds only unrelated pacing: Sone's 10 ms XRUN-retry pause, its
+50 ms software-pause silence cadence, a 10 ms poll loop, and the 100 ms `DeviceMonitor` poll (§6); the
+only thing in the set labelled "settle" is tidalt's `releaseSettleDelay = 200 * time.Millisecond`
+(§3.2), which is the D-Bus device-reservation hand-off waiting for a previous owner to close its
+handle — a different problem from PLL lock. **Specify for streamboat:** after every device
+open/format-change (`snd_pcm_prepare`, `IAudioClient::Start`, a CoreAudio physical/nominal-rate
+change), pre-roll a configurable silence period (default on the order of 200-300 ms, overridable per
+device) before writing the first real audio frame, and count it inside the time-to-first-audio budget
+(§11.16). This also argues against attempting exclusive-mode gapless *across* a rate change
+specifically — a rate change is, by this reasoning, inherently a small gap, so the queue should show
+it as one rather than pretend it is seamless. **[verified as an absence across the cited files; the
+concrete settle-delay recommendation is standard DAC-driver practice, not read from a reference
+client]**
+
+#### 12.7 "Bit-perfect" needs an explicit, stated rule for the lossy tiers — it is currently defined only for FLAC
+
+§3 and its "bit-perfect" vocabulary (Implications #5, #9, §10.2) are written as though every stream
+were FLAC; nothing in the report says what "bit-perfect" means, or what the exclusive-mode/transparency
+panel should say, when the user plays a `LOW`/`HIGH` (AAC) track. **State the rule: bit-perfection is
+only a meaningful claim for the lossless tiers**, because a lossy decode has no canonical output word
+length in the first place — an AAC decoder emits float or a chosen integer depth by its own internal
+convention, so there is no "original bits" on the wire to preserve end to end. Consequences to specify
+now, not discover later: (a) for `LOW`/`HIGH`, streamboat must still pick a deliberate output format
+(e.g. widen to the device's native format) and the transparency panel (§3.2) should say "lossy source —
+bit-perfect not applicable," never claim bit-perfection it cannot define; (b) §3.1's
+lossless-integer-widening promotion ladder (`S16→S24→S24_32→S32`) is a lossless-source ladder and needs
+a distinct branch, or an explicit non-answer, for AAC decode output; (c) §10.2's rule ("bit-perfect
+implies no user volume, no ReplayGain") should not apply globally to a mode toggle that also silently
+covers AAC tracks — a user who enables bit-perfect gets no volume control on `LOW`/`HIGH` tracks for a
+guarantee that was never actually available there, so the mode should be scoped per-track by source
+type (lossless vs lossy), not as one global switch; (d) the *source* bit depth for the transparency
+panel must come from the manifest (`Representation@id`, §1.4) or the FLAC `STREAMINFO` block, never
+from decoder/GStreamer output caps — those describe the container word width after decode, not the
+original source depth, and conflating the two is exactly the kind of inaccuracy that would make the
+panel untrustworthy. **[inferred from §3.1's `pick_capsfilter_format` being lossless-only
+(`ref:sone/src-tauri/src/audio.rs:516-544`) and §10.2's existing rule; no reference client states an
+explicit lossy-tier bit-perfect policy]**
+
+#### 12.8 `org.freedesktop.ReserveDevice1` can succeed vacuously — the handshake has a silent-failure mode Implication #4 does not name
+
+Implication #4 makes the D-Bus reservation handshake (§3.2) mandatory, and §3.2 documents tidalt's
+three explicit outcomes in detail. What is missing is the most common real-world failure: **the
+protocol has no guaranteed server side.** `RequestName` can return `PrimaryOwner` simply because
+nothing on the session bus implements `ReserveDevice1` for that device — no client, no `pactl` module,
+no WirePlumber component — in which case the "reservation" is a name registration with nobody
+listening, PipeWire/the ALSA-holding app never releases anything, and the subsequent `hw:` open still
+fails with the exact `EBUSY` the whole handshake exists to prevent. **Fold this into the implementation
+as an explicit rule: treat "reservation acquired" as advisory, not as a guarantee, and always still
+handle `EBUSY` on open with tidalt's own retry budget** (`openBusyRetryBudget 800ms`, retried every
+100 ms, already cited in §3.2) — the two mechanisms are complementary, not either/or, and the report's
+current framing (reservation succeeds *or* fails cleanly) misses the vacuous-success case in between.
+Also worth naming as a simpler, more commonly deployed alternative this report does not currently
+mention: `pactl suspend-sink <sink> 1` (and its release, `... 0`) works through `pipewire-pulse` as
+well as classic PulseAudio, and several audiophile players use it instead of, or alongside, the D-Bus
+reservation dance. Finally, tie release ordering to §10.9's device-hold-policy recommendation: release
+the PCM handle *before* the D-Bus reservation name, not after — releasing the name first lets a racing
+client see a free name while the device handle is still held, reproducing the exact busy-device failure
+the reservation exists to prevent. **[the vacuous-success mechanism and `pactl suspend-sink` need
+verification against docs.pipewire.org/WirePlumber docs, both blocked from this environment in every
+pass so far — flagged as a gap, not asserted as fact; the release-ordering point is [inferred] from
+already-cited facts]**
+
+#### 12.9 Concrete device-identity string forms per platform (fills in §10.13's recommendation)
+
+§10.13 correctly recommends persisting a stable device identity instead of an ALSA card *index*, but
+gives no concrete string shape — the difference between a recommendation and something implementable.
+**Linux/ALSA:** persist the card *id* string (from `/proc/asound/cards`, the bracketed short name) and
+open `hw:CARD=<id>,DEV=<n>` (e.g. `hw:CARD=D10,DEV=0`) — index-independent, survives replug/reboot
+reordering; on libmpv the equivalent is `--audio-device=alsa/hw:CARD=D10,DEV=0`. tidal-connect already
+does exactly this: `CARD_NAME=D10` (`ref:tidal-connect/samples/topping-d10.env`), and its asound.conf
+files resolve by card id string (`card snd_rpi_hifiberry_dacplus`, `card "vc4hdmi"`). This is the
+correction to Sone's own `hw:C,D` composition from `alsa.card`+`alsa.device` (`ref:sone/src-tauri/src/audio.rs:3285-3287`)
+that §10.13 already flags as the index form to avoid. **Windows:** persist the WASAPI endpoint id
+(`IMMDevice::GetId()`, the `{0.0.0.00000000}.{guid}`-shaped string) — already what sone-windows reads
+as `device.id` from GStreamer's `DeviceMonitor` (`ref:sone-windows/src-tauri/src/audio.rs:2040-2055`).
+**macOS:** persist `kAudioDevicePropertyDeviceUID`. In all three cases, apply the rule §10.13 already
+states: never silently fall back to `default`/the system output when the persisted device is absent —
+surface the choice to the user instead. **[verified for the tidal-connect/Sone/sone-windows citations
+already in this report; assembled into concrete strings for the first time here]**
+
+#### 12.10 Loudness-normalization edge cases beyond the formula
+
+§4.4 gives the canonical formula and three shipped implementations but leaves several cases an
+implementer hits within the first hundred tracks unanswered. **(a) Missing values.** High Tide treats
+a gain of exactly `1.0` as a sentinel for "missing" and skips applying it, citing
+`github.com/EbbLabs/python-tidal/issues/332`, with the comment *"Rather quiet album than broken
+eardrums"* (`ref:high-tide/src/lib/player_object.py:580-608`, already cited in §4.4 for the mechanism
+but not for the required behaviour it implies). Sone instead returns unity gain when `replay_gain` is
+`None` (`ref:sone/src-tauri/src/commands/playback.rs:10-21`). **Pick one explicitly** — these produce
+different loudness for the same missing-metadata track, and the report currently does not say which
+streamboat should do. **(b) `peak > 1`.** `1/peak` correctly attenuates below unity even at zero gain,
+but this means two tracks on the same album can receive different *applied* gain under `ALBUM` mode
+depending on whether album peak or track peak pairs with the album gain — the Android SDK pairs album
+gain with album peak; Sone's `use_track_gain` context-sensitively picks track-with-album-fallback or
+album-with-track-fallback (`ref:sone/src-tauri/src/commands/playback.rs:130-150`, already cited).
+State which pairing streamboat uses. **(c) Is `preAmp` user-exposed?** TIDAL fixes it at 4 (0 on TV,
+§4.4); Sone silently multiplies by an extra 0.8 with no user control over it. Implication #10 already
+says not to copy the 0.8 factor, but never states whether the user gets a `preAmp`/trim control at all
+— decide this alongside owner decision #11 (bit-perfect default state) rather than leaving it implicit.
+**(d) Interaction with §10.2/§12.7:** if bit-perfect mode disables ReplayGain entirely (as §10.2
+already establishes it must), the album-to-album loudness jumps normalization exists to remove come
+back specifically for the users most likely to be bothered by them — an audiophile bit-perfect user.
+That trade belongs in the same owner-facing decision as bit-perfect's default state, not buried inside
+§10.2's implementation note. **[verified for (a) and (b)'s citations, already present in this report
+for other purposes; (c) and (d) are gaps in what the report currently decides]**
+
+#### 12.11 Two smaller items worth a line each: headless audio-layer session context, and gapless test design
+
+**Headless on Windows/macOS is a user-session process, not a service — and that is an audio-layer
+fact, not only a media-integration one.** §10.1 answers headless architecture with tidalt's Linux
+systemd-user/D-Bus/Docker model; §11.7 separately notes SMTC needs a real `HWND` (no headless Windows
+now-playing). What neither states explicitly: `docs/research/headless-connect.md:1726-1727` already
+records (marked unverified there, with a named one-hour spike to confirm) that Windows services run in
+session 0 with no interactive audio endpoint, and that macOS needs a per-user LaunchAgent rather than a
+LaunchDaemon for the same reason. The audio-layer consequence this report is the one place that can
+state it: exclusive-mode WASAPI/CoreAudio access from a non-interactive service context is itself the
+capability at risk, not only SMTC — so a Windows/macOS `streamboat-server` is architecturally a
+user-session background process on those two platforms, never a service, and §9's "the control thread
+is the whole product" headless sketch is fully true only on Linux as currently written. **[cross-
+referenced from `headless-connect.md`, itself marked unverified there; restated here because it has an
+audio-specific consequence that document does not draw out]**
+
+**No test design exists anywhere for gapless correctness**, even though §10.5 gives a full bit-perfect
+test plan and §11.12 flags AAC-tier gapless as unverified and possibly click-prone at every boundary.
+A concrete shape: play two synthetic FLAC tracks whose concatenation is a continuous sine wave, capture
+the output via `snd-aloop` (§10.5's loopback mechanism), and assert phase continuity / no inserted or
+dropped samples at the boundary — the only way to actually detect the ReplayGain-boundary bug (§12.1),
+the `track-finished`-fires-early bug (§4.1(b)), and the AAC priming-sample problem (§11.12) rather than
+assuming any of them away. This needs fixture audio the project cannot take from TIDAL and does not yet
+have: generate synthetic sine tracks at 16/44.1, 24/96 and 24/192 plus an AAC encode of the same, and
+commit them alongside the §11.21 manifest fixtures. **[gap — no reference project in this set has any
+audio-path test at all; the test shape is the deliverable]**
+
+---
+
 ## Implications for streamboat
 
 1. **Request `adaptive=false`.** ABR mid-track means a format change means a device reopen means a
@@ -2458,9 +2815,12 @@ in §1.2]**
     stream produces a clean "playback moved to <device>" message instead of a mysterious 401.
 16. **Do not build Atmos or 360RA.** Surface the badge, play the stereo version, keep an `immersive`
     flag in the request layer for later.
-17. **Treat exclusive mode as a packaging feature.** Flatpak cannot reach `/dev/snd` without
-    `--device=all`; Snap needs the `alsa` plug connected manually. Detect confinement at runtime and
-    grey out the exclusive-mode toggle with an explanation rather than failing at play time.
+17. **Treat exclusive mode as a packaging feature, but not the way this item previously said.**
+    **Correction**: Flatpak *can* reach `/dev/snd` — `--socket=pulseaudio` alone already grants it
+    (§3.3) — so do not grey out the toggle on Flatpak confinement grounds. Snap genuinely does need
+    the `alsa` plug connected manually (`snap connect streamboat:alsa`); detect and surface that
+    connection state at runtime, and treat an unconfined native package (deb/rpm/AUR/Nix) as the
+    option with no plug/permission caveats at all.
 18. **Cap and expire any audio cache**, encrypt it at rest, and purge on logout — see §4.6.
 19. **Use GStreamer's `DeviceMonitor` bus messages, not polling**, for the device list, and handle the
     async-provider behaviour of GStreamer 1.28+.
@@ -2508,6 +2868,37 @@ in §1.2]**
     as best-effort and verify it per-engine** — no reference client anywhere handles AAC encoder-delay/
     edit-list trimming, and a naive `concat`/`about-to-finish` implementation may click at every
     AAC-tier track boundary even though the code path looks identical to the FLAC case. See §11.12.
+30. **Apply per-track ReplayGain gain *inside* each gapless decode branch, upstream of the mixing
+    element (`concat`), never on one shared gain element downstream of it.** A single post-`concat`
+    `volume` element updated on `active-pad` change applies the wrong track's gain to whatever audio is
+    still in flight downstream at the switch instant — an audible level jump at the exact moment
+    gapless is supposed to be seamless. See §12.1.
+31. **Implement the DASH `SegmentTemplate` identifier set from the spec, not from either reference
+    client.** Handle `$Time$` (keyed off `SegmentTimeline/S@t`, not a sequence index), `$Bandwidth$`,
+    `$RepresentationID$`, `$$`, and printf-style width tags (`$Number%05d$`); read
+    `SegmentTemplate@startNumber` and `@presentationTimeOffset`; and resolve `SegmentTemplate`
+    inheritance from `Period`/`AdaptationSet` level, not only `Representation` level. No reference
+    client implements any of this. Use a real XML parser, never a regex. See §12.2.
+32. **Specify seek precision and seek-flag choice explicitly, and re-feed the init segment after every
+    hand-rolled seek.** Pick `FLUSH` (accurate) or `FLUSH | KEY_UNIT` (segment-boundary snap) and state
+    why — the reference clients disagree. Pick one authoritative duration source (the track object's
+    `duration`) for UI, MPRIS, prefetch-trigger and play-reporting arithmetic, rather than letting the
+    MPD's `mediaPresentationDuration` and the decoded sample count silently disagree with it. See §12.3.
+33. **Define "bit-perfect" per-track by source type, not as one global mode switch.** It is a
+    meaningful claim only for the lossless tiers; for `LOW`/`HIGH` the transparency panel should say
+    "lossy source — bit-perfect not applicable" rather than claim a guarantee that was never available,
+    and a user should not lose volume control on AAC tracks just because bit-perfect mode is on. See
+    §12.7.
+34. **Treat `org.freedesktop.ReserveDevice1`'s "reservation acquired" as advisory, not a guarantee.**
+    The protocol has no guaranteed server side; a `RequestName` success with nobody actually listening
+    is a real failure mode distinct from the three outcomes §3.2 already documents. Always still handle
+    `EBUSY` on open with tidalt's retry budget regardless of reservation outcome, and release the PCM
+    handle before the D-Bus name on teardown, never after. See §12.8.
+35. **Add a DAC warm-up/settle delay (on the order of 200-300 ms, configurable) after every device
+    open or format/rate reconfigure, before writing real audio.** No reference client does this; many
+    USB/I2S DACs mute output briefly while their PLL re-locks, and per-track rate switching (a headline
+    feature per Implication #12) exercises this path routinely, not as an edge case. Count it in the
+    time-to-first-audio budget (§11.16). See §12.6.
 
 ---
 
@@ -2562,6 +2953,26 @@ in §1.2]**
     so the version floors are free there. See §11.19 for the three options and their consequences —
     system-on-Linux gives Linux the worst FLAC-in-DASH story of the three platforms, which is worth
     the owner seeing explicitly rather than falling out of a packaging default.
+13. **Resolve the engine-choice conflict between this report and `tech-stack.md` before writing any
+    engine code.** This report's §9 recommends starting with libmpv (Design B) and adding GStreamer
+    (Design A) later; `tech-stack.md` recommends the reverse — GStreamer as the primary engine with
+    libmpv as backend #2 (`tech-stack.md:1206-1207`). The two documents also disagree on mpv's own
+    `--gapless-audio` setting (`weak` here vs `no` in `tech-stack.md:225`). Deciding facts now assembled
+    across both documents: §11.4 finds GStreamer-on-macOS entirely unproven in the reference set; §12.4
+    finds libmpv's own Windows/macOS distribution equally unproven, *and* that linking libmpv (GPLv2+)
+    is a licence conflict with iOS App Store distribution — directly relevant to the owner's "mobile
+    must not be precluded" constraint, which neither document currently weighs against its
+    recommendation. State explicitly which document is authoritative on engine choice, or supersede
+    both with one decision recorded in one place.
+14. **Include the legacy `HI_RES` (MQA-era) quality tier in the request ladder, or drop it?** Sone's
+    shipped cascade still requests it (§1.8); this report's own findings say the tier's only historical
+    content (MQA) was retired 24 July 2024. What a live `audioquality=HI_RES` request returns today —
+    downgraded FLAC, an error, or the same answer as `LOSSLESS` — is unresolved in every fact-check pass
+    and needs one live request per tier to settle (§1.8, §11.21).
+15. **Pick the ReplayGain missing-value and peak-pairing behaviour explicitly.** High Tide skips
+    normalization when gain is exactly `1.0` (a missing-metadata sentinel); Sone returns unity gain for
+    a `null` gain instead — these produce different loudness for the same track. Similarly, decide
+    whether album-mode gain pairs with album peak or track peak. See §12.10.
 
 **Unverified — check before relying on**
 
@@ -2572,6 +2983,9 @@ in §1.2]**
 - Why High Tide disables gapless when the sink is `pipewiresink`.
 - The exact upstream commit behind "support for FLAC audio in DASH manifests" in GStreamer 1.26.10,
   and whether it changes behaviour for `dashdemux` (legacy) as well as `dashdemux2`.
+- Whether GStreamer 1.28 actually fixed "seeking in dashdemux2 for streams with gaps" (§4.7) — cited
+  from `phoronix.com`/`lists.freedesktop.org`, neither reachable from this environment, and a
+  third-pass fact-check found no other corroborating source. Downgraded from verified to unverified.
 - Whether the TIDAL Windows/macOS desktop apps really do not support Dolby Atmos —
   `support.tidal.com` and `tidal.com` are blocked from this environment, so this rests on
   second-hand reporting.
@@ -2627,6 +3041,17 @@ in §1.2]**
   §Design B) is required in practice.
 - miniaudio's exact device-backend and exclusive-mode capabilities (§10.17) — cited from general
   knowledge of the library, not verified against https://miniaud.io/docs/ in this pass.
+- Whether `org.freedesktop.ReserveDevice1` has any server-side implementation on a typical PipeWire/
+  WirePlumber desktop (a WirePlumber device-reservation component, or PulseAudio's
+  `module-reserve-wrapper`), and whether `pactl suspend-sink` is a viable simpler alternative or
+  addition — `docs.pipewire.org` and WirePlumber's own docs are blocked from this environment in every
+  pass so far. See §12.8.
+- Where `libmpv-2.dll` (Windows) and `libmpv.dylib` (macOS) actually come from for a shipped streamboat
+  build — mpv publishes no official libmpv binary for either platform, and no reference client in this
+  set links libmpv at all, so unlike GStreamer's documented sone-windows recipe (§11.4), Design B's own
+  distribution story has never been worked through. See §12.4.
+- Whether TIDAL's actual live behaviour for `audioquality=HI_RES` (the retired MQA tier) is a
+  downgrade, an error, or a no-op — see the new owner decision on the quality ladder, §1.8.
 
 ---
 
@@ -2735,10 +3160,14 @@ in §1.2]**
 | `https://www.via-la.com/licensing-programs/aac/` | AAC pool is an active per-unit licensing programme (blocked from this environment — reached only via the secondary sources below, see the §2.3 correction) |
 | `https://ipfray.com/access-advance-via-la-position-multimedia-patent-pools-for-further-growth-with-price-stability-offer-regionalization-for-more-standards/`, `https://via-la.com/aac-license-fees-structures/`, `https://lumenci.com/blogs/aac-licensing-explained-patent-pools-royalty-obligations-and-sep-exposure/`, `https://scconline.com` (2026-02-13 Via Licensing Alliance analysis) | Via LA AAC pool rates and tiering, 2026 state: tiered per-unit ($0.98/$0.78/$0.68/$0.45 by volume), 900+ licensees |
 | `https://www.digitaltrends.com/home-theater/tidal-killing-mqa-sony-360-reality-audio/` and `https://www.whathifi.com/news/tidal-scraps-mqa-and-spatial-audio-format-heres-what-that-means-for-subscribers` | MQA catalogue replaced with FLAC and all 360RA content removed on 24 July 2024; Dolby Atmos chosen as the surviving immersive format |
-| `https://www.phoronix.com/news/GStreamer-1.28` and `https://lists.freedesktop.org/archives/gstreamer-devel/2026-January/082207.html` | GStreamer 1.28.0 released 27 January 2026; wasapi2 ported to IMMDevice-based device selection; dashdemux2 seeking-with-gaps fix |
+| `https://www.phoronix.com/news/GStreamer-1.28` and `https://lists.freedesktop.org/archives/gstreamer-devel/2026-January/082207.html` | GStreamer 1.28.0 released 27 January 2026 and ported wasapi2 to IMMDevice-based device selection — both re-confirmed via `discourse.gstreamer.org/t/gstreamer-1-28-0-new-major-feature-release/5700`. The "dashdemux2 seeking-with-gaps fix" sub-claim is **unverified**: both URLs in this row and `gstreamer.freedesktop.org` are blocked from this environment and no other source corroborates it (§4.7) |
 | `https://linuxiac.com/gstreamer-1-28-5-released-with-security-and-playback-fixes/`, `https://linuxiac.com/gstreamer-1-28-6-adds-h-266-mp4-muxing-and-ffmpeg-9-0-support/`, `https://9to5linux.com/gstreamer-1-28-6-adds-h-266-muxing-support-to-the-rust-mp4-muxers`, `linuxcompatible.org` ("GStreamer 1.28.6 Drops: Final 1.28 Release") | corrects the report's own prior "1.28.2/1.28.3 is current" statement: the 1.28 series has shipped through 1.28.5 and then **1.28.6** (5 August 2026), announced as the final 1.28 bug-fix release; 1.28.6 adds FFmpeg 9.0 support (§11.1) |
 | `https://9to5linux.com/gstreamer-1-26-10-released-with-support-for-flac-audio-in-dash-manifests` and `https://linuxiac.com/gstreamer-1-26-10-brings-fixes-for-flac-opus-and-matroska-handling/` | GStreamer 1.26.10 (December 2025) added FLAC-in-DASH-manifest support, FLAC 6.1/7.1 layouts and 32-bit FLAC, adaptivedemux2 stream-selection fixes |
 | `https://issues.chromium.org/issues/40944208` and `https://strongrandom.com/post/high-bit-rate/` | **[uncertain]** cited for "Chromium/Web Audio always resamples to the output device rate", but the issue title is specifically about the WebAudio/AudioContext API, not every Chromium audio path, and the issue body could not be read (issues.chromium.org is blocked from this environment) |
 | `https://lib.rs/crates/souvlaki` | souvlaki covers MPRIS, SMTC and MPNowPlayingInfoCenter behind one API; dbus-crossroads default and zbus alternative on Linux; MSRV 1.67 (see the upstream-source row above for the MSRV/edition contradiction this report found) |
 | `https://docs.pipewire.org/page_audio.html` | audio adapter passthrough mode as the mechanism for exclusive access; `default.clock.rate` / `default.clock.allowed-rates` |
 | `https://support.tidal.com/hc/en-us/articles/25876825185425-Audio-Format-Updates` and `https://support.tidal.com/hc/en-us/articles/360004255778-Dolby-Atmos` | TIDAL's own audio-format-update and Atmos pages — **referenced but not read; `support.tidal.com` is blocked from this environment** |
+| `https://discourse.gstreamer.org/t/gstreamer-1-28-0-new-major-feature-release/5700` | Re-confirms GStreamer 1.28.0's release date (27 January 2026) and the WASAPI2 IMMDevice-based device-selection port from an unblocked source (§11.1); does **not** corroborate the dashdemux2 gap-seeking claim, which is downgraded to unverified in this pass (§4.7) |
+| ISO/IEC 23009-1 (MPEG-DASH), §5.3.9.4.4 "Template-based Segment URL construction" and §5.3.9.6 "Segment timeline" | The full `SegmentTemplate` identifier set (`$Number$`, `$Time$`, `$Bandwidth$`, `$RepresentationID$`, `$$`, printf width tags) and the `SegmentTimeline/S@t`/`@d`/`@r` timing model — no reference client implements more than a `$Number$` subset of this; see §12.2/§12.3 |
+| `docs/research/tech-stack.md:225,1206-1207,1390` (this repository) | Recommends GStreamer as the primary audio engine with libmpv as backend #2, and `--gapless-audio=no` for "strict bit-perfect" — directly contradicts this report's §9 (libmpv-first) and §4.1(d) (`--gapless-audio=weak`); flagged as an unresolved owner decision, §12.5 |
+| `docs/research/headless-connect.md:1726-1727,2207` (this repository) | Windows services run in session 0 with no interactive audio endpoint; macOS needs a per-user LaunchAgent, not a LaunchDaemon — both marked unverified there; restated here for its audio-layer consequence (§12.11) |

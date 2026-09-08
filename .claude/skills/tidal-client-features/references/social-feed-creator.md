@@ -24,14 +24,19 @@ fetches the Feed separately and parses `activities[]` / `totalNotSeenActivities`
 
 ```
 UserProfile { userId, name, picture, color: [c1,c2,c3], numberOfFollowers, numberOfFollows,
-              followers, followingUsers, followingArtists, publicPlaylists }
+              followers, followingUsers, followingArtists, publicPlaylists, state }
 ```
+(`ref:TidaLuna/plugins/lib/src/redux/types/store/UserProfile.ts:17-40` — `state: string` is a real
+field on the interface, easy to drop if you copy the block above from memory instead of the source.)
 
-**Each of `followers`/`followingUsers`/`followingArtists`/`publicPlaylists` is an object wrapping
-an `items` array** (e.g. `followers: {items: Following[]}`), **not a bare array** — this is the
+**All four wrapper fields are objects wrapping an `items` array, not a bare array** — this is the
 opposite shape from My Collection's own `favorites` object, which *is* bare arrays (see
-`library-playlists-collections.md` §2). `Following` carries `followType: "USER" | "ARTIST"`,
-`blocked`, `imFollowing`, and a `trn:user:{id}` resource name.
+`library-playlists-collections.md` §2) — **but the element type differs between them**:
+`followers`, `followingUsers`, and `followingArtists` all wrap `Following[]`
+(`followType: "USER" | "ARTIST"`, `blocked`, `imFollowing`, a `trn:user:{id}` resource name).
+**`publicPlaylists.items` wraps a different, smaller shape**: `{itemId: string, itemType:
+"playlist"}[]` — no `followType`/`blocked`/`imFollowing`/`trn`, because a playlist isn't a
+followable user/artist. Don't reuse the `Following` type for `publicPlaylists`.
 
 Actions: `user/UPDATE_PROFILE_NAME`, `user/UPDATE_PROFILE_PICTURE`,
 `user/UPDATE_PROFILE_SOCIAL_HANDLES`, `user/DELETE_PROFILE_PICTURE_BUTTON_CLICKED`, picture sources
@@ -83,12 +88,17 @@ example timestamps in the schemas are 2025-09/2025-11 — i.e. it shipped around
 launch above). Treat every item below as needing an explicit owner scoping decision before
 building, not a default inclusion — see SKILL.md "Open decisions" #1.
 
-- **Comments**: `/comments` (GET/POST/PATCH/DELETE), attributes `{message (1..2000 chars),
-  createdAt, lastModifiedAt, likeCount, replyCount, moderationStatus:
+- **Comments**: method set is per-path, not one flat set for `/comments` — verified directly
+  against `ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json`: `/comments` is **GET, POST**
+  (list/create); `/comments/{id}` is **GET, PATCH, DELETE** (read/edit/remove one). Attributes
+  `{message (1..2000 chars), createdAt, lastModifiedAt, likeCount, replyCount, moderationStatus:
   NOT_MODERATED|FLAGGED|TAKEN_DOWN|OK|ERROR, startTime, endTime}`. `startTime`/`endTime` are
   ISO-8601 durations (e.g. `PT1M30S`) — **SoundCloud-style time-anchored comments on a track**.
-  Subjects restricted to `albums` and `tracks`; replies hang off `parentComment`; relationship
-  `ownerProfiles`.
+  Subjects restricted to `albums` and `tracks`; a reply is a comment whose relationship
+  `/comments/{id}/relationships/parentComment` points at the comment it replies to; the commenter
+  is read via `/comments/{id}/relationships/ownerProfiles` (profile) and `/relationships/owners`
+  (raw owner reference) — walk `parentComment` to build a reply thread, don't expect replies inline
+  on the parent.
 - **Reactions and appreciations**: `/reactions` (with `CurrentUserReaction`) and `/appreciations`
   (POST-only, `appreciatedItem` type enum = `artists`) — separate gesture types from comments.
 - **Creator/monetisation**: `/artistClaims`, `/manualArtistClaims`, `/artistClaimStatuses`,

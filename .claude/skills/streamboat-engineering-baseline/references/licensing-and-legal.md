@@ -15,7 +15,7 @@ points at a shallow clone — see `sources.md`.
 
 | Project | License | Notes |
 |---|---|---|
-| sone / sone-windows | GPL-3.0-only | Declared in `package.json`, `Cargo.toml`, PKGBUILD, snapcraft.yaml and metainfo `<project_license>` |
+| Sone / Sone-windows | GPL-3.0-only | Declared in `package.json`, `Cargo.toml`, PKGBUILD, snapcraft.yaml and metainfo `<project_license>` |
 | High Tide | GPL-3.0 (COPYING); one file (`secret_storage.py`) carries an LGPL-3.0-or-later SPDX header, the rest GPL-3.0-or-later | CONTRIBUTING: "Contributions should be licensed under the **GPL-3**" |
 | Strawberry | GPL-3.0 | Qt + GStreamer app |
 | tidal-hifi | MIT | wraps the web player; ships castlabs Electron with Widevine |
@@ -29,8 +29,15 @@ points at a shallow clone — see `sources.md`.
 
 The dotnet-tidal-usdk clause is a cautionary example: bolting a use restriction onto MIT makes the
 license non-OSI, non-free, and unpackageable by Debian/Fedora/Flathub. Achieve the same effect with
-a README/metainfo statement of scope and a design that has no ripping feature, exactly as sone does
+a README/metainfo statement of scope and a design that has no ripping feature, exactly as Sone does
 in its Disclaimer (ref:sone/README.md:540-544).
+
+**Pitfall**: "every native GUI client is GPL-3.0" overstates the pattern by one — read the table
+above carefully. tidal-hifi (MIT) is the usual-cited exception because it's a web wrapper, but
+tidalt is a *second*, non-web-wrapper exception: a native Go TUI/daemon with cgo ALSA output and a
+`.desktop` entry (ref:tidalt/cmd/tidalt/tidalt.desktop), licensed Apache-2.0 (ref:tidalt/LICENSE).
+The correct framing for a licensing writeup is "every native GUI client except tidal-hifi and
+tidalt is GPL-3.0," not "every native client is GPL-3.0."
 
 ## 2. Choosing for streamboat
 
@@ -40,25 +47,42 @@ in its Disclaimer (ref:sone/README.md:540-544).
   open-source terms, and it prevents a closed fork of a project whose whole value is being open.
 - **Split the license by layer.** Make the reusable core library (`streamboat-core`: API client,
   auth, manifest parsing, models) **LGPL-3.0-or-later or Apache-2.0**, and the applications
-  (desktop UI, headless daemon) **GPL-3.0-only**. Precedent: python-tidal is LGPL, the apps on top
-  of it are GPL; the TIDAL SDKs are Apache-2.0. A permissive core maximises the chance other
-  clients adopt it, which is the fastest route to shared maintenance of an unofficial API surface.
-  Note the one-way door: relicensing later requires every contributor's agreement unless you
-  collect a CLA/DCO with relicensing rights, which most contributors dislike. Also decide whether
-  `core` is versioned/released independently of the apps — see `ci-and-repo-governance.md`.
-- **GPL-3.0-only on the app forecloses the future mobile target — this is a mobile-strategy
-  decision, not just a copyleft preference.** Mobile is a future target that the architecture must
-  not preclude. GPL-3.0-only is incompatible in practice with Apple App Store distribution for a
-  statically-linked iOS binary (the well-known VLC/GNU Go removals over this exact conflict); iOS
-  has no other distribution channel. This makes the `core`/apps split above load-bearing for
-  mobile: keep `streamboat-core` **Apache-2.0**, not LGPL-3.0 (LGPL's relinking requirement is
-  itself contested for a statically-linked iOS binary under App Store terms), so a future iOS app
-  has a clean permissive core to build on. If a first-party iOS app ships later, either it is a
-  separate permissively-licensed codebase over the Apache-2.0 core, or the whole project goes
-  Apache-2.0 — there is no in-between once the desktop apps have shipped GPL-3.0-only with outside
-  contributions. No reference project faces this: TidalSwift is macOS-only, and the official TIDAL
-  SDKs are Apache-2.0 precisely because they must be embeddable in App Store apps
-  (ref:tidal-sdk-ios/LICENSE). Record this as its own line in the licensing ADR.
+  (desktop UI, headless daemon/`streamboat-server`) **GPL-3.0-only**. Precedent: python-tidal is
+  LGPL, the apps on top of it are GPL; the TIDAL SDKs are Apache-2.0. A permissive core maximises
+  the chance other clients adopt it, which is the fastest route to shared maintenance of an
+  unofficial API surface. Note the one-way door: relicensing later requires every contributor's
+  agreement unless you collect a CLA/DCO with relicensing rights, which most contributors dislike.
+  Also decide whether `core` is versioned/released independently of the apps — see
+  `ci-and-repo-governance.md`. **Watch the crate boundary, not just the name**: the reconciled
+  workspace layout (`tech-stack-evaluation/references/architecture-shapes.md` §1,
+  `repo-layout-and-docs.md` §1 here) puts the player engine — the `AudioEngine` trait and its
+  backends — *inside* `streamboat-core`, not a separate `audio` crate. If that engine links a GPL
+  component (`gst-plugins-ugly`/`-bad`, or a GPLv2+ libmpv build), the crate that ships it is no
+  longer permissively-licensable as a whole, whatever this section recommends by name — the license
+  split has to follow the actual link graph, which may mean carving the engine's GPL-linking
+  backends into their own crate even though the reconciled layout keeps them logically inside
+  `core`. Settle this once an engine and its licensing are chosen (see the audio-engine CRITICAL
+  callout in `audio-pipeline`/`tech-stack-evaluation`), not by assuming the crate name settles it.
+- **The load-bearing reason the App Store is closed to streamboat is App Store Guideline 5.2.2**
+  (third-party-service authorization) — canonical analysis owned by
+  `tech-stack-evaluation/references/packaging-and-policy.md` §4, which quotes it verbatim. An
+  unofficial TIDAL client cannot produce the authorization 5.2.2 requires, independent of licence,
+  so treat the iOS App Store as closed on that basis alone. **Whether GPL-3.0-only is *additionally
+  and independently* incompatible with App Store distribution (beyond 5.2.2) is
+  `[unverified — flag before asserting]`** — this file previously stated it as settled fact citing
+  "the well-known VLC/GNU Go removals," but neither this file nor `tech-stack-evaluation` has
+  primary-sourced that claim (the FSF's GPL FAQ / App Store statements and Apple's current terms
+  were not directly re-checked); treat it as a secondary, uncertain reason, never the sole one.
+  **The practical recommendation is unaffected either way**: keep `streamboat-core` **Apache-2.0**,
+  not LGPL-3.0 (LGPL's relinking requirement is itself contested for a statically-linked iOS binary
+  under App Store terms) — this costs nothing since 5.2.2 already closes the store, and it keeps a
+  future iOS app's options open regardless of how the GPL question resolves. If a first-party iOS
+  app ships later, either it is a separate permissively-licensed codebase over the Apache-2.0 core,
+  or the whole project goes Apache-2.0. No reference project faces this: TidalSwift is macOS-only,
+  and the official TIDAL SDKs are Apache-2.0 precisely because they must be embeddable in App Store
+  apps (ref:tidal-sdk-ios/LICENSE). Record this as its own line in the licensing ADR, citing
+  `tech-stack-evaluation/references/packaging-and-policy.md` §4 for the 5.2.2 analysis rather than
+  re-deriving it.
 - **AGPL-3.0 is a poor fit.** Its network clause only bites when users interact with the software
   over a network. streamboat's headless mode does expose a local control surface, so AGPL is not
   meaningless — but it would deter packagers and integrators (Music Assistant, Mopidy, HA-style
@@ -138,34 +162,30 @@ application name or icon unless the application is actually part of that vendor'
 the example "A WhatsApp client or wrapper cannot have `WhatsApp` in its name or use any of the
 official icon, logo or artwork". "streamboat" is already safe. Keep TIDAL out of the name, the
 icon, and the app ID; use it only in the description ("client for TIDAL", "requires an active
-TIDAL subscription"), which every accepted client does. Sone's wording is the template:
-"SONE is an independent, community-driven project. It is **not affiliated with, endorsed by, or
-connected to TIDAL** in any way. All content is streamed directly from TIDAL's service and
-requires a valid paid subscription. SONE is a streaming client only — it does not support offline
-downloads, and does not redistribute or circumvent protection of any content. As with any
-third-party client, please be aware of TIDAL's terms of use." (ref:sone/README.md:540-544)
+TIDAL subscription"), which every accepted client does. Disclaimer wording to copy (Sone's, the
+template to use) is owned by `tidal-oss-landscape/references/legal-posture.md` — cite it rather
+than re-quoting.
 
 **Copy this disclaimer paragraph, but do not copy reference-project *feature* copy verbatim —
 some of it is stale.** TIDAL discontinued MQA and Sony 360 Reality Audio on 2024-07-24
 (ref:python-tidal/HISTORY.rst:88, corroborated by a skipped test at
 ref:python-tidal/tests/test_media.py:236); the current quality ladder is LOW/HIGH/LOSSLESS/
-HI_RES_LOSSLESS. sone's own README still advertises "**Lossless FLAC and MQA streaming** up to
+HI_RES_LOSSLESS. Sone's own README still advertises "**Lossless FLAC and MQA streaming** up to
 Hi-Res (24-bit/192kHz)" (ref:sone/README.md:58). Check each format claim against the current API
 before adapting a reference project's feature list into streamboat's own README/metainfo.
 
-One unverified but material data point: a search result attributes to TIDAL's Developer Terms 2.0
-the statement that "The Player module in the SDK constitutes the only allowed way for third-party
-applications to incorporate playback of TIDAL content", corroborated at second hand by an
-independent search of `developer.tidal.com/documentation/guidelines-developer-terms-2_0` returning
-both that sentence and "playbacks shall only be made available through TIDAL's SDKs, namely an
-official, unmodified version of the TIDAL Player module". `developer.tidal.com` and `tidal.com` are
-both unreachable from this environment, so **this is not verified from the primary source** and
-must be checked by the legal/ToS research topic before any claim is published.
+One material data point, quoted and sourced canonically by
+`tidal-oss-landscape/references/api-auth-streaming.md` §1 (cite it there rather than re-quoting):
+TIDAL's Developer Guidelines state the Player module is the only allowed playback path for
+third-party applications. `developer.tidal.com` and `tidal.com` are both unreachable from this
+environment, so treat it as confirmed via a directly-fetched GitHub discussion quoting the
+guidelines verbatim, not a primary-source read — the confidence level api-auth-streaming.md §1
+records must be checked before any claim is published.
 
 **Scope distinction to get right in `docs/legal.md`, regardless of how that verification lands**:
-those Developer Terms govern the official developer-program API and SDK (the path High Tide, sone
+those Developer Terms govern the official developer-program API and SDK (the path High Tide, Sone
 and python-tidal explicitly do *not* take). streamboat's declared stance — per the owner's
-decision — is the unofficial API that python-tidal/High Tide/sone use, which is governed by the
+decision — is the unofficial API that python-tidal/High Tide/Sone use, which is governed by the
 consumer Terms of Service instead. Conflating the two documents would produce the wrong legal
 analysis: a "Player-module-only" restriction in the *developer* terms does not, by itself,
 establish that the *unofficial* API route violates the *consumer* ToS — the two are separate

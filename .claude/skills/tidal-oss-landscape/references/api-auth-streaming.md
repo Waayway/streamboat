@@ -11,11 +11,14 @@ write auth and stream-resolution code without opening either.
 2. Unofficial auth flows (device code, PKCE, refresh, legacy)
 3. The OAuth-redirect-capture decision (three known solutions)
 4. Stream resolution: the canonical endpoint and its three siblings
+4a. Request headers and the shared request layer
 5. Manifest formats: BTS, DASH, EMU, HLS
 6. The `subStatus` taxonomy (the single most valuable table in the landscape)
 7. Quality cascade and stopping rules
 8. Credential handling patterns and their risk profiles
 9. Dolby Atmos — an unresolved gap, not a solved problem
+10. ETag conditional requests: write precondition today, unexploited read-revalidation tomorrow
+11. Track-availability pre-flight and playback error classification (pointer to `sone-deep-dive.md`)
 
 ## 1. Two API surfaces and what each can actually do
 
@@ -31,11 +34,15 @@ write auth and stream-resolution code without opening either.
 **The load-bearing constraint, confirmed by direct fetch of the GitHub discussion (the
 `developer.tidal.com` page itself is egress-blocked from this environment — see
 `sources.md`):** `github.com/orgs/tidal-music/discussions/179` quotes the guidelines verbatim —
-*"The Player module in the SDK constitutes the only allowed way for third-party applications to
-incorporate playback of TIDAL content. By using an official, unmodified version of the Player
-module, third-party applications can include playback of TIDAL previews."* Plus, from a search
-summary of the guidelines page itself: *"TIDAL will reject any quota extension requests for any
-Offering that attempts to circumvent this."*
+*"Playbacks shall only be made available through TIDAL's SDKs, namely an official, unmodified
+version of the TIDAL Player module. The Player module in the SDK constitutes the only allowed way
+for third-party applications to incorporate playback of TIDAL content."* Plus: *"by using an
+official, unmodified version of the Player module, third-party applications can include playback
+of TIDAL previews"* and, from a search summary of the guidelines page itself: *"TIDAL will reject
+any quota extension requests for any Offering that attempts to circumvent this."* The first
+sentence is the one that actually states the prohibition — do not quote only the second, weaker
+sentence in user-facing text (see `legal-posture.md` for the full framing this feeds into, and
+the second-hand-sourcing caveat that must travel with it).
 
 Corroborating, directly-verified evidence:
 - `ref:tidal-cli/src/playback.ts:27-28,74-75,204-205` carries `trackPresentation` and
@@ -57,6 +64,18 @@ Corroborating, directly-verified evidence:
 **Conclusion, now doubly confirmed:** the owner's stance (do what High Tide and Sone do) is not a
 convenience choice — building against the unofficial API is currently the *only* way to build a
 full-quality third-party TIDAL player.
+
+**Sharper (but still unresolved) evidence on which scope actually gates full playback, added by
+the third fact-check pass.** `ref:tidal-cli/src/auth.ts:26-36` requests `playback` among ten
+official scopes and *still* surfaces a non-empty `previewReason` at runtime
+(`ref:tidal-cli/src/playback.ts:205`) — so holding `playback` is not sufficient on its own. Issue
+tidal-sdk-web#133 names `r_usr playback` together as "required scopes" in its error text, and
+`r_usr` is specifically the scope the **unofficial** device-code and PKCE flows request
+(`ref:sone/src-tauri/src/tidal_api.rs:1561`, `ref:python-tidal/tidalapi/session.py:513`) — raising
+the real, still-open question of whether `r_usr` itself, not `playback`, is the actual gate, and
+whether an official-API-registered client can ever legitimately hold it. This needs a live test
+against a registered developer client; this research environment cannot run one (egress to
+`developer.tidal.com` is blocked, see `sources.md`).
 
 **Keep an official-API adapter behind the same internal interface anyway.** The official `/v2`
 `trackManifests` shape (`formats[]`, `manifestType`, `uriScheme`, `usage`, `adaptive`) is a
@@ -150,13 +169,13 @@ as a single decision rather than discovering it three times in streamboat's own 
 
 **Recommendation for streamboat**: desktop = custom scheme with a loopback fallback; headless =
 device code with a terminal QR (tidalt's `mdp/qrterminal`) plus a paste-form fallback for
-machines with no browser at all; keep mopidy-tidal's "login hack" (a dummy library item whose
-cover art is a QR code of the login URL, rendered through the normal client UI with no protocol
-extension — see `project-profiles.md` §mopidy-tidal) as the zero-protocol fallback for any client
-surface that can't render either. **Generate the QR code locally** — mopidy-tidal's own
-implementation sends the one-time login URL to `api.qrserver.com`
-(`ref:mopidy-tidal/mopidy_tidal/login_hack.py:109-110`), which leaks it to a third-party host;
-tidalt's `mdp/qrterminal` renders locally and is the pattern to copy, not mopidy-tidal's.
+machines with no browser at all; keep mopidy-tidal's "login hack" pattern (a dummy library item
+whose cover art is a QR code of the login URL, rendered through the normal client UI with no
+protocol extension) as the zero-protocol fallback for any client surface that can't render either
+— but not its implementation. Full detail on the login-hack pattern and its two undisclosed
+third-party calls (`api.qrserver.com` QR render, `api.voicerss.org` TTS with a hardcoded key) is
+owned by `project-profiles.md` §5 — cite it rather than restating; generate the QR locally
+(tidalt's `mdp/qrterminal` pattern) and drop the TTS call entirely if borrowing this pattern.
 
 ## 4. Stream resolution: the canonical endpoint and its three siblings
 
@@ -209,46 +228,47 @@ see `sone-deep-dive.md`).
 **Never cache manifests or stream URLs across restarts** — they expire in minutes to an hour.
 Cache *metadata* aggressively instead (see Sone's tier/TTL/SWR table in `sone-deep-dive.md`).
 
+## 4a. Request headers and the shared request layer
+
+Every unofficial v1/v2 call needs the same small header set — build one thin request layer that
+injects it centrally rather than repeating it at every call site (this is the concrete shape of
+"don't build one 7,200-line API client," `sone-deep-dive.md` §8):
+
+- **`Authorization: Bearer <access_token>`** on every authenticated call.
+- **`x-tidal-client-version`**, scoped to `/v2/` URLs only (`if url.contains("/v2/")`, not sent on
+  `/v1/` calls) — `ref:sone/src-tauri/src/tidal_api.rs:1512-1513,1541-1542` and ~30 further call
+  sites there. Sone's current value is `const TIDAL_CLIENT_VERSION: &str = "2025.11.3"`
+  (`tidal_api.rs:91`) — **this string drifts as TIDAL ships releases; make it a single named
+  constant, not a literal repeated at every call site**, the same lesson as the play-reporting
+  Android-version pin (`sone-deep-dive.md` §5).
+- **`x-tidal-token: <clientId>`** on the desktop-client host (`desktop.tidal.com/v1`), alongside
+  the bearer token — `ref:TidaLuna/plugins/lib/src/classes/TidalApi/index.ts:24-25` (`project-profiles.md`
+  §4). Not required on `api.tidal.com/v1`, which every OSS client in this set uses instead.
+- **`countryCode`**, injected on nearly every call — bootstrap and log-redaction detail already
+  covered in full in `sone-deep-dive.md` §4a; don't duplicate that here, just note it belongs in
+  the same request layer as the headers above, not sprinkled per-call.
+- **Centralized 401/refresh handling with the §6 `subStatus` exception**: a bare 401 triggers a
+  token refresh and retry; a 401 whose body carries a terminal `subStatus` (§6) must not — refresh
+  costs a token round-trip and the answer never changes for those. Sone's
+  `authenticated_get`/`authenticated_get_v2` (`ref:sone/src-tauri/src/tidal_api.rs:1490-1545`) is
+  the reference shape: check the sub-status *before* deciding to refresh, not after.
+
+Build all of this as one request layer streamboat's resource-specific modules (auth, catalog,
+playback, library, …) call through — this is the part of Implication 11 that "split the 7,200-line
+file by resource" alone does not give you.
+
 ## 5. Manifest formats: BTS, DASH, EMU, HLS
 
-- **BTS** (`application/vnd.tidal.bts`): base64 → JSON `{urls: [...], codecs, mimeType,
-  encryptionType, keyId}`. Take `urls[0]`. Codec is `codecs.toUpperCase().split('.')[0]`.
-  Source: `ref:python-tidal/tidalapi/media.py:662-676`, `ref:sone/src-tauri/src/tidal_api.rs:
-  3706-3730` (note: Sone's own `BtsManifest` struct reads `urls`/`codecs`/`mimeType`/
-  `encryptionType` but not `keyId` — only python-tidal reads all five fields).
-- **DASH** (`application/dash+xml`): base64 → MPD XML. **Four consumption strategies observed**
-  (a fourth was found in Music Assistant after this file's first draft — do not describe this as
-  "two", the original three-bullet list was mislabeled):
-  1. **Data URI**: wrap as `data:application/dash+xml;base64,<b64>` and hand to GStreamer's
-     `dashdemux` directly. Works everywhere, no filesystem write. Used by Sone
-     (`ref:sone/src-tauri/src/commands/playback.rs:117-125`), Strawberry
-     (`ref:strawberry/src/tidal/tidalstreamurlrequest.cpp:224-233`), High Tide on GStreamer < 1.26.
-  2. **File URI**: write the MPD to a file and pass `file://`. Used by mopidy-tidal always
-     (`ref:mopidy-tidal/mopidy_tidal/playback.py:38-46`), High Tide on GStreamer ≥ 1.26
-     (`ref:high-tide/src/lib/player_object.py:487-513` — the exact `Gst.version() >= (1, 26)`
-     branch).
-  3. **Ephemeral local HTTP route**: base64-decode and serve the manifest from a local route kept
-     alive for `track.duration + 300s`. Music Assistant's TIDAL provider
-     (`music_assistant/providers/tidal/streaming.py`, fetched 2026-09-08), chosen explicitly
-     because ffmpeg cannot re-fetch a `data:` URI mid-playback — see `project-profiles.md` §8a.
-  4. **Manual segment reconstruction**: regex-extract `initialization="…"`, `media="…$Number$…"`
-     and `<S d= r=>` repeat counts, then download and concatenate segments sequentially. Used by
-     tidal-cli (`ref:tidal-cli/src/playback.ts:118-167,121-126`) and python-tidal's `DashInfo` — a
-     real fallback if you have no DASH demuxer available at all, but heavier than the others.
-
-  **Selection rule**: if the media layer may re-open or range-request the manifest source
-  (seeking, a restart, an external decoder like ffmpeg), strategy 1 is unsafe — use 2 or 3.
-  Strategy 4 is needed only with no DASH-capable demuxer at all. **Default recommendation for
-  streamboat: strategy 1, with 2 as the fallback** (unchanged from the original guidance).
-- **EMU** (`application/vnd.tidal.emu`) and **HLS** (`application/vnd.apple.mpegurl`) appear only
-  in the official SDKs. Canonical enum:
-  `ref:tidal-sdk-android/player/streaming-api/.../ManifestMimeType.kt` — `EMU =
-  application/vnd.tidal.emu`, `BTS = application/vnd.tidal.bts`, `DASH = application/dash+xml`,
-  `HLS = application/vnd.apple.mpegurl`. Every client must handle at least BTS and DASH.
-
-python-tidal's `StreamManifest` **hardcodes `encryption_type = "NONE"` for MPD with a `# TODO:
-Handle encryption key`** comment (`media.py:657-660`) — do not treat "python-tidal says NONE" as
-proof a DASH stream is unencrypted; only the BTS branch actually reads `encryptionType`.
+Manifest MIME types, the BTS JSON shape, the four DASH delivery strategies (data URI / file URI /
+ephemeral local HTTP route / manual segment reconstruction), and the full DASH structural detail
+are owned by `audio-pipeline/references/tidal-manifest-api.md` §3-4 — cite it rather than
+restating. Two traps worth keeping here: **`keyId` is inert everywhere in this reference set except
+TidaLuna's decryptor** (§1, Pitfall 1) — do not treat "parse `keyId`" as something every BTS client
+needs to do; it is optional, and *not* parsing it is itself the correct posture for a
+never-decrypt client. Separately, **python-tidal's `StreamManifest` hardcodes
+`encryption_type = "NONE"` for MPD with a `# TODO: Handle encryption key`** comment
+(`media.py:657-660`) — do not treat "python-tidal says NONE" as proof a DASH stream is unencrypted;
+only the BTS branch actually reads `encryptionType`.
 
 ## 6. The `subStatus` taxonomy — the single most valuable table in the landscape
 
@@ -293,6 +313,10 @@ refuse rather than decrypt.
 **Stop the cascade immediately** on a network error, a rate limit, or a terminal `subStatus`
 (§6) — walking the ladder on those only multiplies request count 4× for nothing, because
 *"over-requesting quality returns 200 with a downgraded `audioQuality`, never an error."*
+`[unverified]` This stated reason is a single Sone code comment with no second source, and is in
+tension with tidalt shipping a descending quality ladder (redundant if downgrades are always
+silent) — the stop-the-cascade behavior above is still the right default, but confirm the reason
+with one live request per tier before treating it as settled.
 
 **Pre-flight check** (mopidy-tidal's pattern, cheap and worth copying): before requesting
 `hi_res_lossless`, check `"HIRES_LOSSLESS" in track.media_metadata_tags`; log/skip the request if
@@ -311,27 +335,20 @@ HIGH]` as the more likely-correct cascade and budget a live test before committi
 
 ## 8. Credential handling patterns and their risk profiles
 
-No pattern in the set is "safe" — pick the one whose failure mode you can live with and document
-it honestly:
-
-| Pattern | Examples | Risk |
-| --- | --- | --- |
-| Embedded, obfuscated | Sone (XOR-masked byte arrays with misleading names like `STREAM_SALT_*`; trivially reversible — this is obfuscation, not security), python-tidal (double-base64-encoded, split-in-two byte literals) | Dishonest about what it does; reversible in seconds; if you ship this, don't also claim it's secure |
-| Embedded, plaintext | tidalt (`client.go:17`, comment admits the secret is "baked into the official Tidal app"), tidal-cli (public client ID, official SDK), TidalSwift (id **and** secret in `Config.swift`), Strawberry's optional compile-time `TIDAL_CLIENT_ID` (never a secret) | Honest at least; still a shared credential that can be revoked/rotated by TIDAL at any time |
-| None at all | tidal-hifi, TidaLuna (both ride the official app's own session/credentials) | No credential-churn risk for the wrapper itself, but zero control over the upstream client's behaviour |
-
-**Recommendation**: Strawberry's model is the honest one — compile-time-optional client ID, never
-a secret compiled in, user-overridable in settings. If streamboat ships default credentials at
-all, state plainly in the README that they were extracted from an official app and may stop
-working; do not obfuscate and pretend otherwise (Sone's own `embedded_config.rs` is the example
-of what not to do — see `sone-deep-dive.md` "Avoid").
+Full pattern table (embedded-obfuscated vs embedded-plaintext vs none) and the recommendation are
+owned by `streamboat-engineering-baseline/references/secrets-and-tokens.md` §4 — cite it rather
+than restating; that file also has the Sone generator gap and the Strawberry CMake mechanism this
+skill's own per-project table doesn't cover.
 
 **At-rest secret *storage* (as opposed to embedded client credentials) is a solved problem**: OS
 keyring as primary (`keyring` crate / libsecret / Keychain / EncryptedSharedPreferences), an
-encrypted file as fallback, and **always write the file backup even when the keyring works** —
-Sone's own reasoning is that the keyring may be unreachable on next launch (e.g. an AppImage
-running in a different D-Bus session than it was configured in). Full container-format detail in
-`sone-deep-dive.md`.
+encrypted file as fallback. **Correction, previously stated backwards here**: Sone does **not**
+always write the file backup even when the keyring works — read
+`streamboat-engineering-baseline/references/secrets-and-tokens.md` §3, the canonical source, which
+traces Sone's `load_or_generate_key` control flow line by line: the file is written only once, at
+first-run key generation (the branch where the comment about AppImage/D-Bus-session portability
+actually sits); a keyring hit or an existing-file hit both return without writing a file. Full
+container-format detail in `sone-deep-dive.md`.
 
 ## 9. Dolby Atmos — an unresolved gap, not a solved problem
 
@@ -361,3 +378,28 @@ audio-mode/immersive parameter, and what codec an Atmos track's BTS manifest act
 prefer/request stereo by default; if an Atmos-only manifest arrives and cannot be decoded, fail
 with a specific, honest user-facing message rather than GStreamer's generic "Internal data stream
 error."
+
+## 10. ETag conditional requests: a write precondition today, an unexploited read-revalidation
+mechanism tomorrow (added by the third fact-check pass)
+
+`sone-deep-dive.md` §4b documents the full playlist/favorites-mutation ETag precondition (GET the
+resource, cache `etag`, send it back as `If-None-Match` on the write, default `"*"` if absent) —
+confirmed in both Sone and python-tidal, independently. The finding worth stating on its own:
+**the API issues ETags on library resources, and no project in this reference set ever sends one
+back on a subsequent *read* to get a cheap `304 Not Modified`.** Every project either refetches on
+TTL expiry or treats the etag as write-only. This is a small, free improvement over the
+`UserContent`-tier 15-minute TTL (`sone-deep-dive.md` §4): send `If-None-Match` on `UserContent`
+refreshes; a 304 refreshes the TTL clock with no response body. Make both `if-none-match` and a
+per-request TTL override (`packaging-distribution.md`-adjacent — see lms-plugin-tidal's `_nocache`
+idea in `project-profiles.md` §5b) parameters of the same request layer, not separate mechanisms.
+
+## 11. Track-availability pre-flight and playback error classification — a pointer, full detail
+in `sone-deep-dive.md` §3c
+
+The first implementer question after "how do I get a stream URL" is answered in full, with source
+line numbers, in `sone-deep-dive.md` §3c: which metadata fields (`streamReady`, `allowStreaming`,
+`streamStartDate`) mean a track cannot be requested at all, and which HTTP statuses (404/410/451,
+plus a 401 *only* carrying a terminal `subStatus` from §6 above) mean "skip, don't retry" versus
+everything else meaning "halt, don't skip." Read that section before writing any auto-advance or
+queue-error-recovery logic — getting the classification wrong either auto-skips a whole queue on
+a network blip or hangs forever on one region-blocked track.

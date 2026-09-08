@@ -59,14 +59,76 @@ scarcity, which will improve over time).
    row above scores it. See `references/tauri-engineering-facts.md` §12 for the release-profile levers
    to use in its place, and either add it as a scored criterion (even 3-5 points, redistributed from
    Effort or Cross-platform) or say plainly it was dropped and why.
-2. **No sensitivity analysis exists, so the ranking's stability is unknown.** Three Open decisions
+2. **No sensitivity analysis existed in the original pass — computed below.** Three Open decisions
    (mobile timing, macOS bit-perfect as v1, Linux-first vs. three-OS v1) are effectively weight
-   changes to this matrix, answered narratively rather than by re-scoring. The gap between 90.2, 82.3,
-   and 78.4 is small enough that one weight change could reorder the ranking. Before treating the
-   ranking as final, re-score under at least two alternative weightings — e.g. Mobile 5→20 (taken from
-   Effort/Beauty) to test whether Flutter overtakes Tauri+React if mobile becomes a 2026 priority, and
-   Beauty 18→10 / Audio 22→30 to test whether a Rust-native toolkit overtakes it if audio purity
-   matters more than visual polish. Not computed here — mechanical next step, not new research.
+   changes to this matrix, previously answered narratively rather than by re-scoring. The gap between
+   90.2, 82.3, and 78.4 is small enough that one weight change could plausibly reorder the ranking —
+   the two re-scores below test that directly, using the same 1-5 raw scores as §1's table with only
+   the weights changed.
+
+**Sensitivity re-score (mechanical — same raw 1-5 scores per stack, two alternative weightings):**
+
+*Scenario A — Mobile 5→20, redistributed evenly from Effort (15→7.5) and Beauty (18→10.5); Audio,
+Agents, Cross-platform, Headless, Packaging unchanged.* Tests whether Flutter overtakes Tauri+React if
+mobile becomes a 2026 priority:
+
+| Stack | Total | Δ vs. original rank |
+| --- | ---: | --- |
+| Rust core + Tauri 2 + React/TS | **89.5** | still #1 (was 90.2) |
+| Rust core + Flutter | 86.1 | still #2 (was 82.3) — closes the gap from 7.9 to 3.4 points, does not overtake |
+| Rust core + Slint | 76.9 | #3 (was #4, 78.4) |
+| Qt 6 / QML | 75.4 | #4 (was #7, 76.1) |
+| Go + Fyne | 73.2 | #5 (was #8) |
+| .NET + Avalonia | 71.9 | #6 (was #9) |
+| Rust core + egui | 71.8 | #7 (was #5, 77.0) |
+| Kotlin MP + Compose MP | 71.0 | #8 (was #12, 66.5) — biggest riser, as expected (Mobile 5/5) |
+| Go + Wails v3 | 70.2 | #9 (was #3, 80.7) — biggest faller (Mobile 1/5, Effort was its strength) |
+| Rust core + iced | 65.9 | #10 |
+| Electron + TS | 65.6 | #11 (was #6, 76.8) — falls hard (Mobile 1/5, and Beauty was its strength) |
+| Rust + GTK4 / Relm4 | 61.8 | #12 |
+| Rust + GPUI | 60.4 | #13 |
+| Python + GTK4/libadwaita | 55.9 | #14 (unchanged, last) |
+
+**Flutter does not overtake Tauri+React even at Mobile weight 20 — it narrows the gap but Tauri stays
+#1.** The Kotlin Multiplatform and Go+Wails moves are the more consequential findings of this
+scenario: KMP jumps from #12 to #8 (its Mobile 5/5 finally counts for something), and Wails falls from
+#3 to #9 (its Mobile 1/5 stops being cheap to ignore) — worth knowing if Open decision #4 (mobile
+timing) resolves toward "near-term."
+
+*Scenario B — Beauty 18→10, Audio 22→30; Agents, Effort, Cross-platform, Headless, Mobile, Packaging
+unchanged.* Tests whether a Rust-native toolkit overtakes Tauri+React if audio purity matters more
+than visual polish:
+
+| Stack | Total | Δ vs. original rank |
+| --- | ---: | --- |
+| Rust core + Tauri 2 + React/TS | **91.0** | still #1, and *rises* (was 90.2) |
+| Rust core + Flutter | 82.3 | #2, unchanged in value — its 4.5/4.5 Audio/Beauty scores happen to net to zero under this reweighting |
+| Rust core + egui | 81.8 | #3 (was #5, 77.0) |
+| Rust core + Slint | 80.8 | #4 (was #4, 78.4) |
+| Go + Wails v3 | 79.1 | #5 (was #3, 80.7) |
+| Qt 6 / QML | 77.7 | #6 (was #7, 76.1) |
+| Go + Fyne | 76.3 | #7 (was #8) |
+| Rust core + iced | 73.6 | #8 (was #10, 70.4) |
+| Electron + TS | 72.0 | #9 (was #6, 76.8) — falls (Audio 2/5 is its weak point, now weighted heavier) |
+| Rust + GTK4 / Relm4 | 71.8 | #10 |
+| .NET + Avalonia | 68.7 | #11 |
+| Rust + GPUI | 67.2 | #12 |
+| Python + GTK4/libadwaita | 65.7 | #13 |
+| Kotlin MP + Compose MP | 62.5 | #14 (was #12) — falls, its JVM Audio ceiling (2/5) now costs more |
+
+**No Rust-native toolkit overtakes Tauri+React under a heavier audio weighting, because Tauri+React
+already scores 5/5 on Audio** (identical to Slint/egui/iced/GTK4/GPUI/Qt) — raising the Audio weight
+does not differentiate Tauri from the Rust-native options at all; it only pushes the non-5/5-Audio
+stacks (Electron, KMP, Avalonia) further down. Tauri's actual lead over the Rust-native pack comes from
+Beauty and Agents, which this scenario does not touch enough to close.
+
+**Reading both scenarios together: Recommendation 1 (Tauri 2 + Rust + React) is robust to both
+weight changes this skill flagged as most likely to matter — it is #1 in the original matrix and in
+both re-scores, never dropping below 89.5/100.** This is a genuine (if narrow) research finding, not
+an assumption: the redistribution choice in Scenario A (even split from Effort/Beauty) is one
+reasonable allocation, not the only one — re-run with a different split if the owner wants to stress
+another allocation, but do not expect a different split to flip the #1 spot given the size of Tauri's
+margin in both scenarios above.
 
 ---
 
@@ -86,7 +148,7 @@ window chrome, updater, WebView2, cross-compilation, Flathub generators, macOS p
 crate shape, IPC). Summary: Tauri `2.11.5` (2026-07-01, Apache-2.0 OR MIT, ~29.4M downloads, MSRV
 1.77.2). Webview per OS: WebView2/WKWebView/WebKitGTK. WebKitGTK is the framework's real cost — font
 weight offset, glitchy rendering on maximize, DMABUF crashes — all documented and all budgetable, not
-a rewrite risk. Audio is entirely outside the webview in Rust; SONE's `audio.rs` (3,309 lines) is the
+a rewrite risk. Audio is entirely outside the webview in Rust; Sone's `audio.rs` (3,309 lines) is the
 smallest complete implementation of this feature set in the survey. Licensing: Tauri MIT/Apache-2.0;
 React/Tailwind MIT; nothing blocks a GPL-3.0 project.
 
@@ -103,8 +165,9 @@ visible-attribution requirement becomes a live product requirement. Treat this r
 depending on Open decision #1, not assuming it. MSRV 1.92, Rust 2024 edition, renderers
 femtovg/software/Skia/WGPU, ~1.63M downloads. Draws its own widgets — high design ceiling, zero
 native-look anywhere, on every platform equally (which is fine for a music player). **Daemon shape**
-(gap identified during fact-checking): identical to 4.1 — `crates/streamboat-daemon` is the same
-binary either way, since only `desktop/` (the Slint shell replacing Tauri+React) changes. Loses to
+(gap identified during fact-checking): identical to 4.1 — `crates/streamboat-server` (binary
+`streamboatd`) is the same binary either way, since only `desktop/` (the Slint shell replacing
+Tauri+React) changes. Loses to
 Tauri because `.slint`'s DSL has a tiny training corpus vs. CSS/React — agents produce
 plausible-but-wrong layouts more often, and the compiler catches structure, not layout intent.
 
@@ -142,10 +205,12 @@ win32. Choosing GTK means a first-class Linux app and a visibly foreign Windows/
 ### 4.7 Python + GTK4/libadwaita (the High Tide stack) — not recommended
 
 Python (ruff `py311`), Meson, GTK4+libadwaita, 22 Blueprint files, GStreamer `playbin3`, `libsecret`,
-Flatpak on `org.gnome.Platform 50`. Its Flatpak `finish-args` (`--socket=pulseaudio`,
-`--filesystem=xdg-run/pipewire-0:ro`, **no `--device=all`**) mean the Flatpak build cannot reach
-exclusive ALSA `hw:` — instructive for streamboat's own Flatpak sandbox design regardless of stack.
-Strengths: smallest codebase in the survey (6,821 lines), very agent-friendly language. Kills it here:
+Flatpak on `org.gnome.Platform 50`. **Correction, previously stated backwards here**: its Flatpak
+`finish-args` (`--socket=pulseaudio`, `--filesystem=xdg-run/pipewire-0:ro`, no `--device=all`) mean
+the Flatpak build **can** reach exclusive ALSA `hw:` — `--socket=pulseaudio` alone already grants
+`/dev/snd` (`streamboat-engineering-baseline/references/packaging-and-distribution.md` §1); there
+is no `--device=all` requirement. Strengths: smallest codebase in the survey (6,821 lines), very
+agent-friendly language. Kills it here:
 Linux-only in practice, GIL/PyGObject threading makes a rigorous audio state machine painful, no
 mobile path, no static headless binary, no type-checking backstop.
 
@@ -153,17 +218,21 @@ mobile path, no static headless binary, no type-checking backstop.
 
 Flutter draws every pixel with Skia/Impeller — identical design ceiling on all six targets.
 `flutter_rust_bridge` is the mainstream Dart↔Rust binding generator; `simple_audio` is an existing
-Flutter audio package built on it. `streamboat-core`/`streamboat-player` stay Rust; Flutter is the
-view layer everywhere. **Daemon shape** (gap identified during fact-checking): `streamboat-daemon` is
-the same headless Rust binary as Recommendation 1 — Flutter only replaces the desktop/mobile *view*
-layer; the daemon links `streamboat-core`/`streamboat-player` directly with no Dart runtime in it at
-all. Against: three toolchains, thinner desktop plugin ecosystem than mobile, Flutter desktop apps
+Flutter audio package built on it. `streamboat-core` (the player engine lives inside it — see
+`references/architecture-shapes.md` §1's reconciled layout, no separate `streamboat-player` crate)
+stays Rust; Flutter is the view layer everywhere. **Daemon shape** (gap identified during
+fact-checking): `streamboat-server` (binary `streamboatd`) is the same headless Rust binary as
+Recommendation 1 — Flutter only replaces the desktop/mobile *view* layer; the daemon links
+`streamboat-core` directly with no Dart runtime in it at all. Against: three toolchains, thinner
+desktop plugin ecosystem than mobile, Flutter desktop apps
 rarely feel native, and `flutter_rust_bridge` codegen conventions are not well-represented in training
 data — agents get the FFI boundary wrong more often than either side.
 
 ### 4.9 Kotlin Multiplatform + Compose Multiplatform — not recommended
 
-Compose Multiplatform for iOS went Stable with 1.8.0 (2025-05-06); 1.9.0 (2025-09-22) took Compose
+Compose Multiplatform for iOS went Stable with 1.8.0 (2025-05-06); 1.9.0 (2025-09, day unconfirmed —
+the source report and its cited JetBrains blog post carry no day-level date; re-source from the
+JetBrains blog post or GitHub release before citing a specific day) took Compose
 for Web to Beta. Strongest mobile-first option in the list. Fails on audio: desktop Compose runs on
 the JVM, where `javax.sound.sampled` is the only built-in path — no FLAC, no exclusive mode, no hw
 device selection. **The specific KMP audio-library survey (gadulka/AstroPlayer/
@@ -188,19 +257,24 @@ webview, making it a negative control (Tauri UI without a Rust audio path is not
 ### 4.11 Qt/QML — not recommended, but respectable
 
 Strawberry: C++17 + Qt 6 (`QT_MIN_VERSION` 6.8.0 on Windows/macOS, 6.4.0 elsewhere), GStreamer with
-`autoaudiosink`/`osxaudiosink`/`directsoundsink`/`wasapisink`, bit-perfect on Linux via ALSA
-exclusive, GPL-3.0. **Its `src/` is ~166,100 lines of C++/headers, not the 14,708 an earlier count
-gave** (491 `.cpp` = 121,981 lines + 568 `.h` = 44,141 lines across 40 subdirectories; `src/core`
-alone is 21,510 lines) — the **largest** codebase in this entire survey, ~3.5x SONE's Rust+TS
-combined. **Correction (fact-checked): it is the strongest proof point for Linux+Windows only, NOT
-three-OS bit-perfect.** `GstEngine::ExclusiveModeSupport()` returns `true` only for
-`wasapisink`/`wasapi2sink` (`ref:strawberry/src/engine/gstengine.cpp:523-525`); its `osxaudiosink` use
-and CoreAudio calls are device *enumeration* only
-(`ref:strawberry/src/engine/macosdevicefinder.cpp:27,73`) — no hog-mode or physical-format code
-anywhere in `src/`. This makes Strawberry *additional* evidence for "macOS bit-perfect is unproven
-everywhere" (`references/audio-engine-comparison.md` §8), not a counterexample to it. Its own Windows
-GStreamer sink ranking demotes **both** `wasapisink` and `wasapi2sink` (not `wasapi2sink` alone — a
-correction against an earlier draft), a direct caution against the SONE-Windows `wasapi2sink`
+`autoaudiosink`/`osxaudiosink`/`directsoundsink`/`wasapisink`, GPL-3.0. **Its `src/` is ~166,100
+lines of C++/headers, not the 14,708 an earlier count gave** (491 `.cpp` = 121,981 lines + 568
+`.h` = 44,141 lines across 40 subdirectories; `src/core` alone is 21,510 lines) — the **largest**
+codebase in this entire survey, ~3.5x Sone's Rust+TS combined. **Correction (fact-checked, twice
+over): it is a verified proof point for Windows only, not Linux+Windows and not three-OS
+bit-perfect.** `GstEngine::ExclusiveModeSupport()` returns `true` only for
+`wasapisink`/`wasapi2sink` (`ref:strawberry/src/engine/gstengine.cpp:523-525`) — both Windows-only
+elements. Its Linux "exclusive" flag is a weaker, unverified mechanism: it fires purely because the
+configured device string starts with `hw:` **or `plughw:`**
+(`ref:strawberry/src/engine/gstenginepipeline.cpp:632-637`) — `plughw:` is a converting plug layer,
+so this is a device-prefix inference, not a dedicated bit-perfect path (`rg -i 'bit.perfect'
+strawberry/src/` returns nothing). Its `osxaudiosink` use and CoreAudio calls are device
+*enumeration* only (`ref:strawberry/src/engine/macosdevicefinder.cpp:27,73`) — no hog-mode or
+physical-format code anywhere in `src/`. This makes Strawberry *additional* evidence for "macOS
+bit-perfect is unproven everywhere" (`references/audio-engine-comparison.md` §8), not a
+counterexample to it. Its own Windows GStreamer sink ranking demotes **both** `wasapisink` and
+`wasapi2sink` (not `wasapi2sink` alone — a correction against an earlier draft), a direct caution
+against the Sone-Windows `wasapi2sink`
 recommendation — see `references/audio-engine-comparison.md` §4. Against for streamboat: C++ + QML +
 CMake + Qt deployment is the largest total surface of any candidate; Qt's LGPL-3.0 requires dynamic
 linking (or a commercial licence); `cxx-qt` 0.10.0 (2026-08-24, MIT/Apache, KDAB) makes Rust↔Qt
@@ -243,22 +317,27 @@ primary shell.
 
 | Decision | Choice | Rationale |
 | --- | --- | --- |
-| Language | Rust 2021/2024, one Cargo workspace | Bit-perfect needs direct device access; compiler is the agent's reviewer. **Correction (fact-checked): "static daemon binary" overstates it** — true only for the `symphonia`+per-OS-sink engine (no DASH/HLS fetch, no EAC3/AC4); the recommended GStreamer engine links `libgstreamer`/`libglib` and loads codec plugins from a runtime registry (SONE's deb `depends`: `libgstreamer1.0-0`, `gstreamer1.0-plugins-{base,good,bad}`, `gstreamer1.0-libav`, `gstreamer1.0-alsa`) — nothing about that artefact is static. Decide this trade explicitly, see `references/audio-engine-comparison.md` |
+| Language | Rust 2021/2024, one Cargo workspace | Bit-perfect needs direct device access; compiler is the agent's reviewer. **Correction (fact-checked): "static daemon binary" overstates it** — true only for the `symphonia`+per-OS-sink engine (no DASH/HLS fetch, no EAC3/AC4); the recommended GStreamer engine links `libgstreamer`/`libglib` and loads codec plugins from a runtime registry (Sone's deb `depends`: `libgstreamer1.0-0`, `gstreamer1.0-plugins-{base,good,bad}`, `gstreamer1.0-libav`, `gstreamer1.0-alsa`) — nothing about that artefact is static. Decide this trade explicitly, see `references/audio-engine-comparison.md` |
 | Desktop shell | Tauri 2, pinned exactly (`=2.11.2` style) | Avoids surprise webview behaviour changes mid-project |
 | Frontend | React 19 + TypeScript 5.8 strict | Largest agent corpus; Svelte 5 is a defensible smaller-code alternative, Solid not worth the corpus penalty |
-| State | Jotai (SONE) or Zustand (Feishin) — pick one, never mix | Atom-per-concern maps well to a push-event model; SONE's 12-module `src/atoms/` split is a good template |
-| Styling | Tailwind CSS 4 + CSS custom properties for themes | Themes become a token swap; shadcn/ui+Radix optional (SONE ships none, and looks good) |
+| State | Jotai (Sone) or Zustand (Feishin) — pick one, never mix | Atom-per-concern maps well to a push-event model; Sone's 12-module `src/atoms/` split is a good template |
+| Styling | Tailwind CSS 4 + CSS custom properties for themes | Themes become a token swap; shadcn/ui+Radix optional (Sone ships none, and looks good) |
 | Icons | `lucide-react` | Watch the WebKitGTK `stroke-width` bug |
 | Virtualisation | `@tanstack/react-virtual` | Mandatory — libraries have tens of thousands of rows |
 | Video | `hls.js` in the webview, separate from the audio path | Keeps the lossless path clean; cannot handle Widevine — non-DRM HLS only, or drop video from scope |
 | Audio engine | `gstreamer` 0.25 + `gstreamer-app` behind an `AudioEngine` trait; libmpv as backend #2 | See `references/audio-engine-comparison.md` |
 | Media controls | `mpris-server` 0.9 + `zbus` 5 on Linux (from the engine, not the GUI); `souvlaki` 0.8.3 on Windows/macOS | souvlaki needs an HWND on Windows, a run loop on macOS — no SMTC in headless Windows mode |
-| Secrets | `keyring` 3 + AES-GCM/age-encrypted file fallback | See `engineering-baseline.md` for the redaction/crypto STACK items |
+| Logging | `log` 0.4 + `flexi_logger` 0.31 (Sone, `ref:sone/src-tauri/Cargo.toml:45-46`) | Alternative: `tracing` + `tracing-subscriber` — larger ecosystem, structured spans, better fit for the daemon's async command/event loop; `flexi_logger`'s win is file-rotation-out-of-the-box with less setup. Pick one; do not mix — a mixed `log`+`tracing` tree needs `tracing-log` as a bridge, extra dependency weight for no benefit at this scale. |
+| Path resolution | `dirs` 5 (Sone, `ref:sone/src-tauri/Cargo.toml:38`) / `dirs` 6.0.0 (Museeks — `raw.githubusercontent.com/martpie/museeks/master/src-tauri/Cargo.toml`, fetched 2026-09-08) | Alternative: `directories` (same author lineage, adds a `ProjectDirs::from()` qualifier/org/app triple that separates streamboat's own cache/config from other apps more explicitly on Windows/macOS). Both are XDG-correct on Linux; `dirs` is the precedent in two of two reference Tauri music/media clients checked. |
+| Secrets | `keyring` 3 with the `sync-secret-service` feature (not `async-secret-service`) + `aes-gcm` 0.10 + `zeroize` 1 + `sha2` 0.10.9 (all four pinned in `ref:sone/src-tauri/Cargo.toml:42,49-51`) | `sync-secret-service` pulls `dbus-secret-service` (a blocking D-Bus client) instead of `async-secret-service`'s `zbus`+async-runtime dependency — the feature choice that actually matters for a headless daemon, since it lets a keyring read/write happen before or outside any `tokio` runtime is running, not just inside a GUI app already on one. `keyring` has since released a 4.x line (`crates.io/api/v1/crates/keyring`, fetched 2026-09-08) — re-check the feature name before pinning if adopting 4.x instead of Sone's pinned 3. |
+| Redaction enforcement | No reference project does this systematically — recommend a `Redacted<T>`/`SecretString`-shaped newtype wrapping the access/refresh token and any other credential, whose `Debug`/`Display` impls always print a fixed placeholder | Improves on both precedents: Sone redacts manually at one call site with a string literal (`ref:sone/src-tauri/src/tidal_api.rs:1473`, `"body=<redacted: account endpoint>"`) — easy to forget at a new call site; tidalt redacts at the log-handler level by stripping query strings from URL-shaped attributes (`ref:tidalt/internal/logger/logger.go:40-72`) — heuristic, not type-enforced. A newtype makes `log::debug!("{:?}", token)` unable to leak the token even if a future call site forgets to redact by hand. |
 | HTTP/Async | `reqwest` (0.12+, rustls) / `tokio` | Ecosystem default |
-| Persistence | SQLite (`rusqlite`/`sqlx`) | mopidy-tidal's proxy cache and SONE's `cache.rs` both use it |
+| Persistence | SQLite (`rusqlite`/`sqlx`) | mopidy-tidal's proxy cache and Sone's `cache.rs` both use it |
 | Daemon protocol | JSON commands/events over WebSocket (`axum`), token-gated | Music Assistant precedent |
+| Monorepo tooling | Cargo workspace (root `Cargo.toml`, `members = [...]`) + `pnpm-workspace.yaml` for the frontend | Sone's actual layout (`ref:sone/pnpm-workspace.yaml`) — but Sone ships **no `rust-toolchain.toml`**, a reproducibility gap to fix, not copy; pin the toolchain explicitly from day one. See `references/tauri-engineering-facts.md` §14 for the MSRV-drift consequence (GStreamer 0.25 needs 1.92, Tauri 2.11.x only needs 1.77.2). |
 | Packaging | Linux: deb+rpm+AppImage+AUR+Snap+Nix flake+Flathub last; Windows: NSIS+MSI+winget; macOS: notarized DMG+Homebrew | See `references/packaging-and-policy.md` |
 | Testing | `cargo test`+`wiremock`+`insta`; Vitest+Testing Library; `tauri-driver` e2e Linux/Windows only | See `references/agent-friendliness-and-testing.md` |
+| Fuzzing | `cargo-fuzz` targeting the manifest/JSON parsers (`playbackinfopostpaywall` response, the DASH MPD XML pulled out of the base64 data URI — `references/audio-engine-comparison.md` §3) | No reference project in this survey has a fuzz harness at all — this is a gap this stack should close, not a pattern to copy. Untrusted, API-controlled input reaching an XML/JSON parser is exactly `cargo-fuzz`'s target profile. |
 
 Risks: WebKitGTK divergence (mitigate: test Linux first, keep a workaround log); macOS bit-perfect
 unproven (mitigate: scope macOS v1 to correct-sample-rate passthrough, treat exclusive mode as a
@@ -296,11 +375,13 @@ desktop Flutter apps are recognisable as such.
   ourselves" and wraps TIDAL web (which then needs castLabs Widevine again).
 - **GTK4 (Rust or Python)** — nicest Linux app in the survey, foreign everywhere else, against an
   explicit three-OS requirement. Revisit only if scope narrows to Linux.
-- **Qt/QML** — technically capable of a great deal, and Strawberry proves bit-perfect on **Linux and
-  Windows** (166k lines). **Correction (fact-checked): not macOS** — Strawberry's
-  `ExclusiveModeSupport()` covers only `wasapisink`/`wasapi2sink`; its CoreAudio use is device
-  enumeration only, no hog-mode code anywhere in `src/`. Rejected on total surface area for a solo
-  developer, and agent reliability in QML.
+- **Qt/QML** — technically capable of a great deal, and Strawberry proves bit-perfect on **Windows
+  only** (166k lines), via `wasapisink`/`wasapi2sink`. **Correction (fact-checked, twice over): not
+  Linux and not macOS** — Strawberry's `ExclusiveModeSupport()` covers only
+  `wasapisink`/`wasapi2sink`; its Linux "exclusive" flag is an unverified `hw:`/`plughw:`
+  device-prefix inference, not a dedicated code path (`rg -i 'bit.perfect' strawberry/src/` finds
+  nothing); its CoreAudio use is device enumeration only, no hog-mode code anywhere in `src/`.
+  Rejected on total surface area for a solo developer, and agent reliability in QML.
 - **egui** — cannot clear the "beautiful" bar; good for a debug window.
 - **iced** — good engineering, wrong ergonomics for a many-async-loads media app, API churn targets
   dead versions in agent output.
@@ -324,16 +405,16 @@ desktop Flutter apps are recognisable as such.
 use. MVP = device-code login + token refresh + session/countryCode, browse home/album/artist/
 playlist, search, play with quality cascade (HI_RES_LOSSLESS → HI_RES → LOSSLESS → HIGH), queue with
 shuffle/repeat, MPRIS, settings, and a `.deb`. **Parity with the official client: 9–18 months**
-regardless of stack — SONE took 21 minor releases to get there.
+regardless of stack — Sone took 21 minor releases to get there.
 
 This number is calibrated unevenly — treat each part separately, not as one uniform estimate:
 
 | Workstream | Calibration data point | Confidence |
 | --- | --- | --- |
-| `streamboat-core` (API client) | `ref:tidalrs/src/` — 3,545 lines for manifest/URL resolution only | Sourced, few-thousand-line order of magnitude |
-| `streamboat-player` (audio engine) | SONE's `audio.rs` — 3,309 lines for the full GStreamer/ALSA bit-perfect path | Sourced |
-| Combined API+audio Rust core | SONE's `tidal_api.rs`+`audio.rs` — 10,509 lines at v0.21.0 (mature, not MVP) | Sourced but represents a *mature* app, not an MVP slice |
-| UI (React/TS) | SONE — 47,609 lines, 199 files, **102 component files** (correction, fact-checked: not 85 — 83 top-level `.tsx` + 17 in `settings/` + 2 in `signal-path/`, 19 are `.test.tsx`) at v0.21.0 | **Not independently calibrated for an MVP slice** — the only data point is a mature app |
+| `streamboat-core` — API client sub-component | `ref:tidalrs/src/` — 3,545 lines for manifest/URL resolution only | Sourced, few-thousand-line order of magnitude |
+| `streamboat-core` — audio engine sub-component (not a separate crate — see `references/architecture-shapes.md` §1) | Sone's `audio.rs` — 3,309 lines for the full GStreamer/ALSA bit-perfect path | Sourced |
+| Combined API+audio Rust core | Sone's `tidal_api.rs`+`audio.rs` — 10,509 lines at v0.21.0 (mature, not MVP) | Sourced but represents a *mature* app, not an MVP slice |
+| UI (React/TS) | Sone — 47,609 lines, 199 files, **102 files under `src/components/`** — 101 `.tsx` (83 top-level, 17 `settings/`, 1 `signal-path/`) plus `signal-path/types.ts` (recount, fact-checked: not 85, and not 102 `.tsx`), 19 of the `.tsx` are `.test.tsx`, at v0.21.0 | **Not independently calibrated for an MVP slice** — the only data point is a mature app |
 | Packaging tail | See below | **Most commonly underestimated** |
 
 The estimate explicitly **excludes**: design iteration; icon/branding; Apple Developer Program
@@ -342,4 +423,4 @@ cross-compilation — see `references/tauri-engineering-facts.md` §"Cross-compi
 the Flathub submission process itself; accessibility work; i18n infrastructure; any macOS
 bit-perfect research spike. Re-derive per workstream before committing to a schedule, and see
 `docs/research/tech-stack.md` §11 for the brief items (accessibility, i18n, frontend-framework
-depth) this document defers to `engineering-baseline.md`'s own `[STACK]` checklist.
+depth) this document defers to `docs/research/engineering-baseline.md`'s own `[STACK]` checklist.

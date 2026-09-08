@@ -7,6 +7,7 @@ get the encryption-refusal rule and the quality-cascade stop conditions right be
 
 1. `playbackinfopostpaywall` — the load-bearing call
 2. Manifest types (BTS, DASH, EMU, HLS)
+   - 2a. If you must parse the MPD yourself
 3. Encryption — the rule that keeps streamboat distributable
 4. The quality cascade
 5. Simpler fallback endpoints (`urlpostpaywall`, `streamUrl`)
@@ -30,7 +31,7 @@ GET https://api.tidal.com/v1/tracks/{trackId}/playbackinfopostpaywall
 Authorization: Bearer <token>
 ```
 Four independent implementations agree on exactly this endpoint name and parameter set
-(python-tidal, Sone, sone-windows, Strawberry). Two more (TidaLuna, the official web SDK's legacy
+(python-tidal, Sone, Sone-windows, Strawberry). Two more (TidaLuna, the official web SDK's legacy
 path) use the same parameters against the shorter `/playbackinfo` form (no `postpaywall`) — treat
 `playbackinfopostpaywall` as primary and `/playbackinfo` as an equivalent short form some clients
 use, not a different call.
@@ -67,63 +68,34 @@ display to the user, always, regardless of what was requested.
 
 ## 2. Manifest types
 
-**`application/vnd.tidal.bts`** — base64 → JSON:
-```json
-{
-  "mimeType": "audio/flac",
-  "codecs": "flac",
-  "encryptionType": "NONE",
-  "keyId": "<base64>",            // only when encryptionType != NONE
-  "urls": ["https://.../....flac?token=..."]
-}
-```
-Take `urls[0]`. `codecs` values seen: `mp3`, `aac`, `aac+`, `flac`, `mp4a.40.2` (AAC-LC/HIGH),
-`mp4a.40.5` (HE-AAC/LOW).
+Manifest MIME types (BTS/DASH/EMU/HLS), the BTS JSON shape, the DASH delivery-strategy options
+(data-URI shortcut, `file://`, parse-and-fetch), and the full DASH `SegmentTemplate`/
+`SegmentTimeline` structure are owned by `audio-pipeline/references/tidal-manifest-api.md` §3-4 —
+cite it rather than restating; it also has the four-delivery-strategy breakdown and python-tidal's
+`DashInfo` segment-numbering bugs. Two tidal-api-specific traps worth keeping here:
 
-**`application/dash+xml`** — base64 → an MPEG-DASH MPD. **Delivery shortcut used by every reference
-client that plays DASH**: don't parse the MPD, wrap the original base64 as a data URI —
-`data:application/dash+xml;base64,<the original base64>` — and pass that straight to the pipeline.
-GStreamer's `dashdemux` accepts it directly (High Tide, Sone, Strawberry all do exactly this).
-mopidy-tidal instead writes the MPD to a cache file and passes a `file://` URI — an alternative if
-your pipeline doesn't like data URIs. Only parse the MPD yourself if you need metadata the response
-JSON doesn't already give you (codec/bit-depth/sample-rate can be mined from
-`Representation@id`/`@codecs`/`@audioSamplingRate` by regex, as the web SDK does — see
-`ref:tidal-sdk-web/.../manifest-parser.ts:105-205`).
+**python-tidal's own `ManifestMimeType` enum does not implement all four types** — it declares only
+`MPD`, `BTS`, and a fifth value, `VIDEO = "video/mp2t"` (`EMU` and `vnd.apple.mpegurl` are
+commented out in its source). Practical consequence: **python-tidal cannot play videos through the
+manifest path** and falls back to `urlpostpaywall` for video instead. Source the four-type list to
+`tidal-sdk-web`/`tidal-sdk-android`, not to python-tidal.
 
-**`application/vnd.tidal.emu`** — base64 → JSON with `urls[]`; used for video.
-
-**`application/vnd.apple.mpegurl`** — HLS. Requested by official SDKs when FairPlay is available;
-not something a Linux/Windows client normally asks for.
-
-**Correction worth knowing**: python-tidal's own `ManifestMimeType` enum does not implement all four
-types above — it declares only `MPD`, `BTS`, and a fifth value, `VIDEO = "video/mp2t"` (`EMU` and
-`vnd.apple.mpegurl` are commented out in its source). Practical consequence: **python-tidal cannot
-play videos through the manifest path** and falls back to `urlpostpaywall` for video instead. Source
-the four-type list to `tidal-sdk-web`/`tidal-sdk-android`, not to python-tidal.
+**codec normalization trap**: python-tidal upper-cases and truncates the BTS `codecs` string before
+comparing it —`codecs.upper().split(".")[0]`, so `mp4a.40.2` becomes `MP4A` (both the leading `mp4a`
+segment and the case change happen). A naive equality check against the raw wire value (`mp4a.40.2`)
+will not match python-tidal's normalized form; normalize the same way before comparing codec strings,
+or compare the full dotted string consistently and don't mix the two.
+(`ref:python-tidal/tidalapi/media.py:670`.)
 
 ## 3. Encryption — the rule that keeps streamboat distributable
 
-`encryptionType` in a BTS manifest is `NONE` or `OLD_AES`.
-
-- **Strawberry refuses**: if `encryptionKey` is non-empty, or `encryptionType`/`securityType` is
-  anything other than `NONE`, it fails with a user-facing message and does not play. **This is the
-  posture streamboat must copy.**
-- python-tidal records `encryption_type`/`encryption_key` but does not decrypt (hardcodes `"NONE"`
-  for MPD manifests with a `TODO`).
-- Sone avoids the situation pre-emptively: it drops the Hi-Res tiers from its cascade entirely when
-  it has no `client_secret` configured, on the reasoning that those credentials typically return
-  encrypted DASH streams requiring Widevine.
-- tidal-hifi sidesteps it by running the actual official web player inside a Widevine-capable
-  (castlabs) Electron build, so Chromium's CDM handles decryption — it never touches a manifest.
-- TidaLuna (a mod running *inside* the official, licensed desktop client) decrypts `OLD_AES` with a
-  hardcoded master key. **streamboat must not do this.** It is DRM circumvention, it is the
-  behavior TIDAL has historically pursued legally (see `references/legal-and-landscape.md`), and it
-  would make streamboat undistributable on Flathub and in distro repos.
-
-**The rule**: treat any non-`NONE` `encryptionType` as "this tier is not available to us," surface a
-clear message, and fall back or skip — Strawberry's behavior, with Sone's pre-emptive tier filtering
-as an optimization that reduces how often users hit the wall at all. Do not ship any AES/Widevine
-handling.
+Strawberry's three refusal conditions, the `OLD_AES`-attested-by-one-file caveat (denylist-of-one,
+not an allowlist), and the never-decrypt policy are owned by
+`audio-pipeline/references/tidal-manifest-api.md` §5 — cite it rather than restating. One
+tidal-api-specific data point worth keeping: **tidal-hifi sidesteps the whole problem** by running
+the actual official web player inside a Widevine-capable (castlabs) Electron build, so Chromium's
+CDM handles decryption — it never touches a manifest at all, which is a materially different
+architecture from every native client in this set.
 
 ## 4. The quality cascade
 
@@ -135,10 +107,9 @@ the result always contains "HIGH", so it is never empty.
 ```
 Loop rules:
 - network error → propagate immediately, do not try lower tiers;
-- rate-limited, or a terminal sub-status per `references/transport.md` §6 → propagate immediately (a
-  lower tier will not help — **except** `4034`, which is client/tier-scoped: retry once at a lower
-  tier or a different client id before giving up on it, do not treat it the way Sone's blanket
-  terminal set does);
+- rate-limited, or a terminal sub-status per `references/transport.md` §6 (including `4034`, which
+  is terminal for this request — a lower tier will not help) → propagate immediately; `[inferred]`
+  a different client id is the one retry worth trying on `4034` specifically, not a different tier;
 - anything else → remember it, try the next tier.
 
 tidalt has the same ladder over `urlpostpaywall`; Strawberry instead offers a *method* fallback chain
@@ -208,15 +179,13 @@ one) is defensible.
 
 ## 8. Replay gain
 
-TIDAL ships four numbers per track. Sone's normalization formula, which it calls "Tidal-correct":
-```
-norm_gain = 0.8 * min( 10^((replay_gain + 4) / 20), 1 / peak_amplitude )
-```
-`pre_amp = 4.0`, `peak` defaults to 1.0 when absent. Context: album context prefers
-`albumReplayGain`/`albumPeakAmplitude`, mixed/shuffled queues prefer the track values, each falling
-back to the other. High Tide instead configures GStreamer's `rgvolume` with
-`pre-amp=4.0 fallback-gain=-10 headroom=6.0` and injects tags — same intent, different mechanism;
-pick whichever fits your audio backend.
+TIDAL ships four numbers per track (`trackReplayGain`/`albumReplayGain` +
+`trackPeakAmplitude`/`albumPeakAmplitude`). Canonical formula, pre-amp value, album-vs-track
+context selection, and the Sone/High Tide implementation variants are owned by
+`audio-pipeline/references/playback-behavior.md` §4 — do not restate them here. Headline point:
+TIDAL's own SDKs use `min(10^((replay_gain+pre_amp)/20), 1/peak)` with `pre_amp=4.0` and no extra
+attenuation factor; Sone's shipped code multiplies that by an additional `0.8`, which is Sone's
+own choice, not TIDAL's formula.
 
 ## 9. Seeking, buffering, and manifest/URL lifetime
 
@@ -232,6 +201,11 @@ pick whichever fits your audio backend.
 - **Still unverified**: the actual signed-URL TTL inside `urls[0]` itself (distinct from the 1-hour
   manifest cache). No checkout states this number — handle expiry-by-403 defensively rather than
   trying to predict it.
+- **Do not persist manifests to disk.** Hold a resolved manifest in memory for the session only — it
+  carries signed, expiring CDN URLs. This is a different thing from the byte-cache carve-out in §11:
+  caching the decoded audio bytes for a logged-in subscriber is defensible, caching the manifest that
+  points at TIDAL's signed CDN URLs is not (it just goes stale and adds no value once the CDN URLs it
+  contains expire).
 
 ## 10. The official API's playback contract — `/trackManifests/{id}`
 
@@ -266,6 +240,13 @@ If streamboat calls `/trackManifests/{id}` directly, follow the web SDK's more-p
 Whether a newly registered third-party client actually receives full-track manifests here, or only
 30-second previews, is **unresolved** — `tidal-music` Discussion #179 raises exactly this doubt with
 no answer; tidal-cli's code assumes full tracks. Untested against a live third-party registration.
+
+**Leaning signal, not proof**: one developer on that thread reports first-hand, after
+Authorization-Code (PKCE) login, that their users "cannot play but the 30s low quality preview of
+tracks" (`ildella`, comment dated 2025-09-06). No TIDAL staff reply confirms or denies it anywhere on
+the thread, and the OP's last update (2026-04-16) is still about the review pipeline being stalled,
+not about playback behavior. Treat this as evidence leaning toward preview-only for newly-registered
+clients — still unconfirmed by TIDAL itself.
 
 **Note this endpoint returns a DRM-protected manifest** (see `drmData` above) — decoding it yourself
 without a licensed CDM does not work regardless of the contractual question. See

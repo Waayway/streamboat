@@ -21,7 +21,8 @@ big Raspberry Pi / headless section) and the souvlaki MSRV finding in §6's rewr
 | Concern | Linux | Windows | macOS |
 |---|---|---|---|
 | Transport | MPRIS2 D-Bus (`org.mpris.MediaPlayer2`, `.Player`) | SMTC (`SystemMediaTransportControls`) | `MPNowPlayingInfoCenter` + `MPRemoteCommandCenter` |
-| Cross-platform crate | `souvlaki` 0.8.3 or `mpris-server` 0.10.0 | `souvlaki` | `souvlaki` |
+| Media keys | MPRIS + `tauri-plugin-global-shortcut`, as Sone does | SMTC handles them natively | `MPRemoteCommandCenter` |
+| Cross-platform crate | `souvlaki` 0.8.3 or `mpris-server` (Sone pins **0.9**; **0.10.0** is the current crates.io release as of this research — re-check before pinning) | `souvlaki` | `souvlaki` |
 | Device enumeration | GStreamer `DeviceMonitor`, `device.api=="alsa"`, `api.alsa.path` or `alsa.card`+`alsa.device` -> `hw:C,D` | same monitor, `device.api ∈ {wasapi, wasapi2}`, `device.id` | `gstosxaudiodeviceprovider` |
 
 **MPRIS.** Sone runs `mpris-server` 0.9 on a dedicated thread with a current-thread tokio runtime
@@ -75,17 +76,14 @@ afterthought: because a `hw:`/WASAPI-exclusive/CoreAudio-hog device cannot be op
 processes at once, "desktop and headless, both now" is fundamentally a client/server architecture
 question, and tidalt has a complete, working answer to copy.
 
-**Single-owner process, thin clients otherwise.** tidalt claims the D-Bus name
-`org.mpris.MediaPlayer2.tidalt` on the session bus at startup; if already taken
-(`ErrAlreadyRunning`), the process becomes a thin client instead of exiting
-(`ref:tidalt/docs/client-server.md`). The stated reason is physical: *"ALSA `hw:` devices cannot be
-shared between processes. If two programs both try to open `hw:1,0` the second one fails."* Modes:
-
-- `tidalt` — TUI, becomes server or client depending on whether the name is free.
-- `tidalt daemon` — headless engine, no terminal.
-- `tidalt play tidal://track/<id>` — one D-Bus call to the running server, then exits; this is what
-  a browser URL handler invokes.
-- `tidalt setup --daemon` — installs a systemd **user** service.
+**Single-owner process, thin clients otherwise.** Full mechanics (D-Bus name-claim as mutex and
+discovery, the four subcommand modes) are owned by
+`headless-and-tidal-connect/references/headless-daemon-precedents.md` §2 and
+`headless-and-tidal-connect/references/daemon-architecture.md` §1 — cite them rather than
+restating. The physical reason, worth repeating here: *"ALSA `hw:` devices cannot be shared between
+processes. If two programs both try to open `hw:1,0` the second one fails"* — which is why "desktop
+and headless, both now" is fundamentally a client/server architecture question, not a UI
+afterthought.
 
 **Consequence documented in tidalt's own README:** *"A plain `tidalt` TUI session does not register
 a persistent MPRIS2 service, so media keys and `playerctl` will have no effect when the TUI is
@@ -130,25 +128,36 @@ skips itself when there is no session bus — `output-backends.md` §2) and MPRI
 should not depend on either and should simply own `hw:` outright**, not degrade silently into a
 half-working state.
 
+**This architecture is Linux-only as written — headless on Windows/macOS is a user-session process,
+not a service, and that is an audio-layer fact, not only a media-integration one.** §5 below already
+notes SMTC needs a real `HWND`. What is missing: `docs/research/headless-connect.md:1726-1727`
+(marked unverified there, with a named one-hour spike to confirm) records that Windows services run
+in session 0 with no interactive audio endpoint, and macOS needs a per-user LaunchAgent, not a
+LaunchDaemon, for the same reason. The audio-layer consequence is that exclusive-mode WASAPI/CoreAudio
+access from a non-interactive service context is itself the capability at risk, not only SMTC — a
+Windows/macOS `streamboat-server` is architecturally a user-session background process on those two
+platforms, never a true service, and the "control thread is the whole product" headless design above
+is fully true only on Linux.
+
 ## 5. SMTC needs a real HWND — no headless Windows now-playing integration
 
 §1 found the macOS event-loop constraint on souvlaki but not the Windows analogue, even though the
 brief requires headless mode on every platform. souvlaki's `PlatformConfig` on Windows carries an
-`hwnd: Option<*mut c_void>` that SMTC needs populated with a real window handle. sone-windows spawns
+`hwnd: Option<*mut c_void>` that SMTC needs populated with a real window handle. Sone-windows spawns
 a task that polls `app_handle.get_webview_window("main")` every 100 ms for up to 5 seconds before it
 can build the config — *"We need to wait for the main window to be created to get HWND"*
 (`ref:sone-windows/src-tauri/src/media_controls.rs:14-46`). **Consequences:** (1) a
 `streamboat-server` Windows service or CLI daemon with no window gets **no SMTC integration at all**
 — the Windows analogue of §4's "no session bus on headless" rule, and needs the same
 do-not-depend-on-it treatment; (2) media-control init must be sequenced behind window creation on
-Windows, never done at app start unconditionally; (3) sone-windows's own handler wires only
+Windows, never done at app start unconditionally; (3) Sone-windows's own handler wires only
 Play/Pause/Toggle/Next/Previous/Stop, leaving `Seek`/`SetPosition`/`SetVolume` unimplemented — its
 SMTC seek bar and volume are inert, a completeness bar streamboat should clear rather than copy.
 
 ## 6. Idle inhibition on Windows and macOS has no reference implementation
 
 §2 gives Linux a complete four-layer answer; no reference client fills in Windows or macOS.
-sone-windows's `idle_inhibit.rs` contains only the Linux D-Bus/portal interfaces and is dead code on
+Sone-windows's `idle_inhibit.rs` contains only the Linux D-Bus/portal interfaces and is dead code on
 the other two platforms; Strawberry has no `SetThreadExecutionState`/`IOPMAssertion` calls anywhere.
 Write from platform APIs directly: **Windows** —
 `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` while playing,

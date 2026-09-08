@@ -25,7 +25,8 @@ Every credential-free test in the reference set exists because somebody split "f
 `parse_home_tabs`, `parse_playlist_items`, `parse_v1_module` and `DirectHitItem::from_typed_value`
 are all pure functions over `&str`/`serde_json::Value`, so their tests are literal JSON literals
 with no network, no auth and no async (ref:sone/src-tauri/src/tidal_api.rs:6290-6400). Sone has
-roughly 145 inline `#[test]` functions across its Rust sources, 51 of them in `tidal_api.rs` alone.
+151 tests (145 `#[test]` + 6 `#[tokio::test]`) across its Rust sources, 51 of the `#[test]`
+functions in `tidal_api.rs` alone.
 
 **Rule for streamboat:** every TIDAL response type gets a pure `parse_*` (or `TryFrom<Bytes>`)
 function that takes bytes/JSON and returns a typed result or a typed error. HTTP, auth and retry
@@ -34,7 +35,7 @@ live outside it. This one rule is what makes the rest of this section cheap.
 ## 2. Layer 1 — pure parser tests with captured fixtures (the bulk of the suite)
 
 - Store real captured responses as files under `tests/fixtures/api/<endpoint>/<case>.json`, not as
-  inline literals, once you have more than a handful. Inline literals (sone, tidal-sdk-web) are
+  inline literals, once you have more than a handful. Inline literals (Sone, tidal-sdk-web) are
   fine at small scale and much easier to read in the diff.
 - Capture at least: a full success, an empty/missing-section success, a null-valued field, an
   unknown enum value, an error envelope for each documented sub-status, and a paginated page 2.
@@ -49,6 +50,19 @@ live outside it. This one rule is what makes the rest of this section cheap.
   dangerous, but a fixture must never contain an `access_token`, `refresh_token`, `sessionId`,
   `userId`, email, or a real subscriber's playlist contents. Write a `scripts/scrub-fixture` that
   runs over every capture and fails CI if a token-shaped string survives.
+- **Gap — fixture provenance (real captures vs. hand-written synthetic JSON) is a legal/ToS
+  decision, not only a redaction problem, and the two reference precedents actually split.** A
+  committed fixture body carries TIDAL's own editorial copy, catalogue metadata and cover-art URLs
+  too — not just tokens — and `docs/legal.md` needs to say whether redistributing that in a public
+  repo fits the project's posture. Sone's ~51 parser tests use hand-written `serde_json::json!`
+  literals shaped like real responses, not captures; tidal-sdk-web's manifest-parser fixtures are
+  real captured base64 manifests — but that's TIDAL's own repo committing TIDAL's own payloads, not
+  a third-party client doing it. Default for streamboat: minimal synthetic fixtures
+  (structure-preserving, content-invented) for catalogue/editorial payloads; real captures only
+  where the exact bytes are the thing under test (manifests, error envelopes, unusual encodings),
+  trimmed to only the fields the parser reads. Record the decision in `docs/legal.md`, and encode
+  the rule in `scripts/scrub-fixture` (strip long free-text description/bio fields, not just
+  token-shaped strings).
 - Record the capture date and the endpoint+params at the top of each fixture (a sibling
   `.meta.json`): capture date (UTC), method, path template and query params (values redacted), the
   streamboat version and client-id variant used to capture it, response status, and the TIDAL
@@ -91,11 +105,10 @@ Retry-After then success", and "5xx, 5xx, success" backoff sequences determinist
    seconds with a 5-second default when the header is absent or in HTTP-date form, and stores an
    absolute deadline via `fetch_max` so concurrent 429s can only lengthen it
    (ref:sone/src-tauri/src/rate_gate.rs).
-3. Terminal playback sub-statuses are not retried. **Verified at source, not contiguous**:
-   `TERMINAL_SUB_STATUSES = [4005, 4010, 4030, 4031, 4032, 4034, 4035]` — `4006` ("streaming
-   privileges lost — recovers") and `4033` ("subscription up-sell") are deliberately excluded as
-   recoverable (ref:sone/src-tauri/src/tidal_api.rs:16-18, tests at lines 6746, 6755-6756). Do not
-   write this as the range `4030–4035`.
+3. Terminal playback sub-statuses are not retried. Not contiguous — canonical table (and the list
+   to assert against in this test) is owned by `tidal-api/references/transport.md` §6; `4006`
+   ("streaming privileges lost — recovers") and `4033` ("subscription up-sell") are deliberately
+   excluded as recoverable. Do not write this as the range `4030–4035`.
 4. The quality fallback cascade stops at the first success and does not cascade past a rate-limit
    or terminal error.
 5. Token refresh persists the new tokens to storage exactly once and does not lose the refresh
@@ -144,6 +157,11 @@ Design constraints, all evidenced:
   (ref:python-tidal/tests/conftest.py:100-131).
 - Use a generous network timeout and a stable, well-known asset. Strawberry uses 30 s and a
   "canary track" with a fallback track when a provider's slug router collides.
+- **A second, cheap data point makes "python-tidal has no CI test job" worse than it looks**:
+  `ref:python-tidal/tox.ini` declares `envlist = py39,py310,py311`, while `lint.yml` — the only
+  workflow that runs at all — pins `python-version: 3.13`. The tox matrix covers three Python
+  versions nothing ever runs in CI, and the version the project actually lints under isn't in that
+  matrix. Treat any upstream compatibility statement for Python newer than 3.11 as unverified too.
 
 Recommended shape for streamboat: `streamboat-test --live` (or `cargo test --features live-tests` /
 `pytest --live` **[STACK]**) that:
@@ -201,16 +219,29 @@ Targets, in priority order:
 4. The DASH segment-URL builder — a `$Number$` substitution that produces a URL pointing off-host
    must be rejected, not fetched. Pin the expected CDN host set and assert every derived URL is
    within it.
-5. **The `tidal://` URI handler** — this is the one input that arrives unsolicited from the open
-   internet: registering `x-scheme-handler/tidal` means any web page the user visits can invoke
-   `streamboat play <arbitrary string>` as a process argument, pre-authentication. Fuzz the parser
-   against an allowlist of shapes (`tidal://track/<digits>`, `album`, `playlist/<uuid>`, `artist`,
-   `mix`) with hard rejection of everything else — path traversal, absurd lengths, embedded
-   newlines/NULs, non-ASCII homoglyphs, anything that would be interpolated into a shell, a
-   filesystem path, or an outbound URL. Never pass the raw argument to a subprocess or to the API
-   host without re-composing the request from the parsed id. tidalt's `Exec=tidalt play %u`
-   (ref:tidalt/cmd/tidalt/tidalt.desktop) plus its D-Bus-forwarding `play.go` is the exact code
-   shape to threat-model.
+5. **The `streamboat://` (registered by default) and `tidal://` (parsed, opt-in-claim only — see
+   `tidal-api/references/auth.md` §13) URI handlers** — this is the one input that arrives
+   unsolicited from the open internet: registering a scheme means any web page the user visits can
+   invoke `streamboat play <arbitrary string>` as a process argument, pre-authentication, and both
+   schemes route through the same parser. Fuzz the parser against an allowlist of shapes
+   (`{scheme}://track/<digits>`, `album`, `playlist/<uuid>`, `artist`, `mix`) with hard rejection of
+   everything else — path traversal, absurd lengths, embedded newlines/NULs, non-ASCII homoglyphs,
+   anything that would be interpolated into a shell, a filesystem path, or an outbound URL. Never
+   pass the raw argument to a subprocess or to the API host without re-composing the request from
+   the parsed id. tidalt's `Exec=tidalt play %u` (ref:tidalt/cmd/tidalt/tidalt.desktop, using
+   `tidal://` since tidalt does not have streamboat's scheme-collision problem) plus its
+   D-Bus-forwarding `play.go` is the exact code
+   shape to threat-model on Linux. **Not Linux-only — threat-model all three OSes.** Sone registers
+   the scheme via `tauri.conf.json`'s `deep-link.desktop.schemes` and
+   `app.deep_link().register_all()` at startup (ref:sone/src-tauri/tauri.conf.json,
+   ref:sone/src-tauri/src/lib.rs), which writes Windows `HKCU\Software\Classes` registry keys at
+   runtime — exactly as reachable from an untrusted web page as the Linux handler. tidal-hifi
+   declares one cross-platform block (`protocols: {name: "tidal", schemes: ["tidal"]}`,
+   ref:tidal-hifi/build/electron-builder.base.yml:60-63) that electron-builder expands into both the
+   macOS `CFBundleURLTypes` entry and the Windows registry. The allowlist validation above must run
+   on the forwarded argument in all three entry paths, paired with second-instance argument
+   forwarding (`tauri_plugin_single_instance` in Sone's case) — see
+   `packaging-and-distribution.md` §9 for the packaging side of this.
 
 Corpus: seed from the committed fixtures (the tidal-sdk-web test file alone gives DASH-FLAC,
 DASH-AAC, BTS-MP3 and EMU-HLS manifests to seed with). Run the fuzzer in CI for a bounded time
@@ -222,13 +253,17 @@ decoded size.
 
 **Run fuzz targets under a sanitizer, not just a plain build.** A fuzzer without ASan/UBSan is only
 as good as its oracle — a heap overflow or use-after-free in a demuxer/decoder path shows up as a
-pass, not a crash. No reference project runs any sanitizer, Valgrind, Miri or CodeQL (grep for
-`fsanitize|ASAN|UBSAN|valgrind|miri` across all 21 checkouts hits only a false positive in a
-Strawberry translation file; zero CodeQL/OpenSSF-Scorecard workflows exist) — this is a
-no-precedent addition, not a copyable pattern. Run the fuzz targets under ASan+UBSan (add TSan for
-gapless/queue scheduling code, which is inherently multi-threaded) nightly given the runtime cost;
-if the stack is Rust, also run the pure-parser suite under Miri and require review on every
-`unsafe` block; run the committed fuzz-crasher regression corpus under the sanitizer build too.
+pass, not a crash. No reference project runs any sanitizer, Valgrind, Miri or CodeQL. **Correction
+to how that was previously verified**: grep for `fsanitize|ASAN|UBSAN|valgrind|miri` (excluding
+vendor) actually returns at least 10 files with matches — several `strawberry/src/**` files and a
+tidal-sdk-android test — every one a case-insensitive substring false positive (`HasAnyProviders`,
+`unlockCanvasAndPost` match `asan`), not the single hit in one translation file an earlier pass
+claimed. The **conclusion is unaffected**: zero real sanitizer/Valgrind/Miri usage, and a separate
+`codeql|scorecard` grep across all workflow YAML also returns zero files — this is a no-precedent
+addition, not a copyable pattern. Run the fuzz targets under ASan+UBSan (add TSan for gapless/queue
+scheduling code, which is inherently multi-threaded) nightly given the runtime cost; if the stack
+is Rust, also run the pure-parser suite under Miri and require review on every `unsafe` block; run
+the committed fuzz-crasher regression corpus under the sanitizer build too.
 
 ## 7. Audio pipeline tests
 
@@ -252,11 +287,18 @@ What the references do:
 Recommended layers for streamboat:
 
 1. **Pure logic, no device.** Sample-rate/bit-depth negotiation table, ReplayGain gain computation
-   — **verified at source**: `gain = 0.8 * min(10^((replay_gain + 4) / 20), 1 / peak)`, i.e.
-   pre-amp `4.0` dB, headroom factor `0.8`, `peak` defaulted to `1.0` when absent/non-positive, and
-   `gain = 1.0` when `replay_gain` is `None` (ref:sone/src-tauri/src/commands/playback.rs:9-20) —
-   quality-ladder mapping, the ALSA/WASAPI fallback state machine, queue/gapless scheduling
-   decisions. These run everywhere, including CI, and should be the majority of audio tests.
+   — canonical formula owned by `audio-pipeline/references/playback-behavior.md` §4: TIDAL's own
+   Android/web SDKs compute `gain = min(10^((replay_gain + pre_amp) / 20), 1 / peak)` with
+   `pre_amp = 4.0` dB and no extra headroom factor. **Correction, previously stated wrong here**:
+   this file used to assert Sone's `gain = 0.8 * min(...)` variant as "verified at source" and as
+   the test assertion — the `0.8` is Sone's own added ~1.9 dB attenuation
+   (`ref:sone/src-tauri/src/commands/playback.rs:9-20`), not TIDAL's formula (TIDAL's Android SDK,
+   `ref:tidal-sdk-android/.../LoudnessNormalizer.kt`, has no `0.8` anywhere). Write the unit test
+   against TIDAL's formula (no `0.8`) unless the owner deliberately wants Sone's
+   quieter-than-TIDAL output; `peak` defaults to `1.0` when absent/non-positive, `gain = 1.0` when
+   `replay_gain` is `None`. Also test quality-ladder mapping, the ALSA/WASAPI fallback state
+   machine, queue/gapless scheduling decisions. These run everywhere, including CI, and should be
+   the majority of audio tests.
 2. **Golden decode.** Decode a committed 5-second FLAC and a 5-second AAC to PCM and compare
    against a committed golden PCM (or its SHA-256) — this catches decoder configuration
    regressions and, if you implement a bit-perfect path, proves no resampling or dithering
@@ -281,7 +323,7 @@ Recommended layers for streamboat:
 
 ## 8. UI tests **[STACK]**
 
-- Component-level with a DOM: sone runs vitest + jsdom + `@testing-library/react` with a
+- Component-level with a DOM: Sone runs vitest + jsdom + `@testing-library/react` with a
   dedicated `vitest.config.ts` separate from the app's Vite config, covering 46 test files across
   components, hooks and contexts (~19 of them directly under `src/components/`)
   (ref:sone/vitest.config.ts, ref:sone/src/components/*.test.tsx).
@@ -349,9 +391,12 @@ one lands, because it grows without bound otherwise: a byte cap per fixture (aud
 <200 KB per §7; extend the cap to JSON captures, gzip large ones), generate audio goldens from a
 tone/sweep at test time where determinism allows and commit only the SHA-256 rather than the PCM,
 keep fuzz crashers minimised before committing, and decide explicitly for or against Git LFS now
-because switching later rewrites history. Only 1 of 21 checkouts uses LFS: tidalswift's
-`.gitattributes` routes `*.jpg|*.png|*.pdf|*.zip|*.tar|*.gz` through `filter=lfs`, and only for
-README screenshots, not test data (ref:tidalswift/.gitattributes). Strawberry's 12-format audio
+because switching later rewrites history. Only 1 of 21 checkouts uses LFS: tidalswift's full
+`.gitattributes` is `Frameworks/* linguist-vendored` plus `filter=lfs diff=lfs merge=lfs -text` on
+`*.jpg`, `*.jpeg`, `*.png`, `*.gif`, `*.heic`, `*.pdf`, `*.zip`, `*.tar`, `*.gz` — i.e. every image
+format the README's screenshots use (not just `*.jpg`/`*.png`) plus archive formats, and only for
+README screenshots and a vendored `Frameworks/` directory, not test data
+(ref:tidalswift/.gitattributes). Strawberry's 12-format audio
 corpus (ref:strawberry/tests/data/audio/) stays in plain git with no `.gitattributes` at all. Plain
 git for small fixtures is still the right default; the corrected precedent is "one of 21 uses LFS,
 for marketing screenshots only" rather than "nobody uses it".
@@ -363,4 +408,4 @@ a fixture file on a Windows checkout and a byte-compare fails only on that leg, 
 mysterious platform bug. Commit at minimum: `* text=auto eol=lf`; `*.sh text eol=lf`; `*.bat text
 eol=crlf`; `tests/fixtures/** binary`; `*.flac`, `*.m4a`, `*.pcm`, `*.wav binary`; and mark
 generated packaging fragments (`*.wxs`, `*.nsi` — see `packaging-and-distribution.md` on
-sone-windows) `linguist-generated`.
+Sone-windows) `linguist-generated`.

@@ -88,27 +88,10 @@ an in-app feature.
 
 ## 4. OS media controls (MPRIS/SMTC/Now Playing) — `souvlaki` covers all three; reference clients split anyway
 
-**`souvlaki` 0.8.3 actually covers all three platforms in one crate.** Its resolved dependency tree
-(`ref:sone-windows/src-tauri/Cargo.lock:5041-5055`) pulls in `dbus`+`dbus-crossroads` (Linux MPRIS
-— crates.io also documents `use_dbus`/`use_zbus` feature-selectable Linux backends), `windows 0.44`
-(Windows SMTC), and `cocoa`/`objc`/`dispatch` (macOS `MPNowPlayingInfoCenter`). Do not repeat "no
-single crate unifies X" as fact here — it's contradicted by `souvlaki`'s own dependency graph. What
-*is* true is only that the reference clients chose not to use it everywhere:
-
-- sone-windows (a third-party fork of Sone by a different author, not Sone's own Windows port —
-  `references/sources.md`) uses `souvlaki` (`ref:sone-windows/src-tauri/Cargo.toml:64`) for
-  **Windows SMTC only** — its README (`ref:sone-windows/README.md:69`) describes only "Windows SMTC
-  Integration," no MPRIS/Now Playing claim.
-- Sone on Linux uses `mpris-server = "0.9"` instead (`ref:sone/src-tauri/Cargo.toml:66`) — a
-  richer, async-native MPRIS surface than `souvlaki` exposes; plausibly why Sone picked it over
-  `souvlaki` on Linux even though `souvlaki` can reach D-Bus there too.
-- High Tide implements MPRIS itself via Python D-Bus (`ref:high-tide/src/mpris.py`).
-- tidal-hifi (Node) has its own MPRIS service.
-
-**Evaluate `souvlaki` for all three platforms before assuming a split is necessary** — compare its
-per-platform surface against a dedicated library (does it expose everything `mpris-server` does on
-Linux? what does its macOS backend actually cover?) rather than defaulting to three separate
-integrations. Hardware media keys come largely free once whichever integration is chosen exists —
+Full analysis (souvlaki's dependency tree proving it covers all three platforms, the MSRV finding,
+the Windows-HWND finding, and why the reference clients split by platform anyway) is owned by
+`audio-pipeline/references/os-integration.md` §1 and §5 — cite it rather than restating. Hardware
+media keys come largely free once whichever integration is chosen exists —
 tidal-hifi binds exactly three OS-level key identifiers to its playback controls,
 `MediaPlayPause`, `MediaNextTrack`, `MediaPreviousTrack` (`ref:tidal-hifi/src/constants/mediaKeys.ts`),
 which is the standard Electron/OS media-key set; an MPRIS/SMTC/Now Playing integration typically
@@ -195,17 +178,15 @@ the official app.
 Material for SKILL.md "Open decisions" #7 (headless mode's control contract) — three proven shapes,
 none mutually exclusive:
 
-**tidal-hifi's REST API** (`ref:tidal-hifi/src/features/api/swagger.json`) — a minimal but complete
-playback-control contract, proven in production against the real client:
-`/player/play`, `/player/pause`, `/player/playpause`, `/player/next`, `/player/previous`,
-`/player/seek/absolute`, `/player/seek/relative`, `/player/volume`, `/player/shuffle/toggle`,
-`/player/repeat/toggle`, `/player/favorite/toggle`, plus read endpoints `/current` and
-`/current/audio-quality` (`{quality, badgeText, bitDepth, sampleRate, codec}` — see
-`quality-playback-queue.md` §2). The same handlers are also exposed unprefixed (`/play`, `/pause`,
-`/playpause`, `/next`, `/previous`, `/favorite/toggle`) as legacy aliases, plus `/image`,
-`/current/image` and `/health` — a worked example of versioning a local control surface without
-breaking existing clients (relevant to Open decision #7). Non-player settings endpoints exist too:
-`/settings/skipped-artists`, `/settings/skipped-tracks` (+ `/current`, `/delete` on each).
+**tidal-hifi's REST API** — a minimal but complete playback-control contract, proven in production
+against the real client. Full endpoint vocabulary and the enabled-by-default-with-no-auth
+anti-pattern to explicitly reject are owned by
+`headless-and-tidal-connect/references/headless-daemon-precedents.md` §4 and
+`headless-and-tidal-connect/references/daemon-architecture.md` §3 — cite them rather than
+restating. Feature-relevant detail this skill adds: `/current/audio-quality` returns
+`{quality, badgeText, bitDepth, sampleRate, codec}` (see `quality-playback-queue.md` §2), and the
+API's legacy-alias versioning (unprefixed routes kept alongside `/player/*`) is a worked example of
+versioning a local control surface without breaking existing clients (relevant to Open decision #7).
 
 **Sone's local services** (`ref:sone/src-tauri/src/lib.rs:49,51,212,215`, `ref:sone/README.md`) —
 two independent, off-by-default local servers: an **MCP server on port 5577** that lets any MCP

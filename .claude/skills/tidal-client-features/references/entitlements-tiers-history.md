@@ -54,7 +54,11 @@ namespace exists in the desktop action list. Offline is mobile/tablet/watch only
 
 **Device cap: 5 devices offline, 1 device online, simultaneously** — this is the figure to use
 everywhere; the "3 devices" figure that circulates elsewhere is wrong. Source:
-support.tidal.com/hc/en-us/articles/201623252, "How Many Devices Can I Use Simultaneously?".
+support.tidal.com/hc/en-us/articles/201623252, "How Many Devices Can I Use Simultaneously?" —
+**[verified-web, unfetched]** like its neighbours in this section (support.tidal.com is blocked to
+direct fetch in the research environment, so this is a search-engine-summary citation, not a full
+read); re-confirmed against the support-article summary during this skill's 2026-09 review pass, so
+treat it as solid despite the tag, not as a claim still needing a first look.
 
 `UserClient` carries `authorizedForOffline`/`authorizedForOfflineDate` per client — the mechanism,
 not the count.
@@ -91,7 +95,13 @@ streaming quality is still settable — `[verified-web, unfetched support articl
 Watch/Wear** (playback control and, on Watch, its own offline listening). None of this is buildable
 now (mobile is future scope, per SKILL.md "Owner decisions already made"), but each is a reason the
 core (quality selection, offline/cache model, playback control surface) must not hard-code
-desktop-only assumptions — see Implication 12 in the main report.
+desktop-only assumptions — Implication 12 in the main report names the two concrete constraints
+this binds today, not just a future aspiration: **(1) no GTK/Qt assumptions in the core** — a
+desktop-only UI toolkit dependency in the shared core would have to be ripped out to ever reach
+mobile, so keep the core UI-toolkit-agnostic even while only building desktop+headless now; **(2)
+no desktop-only crypto for token storage** — e.g. a Windows-DPAPI-only or macOS-Keychain-API-only
+token encryption call baked into the core (rather than behind a per-OS storage interface, see
+§7 below) would be a rewrite, not a port, once a mobile keychain/keystore is added.
 
 ## 4. Streaming-privileges enforcement
 
@@ -186,13 +196,9 @@ path first: every PKCE session needs it regardless of whether the device-code-on
 `countryCode` is mandatory on essentially every subsequent catalogue call — python-tidal injects it
 into every request. Fetch and cache this immediately after auth, before making any other API call.
 
-**Token storage is a genuinely per-OS problem, not a single library call** — three different
-patterns across the reference clients, none of them portable:
-- High Tide: freedesktop Secret Service via **libsecret** (Linux-only).
-- Sone: settings JSON encrypted at rest, master key in the **OS keyring + AES-256-GCM** file
-  fallback (cross-platform via a keyring crate).
-- tidalt: system **keychain with an age-encrypted file fallback** when no keychain is available.
-
-Budget for at least one keyring-backed path per target OS plus a documented, restrictive-permission
-file fallback for headless/server mode (no keyring available at all) — the same "no single
-crate covers every platform" shape as OS media controls (`remote-playback-connect-controls.md` §4).
+**Token storage is a genuinely per-OS problem, not a single library call.** Per-OS mechanism table
+and the keyring-plus-encrypted-file-fallback recommendation are owned by
+`streamboat-engineering-baseline/references/secrets-and-tokens.md` §2-3 — cite it rather than
+restating; the same "no single crate covers every platform" shape recurs for OS media controls
+(`remote-playback-connect-controls.md` §4, owned by `audio-pipeline/references/os-integration.md`
+§1 and §5).

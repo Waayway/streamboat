@@ -42,11 +42,17 @@ model below.
 
 **Collaborative playlists exist as a documented, first-class TIDAL feature.** No `collaborat*`
 action appears in the desktop Redux dump — consistent with a mobile/web-first rollout, not with
-non-existence. The v2 spec defines the full flow: `/collaborationInvites` (GET by `filter[code]`,
-POST create, DELETE — an owner mints an invite code), `/collaborationInviteRedemptions` (a redeemer
-redeems it), and `playlists/{id}/relationships/{collaborators,collaboratorProfiles}`. The generated
-Android SDK has a dedicated `CollaborationInvites` Kotlin interface confirming this is a real,
-code-generated API surface
+non-existence. The v2 spec defines the full flow, and — like `/comments` above — the method set is
+per-path, not one flat set (verified against
+`ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json`): **`/collaborationInvites` is GET
+(list/lookup an invite) and POST (an owner mints one); `filter[code]` on the GET is `required: true`
+in the spec — it is not an optional lookup filter, that's the only way to resolve an invite code to
+a resource. `/collaborationInvites/{id}` is GET and DELETE** (an owner revokes one). Relationships
+on an invite: `/collaborationInvites/{id}/relationships/subject` (the playlist it invites into) and
+`/relationships/owners`. `/collaborationInviteRedemptions` is where a redeemer redeems a code, and
+`playlists/{id}/relationships/{collaborators,collaboratorProfiles}` lists who has joined. The
+generated Android SDK has a dedicated `CollaborationInvites` Kotlin interface confirming this is a
+real, code-generated API surface
 (`ref:tidal-sdk-android/tidalapi/src/main/kotlin/com/tidal/sdk/tidalapi/generated/apis/CollaborationInvites.kt`).
 
 **Playlist folders**: create, rename, move items in/out, remove, add favourites to folder, sort
@@ -88,10 +94,23 @@ Playlists, Videos, Mixes & Radio. Sort orders (`ref:python-tidal/tidalapi/types.
 
 Direction: `ASC` / `DESC`.
 
-**Favorites shape** (a flat object of bare arrays — this is confirmed and correct as-is, and is a
-*different shape* from `UserProfile`'s following lists, which use an `{items: [...]}` wrapper — see
-`social-feed-creator.md` §2): `favorites: { albums[], artists[], mixes[], playlists[], tracks[],
-users[], videos[] }` — note **users are favouritable too**. Mixes use a distinct endpoint family:
+**Favorites shape**: a local *id cache*, not a list of item objects, and its element types are
+mixed, not uniformly numeric — get both of those wrong and the model breaks
+(`ref:TidaLuna/plugins/lib/src/redux/types/store/index.ts:102-110`):
+
+```
+Favorites {
+  albums: number[], artists: number[], tracks: number[], videos: number[],   // numeric TIDAL ids
+  mixes: string[], playlists: string[], users: string[]                      // string ids (UUIDs)
+}
+```
+
+This is a flat object of bare arrays (not `{items: [...]}` wrapped) — that part is confirmed and
+correct as-is, and is the *opposite* shape from `UserProfile`'s following lists, which use an
+`{items: [...]}` wrapper (see `social-feed-creator.md` §2) — but treat `favorites` itself as "which
+ids the account has favourited," not as "the My Collection list payload": the actual list contents
+(title, cover, duration, etc.) come from `users/{id}/favorites/*` (below), keyed by these ids.
+Note **users are favouritable too**. Mixes use a distinct write endpoint family:
 `favorites/mixes/add`, `favorites/mixes/remove`.
 
 **API**: `users/{id}/favorites/{albums,artists,tracks,videos,playlists}` with
@@ -189,13 +208,10 @@ accumulated listening time keyed by product id), and `cloudQueue/FILL_CLOUD_QUEU
 **Do not build Recently Played from a local play-history list — it will not match the real client.**
 Recently Played on Home, and Home personalisation generally (Daily Discovery, New Arrivals), is fed
 by **`play_log` event-batch telemetry**, not by anything the client reads back: Sone had to
-implement `play_log` batches to `https://ec.tidal.com/api/event-batch` before Recently Played
-reflected its own playback (`ref:sone/src-tauri/src/tidal_report/event.rs`, `ref:sone/README.md`).
-Wire-format detail (endpoint auth, batching, retry) is in `docs/research/tidal-api.md` §10; the
-payload's feature-relevant fields are: `playbackSessionId`, `isPostPaywall`, `productType`,
-`requestedProductId`, `actualProductId`, `actualAssetPresentation`, `actualAudioMode`,
-`actualQuality`, `startTimestamp`/`endTimestamp`, `startAssetPosition`/`endAssetPosition`,
-`actions[]`, `sourceType`/`sourceId`.
+implement `play_log` batches before Recently Played reflected its own playback
+(`ref:sone/src-tauri/src/tidal_report/event.rs`, `ref:sone/README.md`). Full wire format is owned
+by `tidal-api/references/play-logging-and-privileges.md` §1-4 — cite it rather than restating the
+payload/headers here.
 
 **Consequence, not just a missing feature**: skipping play reporting doesn't just leave Recently
 Played empty in streamboat — it silently degrades the *user's own TIDAL account* (a dead Recently

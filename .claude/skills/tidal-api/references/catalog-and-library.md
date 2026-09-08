@@ -68,9 +68,10 @@ mediaMetadata.tags[], index, itemUuid, isrc, description, version, copyright, bp
 peak, replayGain, mixes{}`.
 
 `mediaMetadata.tags` is the **availability advertisement**: `LOSSLESS`, `HIRES_LOSSLESS`,
-`DOLBY_ATMOS` (historically also `SONY_360RA`, `MQA`). Check it before requesting Hi-Res —
-mopidy-tidal's pattern: if the requested tier is `HI_RES_LOSSLESS` but `HIRES_LOSSLESS` isn't in
-`tags`, warn and fall back to `LOSSLESS` before even calling playbackinfo.
+`DOLBY_ATMOS` (historically also `SONY_360RA`, `MQA`). Check it before requesting Hi-Res — the
+`HI_RES_LOSSLESS` (enum) vs `HIRES_LOSSLESS` (tag) naming mismatch and mopidy-tidal's pre-flight
+check pattern are owned by `tidal-oss-landscape/references/api-auth-streaming.md` §7; cite it
+rather than restating.
 
 **Availability gating**: `allowStreaming` (aka `available`) and `streamReady` are the two booleans to
 respect — detail fields are only populated when `available` is true. Album-level `streamReady` and
@@ -81,7 +82,7 @@ browse time.
 ## 4. What does NOT exist: charts, new releases, editorial
 
 No dedicated `/charts` REST endpoint exists anywhere in the reference checkouts — stated explicitly,
-not by silence: grepping all 23 checkouts for `chart|new_release|new-release` finds only a
+not by silence: grepping all 21 checkouts for `chart|new_release|new-release` finds only a
 `NEW_RELEASE_MIX` mix type and an unrelated cache comment. The surfaces that carry this content are:
 the page slugs `pages/rising`, `pages/explore`, `pages/suggested_new_tracks_for_you`,
 `pages/suggested_new_albums_for_you` (§5), the `NEW_RELEASE_MIX` mix type (§7's mix types), and on
@@ -188,7 +189,7 @@ GET    playlists/{uuid}/tracks?limit&offset&order&orderDirection   -> also retur
 GET    playlists/{uuid}/items?limit&offset    -> tracks AND videos, each wrapped {item, type}
 POST   playlists/{uuid}/items                 If-None-Match: <etag>
        form: trackIds=1,2,3 & toIndex=<n> & onDupes=ADD|SKIP|FAIL & onArtifactNotFound=SKIP|FAIL
-       -> {addedItemIds: [...]}                (FAIL is UNVERIFIED for adds — see note below)
+       -> {addedItemIds: [...]}                (FAIL attested in Sone's shipped code, not observed live — see note below)
 POST   playlists/{uuid}/items                 If-None-Match: <etag>
        form: fromPlaylistUuid=<uuid> & onDupes & onArtifactNotFound     (merge another playlist)
 POST   playlists/{uuid}/items/{i,j,k}         If-None-Match; form toIndex=<n>   (reorder)
@@ -204,15 +205,23 @@ Two things to internalize:
 - **Reorder and delete address items by index, not by id.** Reference clients implement
   "move/remove by id" by fetching all tracks and computing the index — racy and expensive on a large
   playlist. Wrap it in one place.
-- **The ETag must be re-fetched after every mutation.** Fetch etag → mutate → refetch, as one helper.
+- **The ETag must be re-fetched after every mutation.** Fetch etag → mutate → refetch, as one
+  helper. Full ETag write-precondition mechanics (default `"*"`, the unexploited read-revalidation
+  follow-on) are owned by `tidal-oss-landscape/references/sone-deep-dive.md` §4b — cite it rather
+  than re-deriving the pattern.
 
-**`onDupes=FAIL` on playlist item adds is unverified — narrower than it may look.** python-tidal only
-ever sends `ADD`/`SKIP` for `onDupes` on this endpoint, at both call sites (`add()` and `merge()`).
-**`onArtifactNotFound=FAIL` *is* verified** — python-tidal's `merge()` (which POSTs to this same
-endpoint to merge another playlist in) sends `"FAIL"` when `allow_missing` is false, and the v2
-favorites/mixes endpoints use it too. If streamboat builds a playlist-import feature around "fail
-loudly on a duplicate," `onDupes=FAIL` is the one value to test against a live account first —
-`onArtifactNotFound` does not need that caveat.
+**`onDupes=FAIL` on playlist item adds: attested in Sone's shipped code, not observed against a
+live response.** python-tidal only ever sends `ADD`/`SKIP` for `onDupes` on this endpoint, at both
+call sites (`add()` and `merge()`) — but Sone ships `onDupes=FAIL` in production
+(`ref:sone/src-tauri/src/tidal_api.rs:1996`, alongside `onArtifactNotFound=FAIL`; a second Sone
+call site at `:3636` uses `"SKIP"`), which is a stronger evidence tier than "unverified" — this was
+previously understated here. **`onArtifactNotFound=FAIL` *is* independently verified** — python-tidal's
+`merge()` (which POSTs to this same endpoint to merge another playlist in) sends `"FAIL"` when
+`allow_missing` is false, and the v2 favorites/mixes endpoints use it too. Full write-path/ETag
+detail for this endpoint (deepest treatment) is in
+`tidal-oss-landscape/references/sone-deep-dive.md` §4b. Still worth one live-account test before
+depending on `onDupes=FAIL` in production error handling, since it's shipped-code evidence, not an
+observed response.
 
 **Other user endpoints**: `GET users/{id}/playlists` (created playlists, v1),
 `GET users/{id}/playlistsAndFavoritePlaylists?limit=50` (**server-capped at 50 — and its items are
@@ -301,6 +310,14 @@ projects hit real 403s and documented the exact valid set:
 Placeholder ids (use when an entity has no artwork): album `0dfd3368-3aa1-49a3-935f-10ffb39803c0`,
 artist `1e01cdb6-f15d-4d8b-8440-a047976c1cac`.
 
+**Trap: don't reuse one size list across entity types.** Strawberry's user-facing cover-size setting
+offers exactly `160x160`, `320x320`, `640x640`, `750x750`, `1280x1280`
+(`ref:strawberry/src/settings/tidalsettingspage.cpp:74-78`) — a union of the album-cover set (80,
+160, 320, 640, 1280) and the artist-picture set (160, 320, 480, 750). If that single setting, or any
+client-wide "cover size" constant built the same way, is applied to an artist-picture URL instead of
+an album-cover URL, `640` and `1280` will 403 (the artist-picture table above tops out at 750). Keep
+the per-entity valid-size table above as the source of truth; never a single shared size constant.
+
 Genre images use a **different, older host**: `http://resources.wimpmusic.com/images/<path>/460x306.jpg`
 — plain HTTP, legacy brand; don't build new features around it.
 
@@ -311,7 +328,12 @@ fetches outside your authenticated API client.
 ## 11. Country, locale, availability
 
 `countryCode` comes from `GET /v1/sessions` (or, for Strawberry, straight from the OAuth token
-response — see `references/auth.md` §6) and must be sent on nearly every request. `locale` is
+response — see `references/auth.md` §6) and must be sent on nearly every request. Have a defined
+fallback for when that call hasn't run yet or fails: Sone's `TidalClient` struct initializes
+`country_code` to a hardcoded `"US"` before `get_session_info()` populates it
+(`ref:sone/src-tauri/src/tidal_api.rs:1307`) — a reasonable pattern (never send an empty
+`countryCode`), but pick the fallback deliberately rather than let an uninitialized field silently
+default to one region. `locale` is
 `en_US` in every unofficial-API client (BCP-47 hyphenated, `en-US`, on the official API — a real
 format difference, not a typo). Track-level availability signals: `allowStreaming`, `streamReady`,
 `premiumStreamingOnly`, `payToStream`, `adSupportedStreamReady`, `accessType`, `explicit`. The

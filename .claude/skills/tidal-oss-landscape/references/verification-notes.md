@@ -1,12 +1,17 @@
-# Verification notes — two fact-check passes, 2026-09-07 and 2026-09-08
+# Verification notes — three fact-check passes, 2026-09-07 and 2026-09-08 (×2)
 
 This is the audit trail for every correction and every new finding folded into this skill and
-into `docs/research/oss-landscape.md`. The research has been through **two** independent
+into `docs/research/oss-landscape.md`. The research has been through **three** independent
 fact-check passes: the first (2026-09-07, two reviewers) checked every numbered/quoted claim in
 the original research pass; the second (2026-09-08) re-checked the *first pass's own corrections*
 against source, the GitHub contributors API, and two more headless-precedent projects fetched
 directly from GitHub — and found that the first pass had itself introduced several errors while
-"correcting" the original draft (see item 2 in the table below, and §1b). Read this file when you
+"correcting" the original draft (see item 2 in the table below, and §1b); the third (2026-09-08,
+same day, a distinct pass) re-verified roughly 120 individual claims carried over from the first
+two (118 held up; two did not — see §1c) and, more consequentially, went looking for facts already
+sitting in the reference checkouts that neither prior pass had surfaced — 17 of them (§2c),
+including the queue data model, playlist-mutation ETag preconditions, the rate-limit contract's
+actual numbers, and the full identity Sone's play-reporting impersonates. Read this file when you
 need to know *why* a number in another reference file differs from what you might remember
 reading elsewhere, or when you want the primary evidence for a claim before repeating it in
 streamboat's own docs.
@@ -15,8 +20,10 @@ streamboat's own docs.
 
 1. Refuted claims, corrected — first pass (2026-09-07)
 1b. Refuted claims, corrected — second pass (2026-09-08), including the first pass's own errors
+1c. Refuted claims, corrected — third pass (2026-09-08), including the second pass's own errors
 2. New findings folded in — first pass
 2b. New findings folded in — second pass
+2c. New findings folded in — third pass (17 items)
 3. The general lesson: comments in reference-project source are not proof of behaviour
 4. What is still genuinely uncertain (see also SKILL.md's "Unverified" section)
 
@@ -51,6 +58,20 @@ streamboat's own docs.
 | 19 | "Sone's `legacy_auth_notice_count` never resets (comment says so); cap is unstated" | The doc comment claims cap 5 and "never resets" — **both wrong**: real cap is `LEGACY_AUTH_NOTICE_LIMIT: u8 = 3`, and the counter *is* reset to 0 at `auth.rs:395,561` | `sone-deep-dive.md` §4 |
 | 20 | "Contributor counts are not obtainable from this environment" | **Now obtainable** — see §2b below and `sone-deep-dive.md` §10 for real numbers | §4 below |
 
+## 1c. Refuted claims, corrected — third pass (2026-09-08)
+
+| # | Claim (some are the *second pass's own* errors) | Correction | Where the full detail now lives |
+| --- | --- | --- | --- |
+| 21 | Second pass: "Sone's position is polled, not pushed — every consumer (main UI, miniplayer, overlay, signal-path panel) polls independently on its own `setInterval`" | **Wrong.** Sone already implements anchor-poll-plus-interpolate: `playbackPosition.ts` polls the backend **once** every 2 s; every consumer (incl. the 500 ms progress-bar timer) reads a **local interpolation** of that single anchor; the miniplayer/overlay are **pushed to** at 1 s from the main webview, not polled. The real, previously-undocumented mechanism is a **settle-window guard**: a polled position too far ahead of the interpolated value within 3 s of a track change is discarded, because a `concat` gapless boundary makes GStreamer briefly report the *previous* track's cumulative runtime | `sone-deep-dive.md` §3 |
+| 22 | Comparison table A: "Sone-windows platforms: Windows (+Linux/mac via Tauri)" | **The macOS half is false.** Every sink-construction/device-enumeration branch in `sone-windows/src-tauri/src/audio.rs` is `#[cfg(target_os = "linux")]` or `#[cfg(target_os = "windows")]` only — there is **no macOS arm**, and `souvlaki` is declared only under the Windows target. Correct reading: Windows-only (Linux paths retained from upstream and still build there). This also means the entire reference set contains **zero** Tauri/Rust macOS TIDAL precedent | `sone-deep-dive.md` §9, `comparison-tables.md` §1, `packaging-distribution.md` §8 |
+
+Two smaller wording corrections surfaced by the same pass, not worth a full row: tidalrs's "it
+deliberately stops at return-a-manifest/URL, does not decrypt/download/play" downgrades to
+"contains no such code" — there is no README or source statement declaring this a policy
+(`project-profiles.md` §11); and mopidy-tidal's login-hack QR-leak note (already in this skill)
+gets a second, previously-undocumented sibling — the same file also calls `api.voicerss.org` with
+a hardcoded API key for TTS (`project-profiles.md` §5, `api-auth-streaming.md` §3).
+
 ## 2. New findings folded in
 
 These did not correct an existing claim; they filled gaps the original research pass left open,
@@ -80,7 +101,7 @@ reference file that owns its topic — this is just the index and the one-line "
 | Contributor counts are now obtainable (`GET /repos/{owner}/{repo}/contributors?per_page=100&anon=1`); real numbers: Sone 18 (97% one author), High Tide 45 (68% one author), mopidy-tidal 12 (3-person history), Strawberry ~5 significant, tidalrs 4 (89% one author) | Resolves Open question 18. Reveals every project but High Tide and mopidy-tidal is bus-factor 1 — including Strawberry, whose "very mature" rating this skill otherwise repeats uncritically | `sone-deep-dive.md` §10, `comparison-tables.md` §1 |
 | Sone's seek command must not detach the armed gapless next-track slot; bit-perfect-path position is derived from frames written, not a GStreamer query | Seeking was entirely absent from the original document despite being the transport operation most likely to break both `concat` gapless and the ALSA writer | `sone-deep-dive.md` §3a, `audio-engineering.md` §2 |
 | Sone's gapless *arming* policy (`useGaplessPrefetch.ts`) — does not gate on `isPlaying` because of a device-busy retry loop, dedups/coalesces/negative-caches prefetch requests | The frontend half of gapless an implementer must design from scratch; the original document only covered the Rust-side `concat` plumbing | `sone-deep-dive.md` §3b |
-| sone-windows' Windows GStreamer bundle has 16 plugins and **no AAC decoder at all** (`gstlibav` excluded) | Converts an abstract "does the bundle need libav" licensing question into a concrete codec-coverage cost: an LGPL-clean Windows bundle can't play TIDAL's HIGH/LOW (AAC) tiers | `sone-deep-dive.md` §9, `packaging-distribution.md` §4 |
+| Sone-windows' Windows GStreamer bundle has 16 plugins and **no AAC decoder at all** (`gstlibav` excluded) | Converts an abstract "does the bundle need libav" licensing question into a concrete codec-coverage cost: an LGPL-clean Windows bundle can't play TIDAL's HIGH/LOW (AAC) tiers | `sone-deep-dive.md` §9, `packaging-distribution.md` §4 |
 | Music videos are not in Sone's GStreamer/ALSA engine at all — they're `hls.js` in the webview, a second media path that disables gapless | Video was untreated anywhere in the original document despite the brief's "everything the native client does" | `sone-deep-dive.md` §5 |
 | Play-reporting wire format: `POST ec.tidal.com/api/event-batch`, `playbackSessionId` must be minted at stream-resolution time (same id as the official SDK's `x-playback-session-id`) | The original document named the *capability* with no endpoint/payload, so the owner's play-reporting decision (Open decision 6) had nothing to cost it against | `sone-deep-dive.md` §5 |
 | Music Assistant (fourth DASH strategy: ephemeral local HTTP route; track-ID-churn recovery) and lms-plugin-tidal (per-request `_nocache` flag; a 429-as-auth-failure anti-pattern) — both listed "unverified, not read" in the original document — were fetched directly from GitHub and read | Two more headless-server precedents beyond mopidy-tidal, with transferable mechanisms neither the original document nor High Tide/Sone demonstrate | `project-profiles.md` §5a/§5b |
@@ -88,6 +109,28 @@ reference file that owns its topic — this is just the index and the one-line "
 | TIDAL's official Redux action namespace (via TidaLuna) reveals a complete transport/queue/preload/device-switching contract, including `STREAMING_PRIVILEGES_REVOKED`/`ENSURE_PLAYBACK_PRIVILEGES` — no project in the OSS set implements a real-time privileges channel | Free product intelligence the original document left almost entirely unmined; also flags that streamboat's only option today is polling `subStatus 4006`, not a push channel | `project-profiles.md` §4, `api-auth-streaming.md` §6 |
 | No project in the reference set signs its Windows/macOS builds, and none ships a signed in-app updater (generalized from Sone alone to the whole set, incl. tidal-hifi which has the best release CI) | Two hard, unbudgeted prerequisites for the owner's Windows+macOS-now requirement | `packaging-distribution.md` §3, §7 |
 | Sone's own test suite has zero HTTP/ALSA mocking (`[dev-dependencies]` is one line, `tempfile`); no project in the set demonstrates a fixture/mock testing strategy except tidalrs (has `mockito`) and Music Assistant (real provider tests) | "151 tests" reads as more test infrastructure than actually exists; streamboat must design the fixture-capture strategy, not port one | `sone-deep-dive.md` §7 |
+
+## 2c. New findings folded in — third pass (2026-09-08, 17 items)
+
+| Finding | Why it matters | Filed in |
+| --- | --- | --- |
+| Track-availability pre-flight (`streamReady`/`allowStreaming`/`streamStartDate`) and a narrow playback-error-classification allowlist, with a bounded auto-skip loop | The first implementer question after "how do I get a stream URL"; get it wrong and a network blip auto-skips the whole queue, or a region-blocked track hangs forever | `sone-deep-dive.md` §3c, `api-auth-streaming.md` §11 |
+| Playlist/favorites mutation requires an ETag write precondition (`If-None-Match`, default `"*"`), confirmed in two independent implementations, plus `onDupes`/`onArtifactNotFound` semantics | Entirely missing write-path coverage; skip this and every mutation 412s/428s with no obvious explanation | `sone-deep-dive.md` §4b |
+| The queue data model is five separate collections (context queue, pre-shuffle original order, manual "play next," history, two distinct source refs), plus a track-vs-album ReplayGain policy flag and a global user-pause-intent flag | Implication 28's highest-ranked recommendation ("core owns the queue") had zero data model until now | `sone-deep-dive.md` §3d |
+| Autoplay (radio-mix continuation via `mixes.TRACK_MIX`) and the explicit-content filter, the latter enforced at ten separate call sites | Two shipped features never previously mentioned; both are queue-layer invariants, not UI toggles | `sone-deep-dive.md` §3e |
+| `countryCode` bootstraps from `GET /v1/sessions` (default `"US"` before login) and an account-endpoint log-redaction rule | Nobody had documented where `countryCode` comes from, or the concrete redaction pattern for a client whose logs go into bug reports | `sone-deep-dive.md` §4a |
+| The rate-limit contract's actual numbers: 5 s default cooldown, 120 s clamp, lock-free `AtomicU64` deadline, delta-seconds-only `Retry-After` parsing | `rate_gate.rs` was named four times elsewhere with no numbers attached | `sone-deep-dive.md` §4c |
+| Navigation is one discriminated-union atom with no router library, plus a fully-worked-out scroll-restoration policy (quiet period, hard ceiling, cancel-on-user-input) | The UI-patterns half of this skill had almost nothing; this is the hardest part of a webview browse UI, solved in one file | `sone-deep-dive.md` §3f |
+| Play reporting is actually AWS SQS `SendMessageBatch` form encoding that impersonates a specific TIDAL Android device identity (pinned app version/OS/device strings), with JWT claim decoding and a token-stripped-at-rest offline outbox | The real cost of the "should streamboat report plays" decision — maintaining a version pin that drifts roughly as often as TIDAL ships | `sone-deep-dive.md` §5, `oss-landscape.md` §2.6 |
+| Scrobble threshold is `listened >= duration/2 \|\| listened >= 240s`, driven by cumulative playtime (not position), confirmed independently in the official client too | Determines whether the offline queue, shutdown path and seek path are correct | `sone-deep-dive.md` §4d |
+| Mid-session stream-URL/manifest expiry (armed gapless slot dies during a long pause) is unsolved anywhere in the reference set | Collides directly with this skill's own gapless-arming recommendation; flagged as new engineering, not a "copy from X" item | `audio-engineering.md` §9 |
+| The licence decision must be sequenced before the audio module — nearly everything in the top "borrow with pointers" list is GPL-3.0; only permissive projects exist with no bit-perfect path | Ranked lesson (3)/Open decision 3 previously didn't connect "port Sone's ALSA" to "Sone is GPL-3.0-only" as the same decision | `packaging-distribution.md` §6 |
+| ETag is a write precondition today; no project uses it for cheap read-revalidation (304) on a GET | A small, free improvement over the `UserContent` 15-minute TTL tier, previously unexploited | `api-auth-streaming.md` §10 |
+| No comparative UI/UX assessment exists; the real decision is toolkit-as-theming/accessibility trade-off, not just "beautiful" | The owner's only stated design constraint had nothing comparative to act on | `oss-landscape.md` §19-18 |
+| macOS work splits five ways, four of five with zero precedent anywhere in the set (output, media integration, signing, GStreamer bundling; only Keychain has a direct precedent) | "Tauri is cross-platform" was being used as evidence macOS work is free; it isn't | `packaging-distribution.md` §8, `audio-engineering.md` §10 |
+| upmpdcli (UPnP/OpenHome), and the librespot frontend ecosystem (spotifyd/ncspot/psst/go-librespot), are named by this project's own sources but were never fetched | Highest-value follow-up reads for the control-protocol and language/runtime open decisions | `project-profiles.md` §14 |
+| A fixture inventory (which manifest/error/quality-tier responses to capture from a live account) was implied but never written out | Get the fixture set wrong once and a second live-capture session is needed against a credential-gated API whose interesting failures are transient | `oss-landscape.md` §19-16 |
+| Module maps were missing for everything except Sone and High Tide | A reader chasing a recommended borrow (Strawberry's collection schema, tidalt's daemon split) had a filename but no orientation | `project-profiles.md` §15 |
 
 ## 3. The general lesson: comments in reference-project source are not proof of behaviour
 

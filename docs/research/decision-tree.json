@@ -1,0 +1,1408 @@
+{
+ "rounds": [
+  {
+   "id": "r1",
+   "title": "Product scope and platform commitments",
+   "rationale": "Everything else is downstream of what streamboat is for, which OSes are first-class, and how high the quality ceiling goes. Three later rounds (bit-perfect scope, distribution channels, signing budget) silently presume the platform answer, so it has to be asked here rather than inferred.",
+   "questions": [
+    {
+     "id": "q1.1",
+     "header": "MVP scope",
+     "question": "What must the first usable release of streamboat contain?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tidal-client-features/references/feature-matrix.md §1-§3 (the MVP tier, read at HEAD); headless-and-tidal-connect SKILL.md 'Quick orientation — the recommended staged path' steps 1-6. Both front ends ship in the first release, per the owner's fixed platform decision; sequencing inside that release is q13.1, not this question.",
+     "options": [
+      {
+       "label": "Core player, both fronts (Recommended)",
+       "description": "The research's actual MVP tier: device-code and PKCE login with token refresh and storage, search, My Collection and favourites, play/pause/next/seek/volume, seeded shuffle, repeat, a queue with reorder and play-next-vs-add-last, the manifest fetch and quality cascade over DASH and BTS with encrypted-manifest refusal, a streaming-quality selector, MPRIS/SMTC/NowPlaying and media keys, and gapless playback via preload-and-concat — shipped through both the desktop shell and the headless daemon.",
+       "recommended": true,
+       "rationale": "The owner has fixed desktop and headless as simultaneous targets, so the first release must exercise both front ends. Gapless belongs here and not later: the feature matrix tiers it MVP, and sone's implementation is a concat element fed by a second fully-prerolled decode branch, which shapes the engine trait, the queue model and the preroll scheduler — deferring it means rewriting the player rather than adding a feature."
+      },
+      {
+       "label": "Add bit-perfect output",
+       "description": "The same set plus exclusive/bit-perfect output on at least one platform, which the feature matrix tiers v1 rather than MVP. Proves the audiophile thesis at first release, but pulls the per-OS writer work in front of any UI validation. q5.3 already scopes how far exclusive output goes; picking this makes it a v1 gate instead.",
+       "recommended": false
+      },
+      {
+       "label": "Add lyrics, mixes, full pages",
+       "description": "Also render Home/Explore, radio and mixes, and lyrics. Closest to feeling like a real TIDAL client at first launch, at the cost of a much longer first release before the two-front-end architecture is proven.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q1.2",
+     "header": "Desktop v1",
+     "question": "Which desktop OSes are first-class in the first release?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tech-stack-evaluation SKILL.md open decision 9 (the closest precedent shipped Linux first and got a stale unmaintained Windows fork rather than day-one parity; the stack cannot cross-compile, so this is sequencing, not a config flag); engineering-baseline SKILL.md open decision 8 (who pays for signing, and are macOS/Windows first-class from v1)",
+     "options": [
+      {
+       "label": "All three at parity (Recommended)",
+       "description": "Linux, Windows and macOS are all first-class from the first binary release: CI builds and signs all three, and a bug on any of them blocks a release. Costs the signing budget in q12.3 from day one and slows every release by the slowest platform.",
+       "recommended": true,
+       "rationale": "The owner named all three platforms as fixed targets, and the reference set shows what the alternative actually produces — sone shipped Linux first and Windows arrived as a separate, later-stale fork rather than as parity. Deciding it here rather than discovering it at release time is what makes q5.3, q12.2 and q12.3 answerable."
+      },
+      {
+       "label": "Linux first, others best-effort",
+       "description": "Linux is the supported platform; Windows and macOS get unsigned best-effort builds with no parity promise. Removes the recurring signing cost and the slowest CI legs, at the price of two platforms most users cannot install past their OS's warnings.",
+       "recommended": false
+      },
+      {
+       "label": "Linux and Windows, macOS later",
+       "description": "Both platforms with proven exclusive-output precedent in the reference set ship first; macOS follows once GStreamer packaging and CoreAudio work are costed. Matches q5.2 and q5.3's evidence base, and leaves the Apple Developer Program fee until it buys something.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q1.3",
+     "header": "Mobile",
+     "question": "When does mobile become a real target?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tech-stack-evaluation/references/packaging-and-policy.md §4 (App Store guideline 5.2.2 verbatim: an unofficial client cannot produce authorization on request — 'Treat the iOS App Store as closed'; guideline 5.2.3 puts streaming and any save/download capability in scope too); tech-stack-evaluation/references/mobile-path.md; tech-stack-evaluation SKILL.md open decision 4. Asked before the licence question so the licence is not paid for an option that has not been priced.",
+     "options": [
+      {
+       "label": "Someday, keep core UI-free (Recommended)",
+       "description": "No mobile work now. The only commitment is that streamboat-core carries no UI, windowing or desktop-OS dependency, enforced by a CI build with --no-default-features. A binding layer can be added additively later. Treat iOS as closed by guideline 5.2.2 regardless of licence, with Android as the realistic first mobile target.",
+       "recommended": true,
+       "rationale": "The owner named mobile as a future target only, and the cheap insurance — a UI-agnostic core proven by CI — costs nothing now, whereas choosing a mobile-capable UI toolkit today would change the desktop architecture for a payoff that may never be collected."
+      },
+      {
+       "label": "2027: Android after desktop",
+       "description": "Plan an Android app once desktop v1 ships, via UniFFI or Tauri mobile, and budget for it in the crate layout now. iOS stays reachable only by sideload or TestFlight (90-day builds, still reviewed).",
+       "recommended": false
+      },
+      {
+       "label": "Now: pick a mobile stack",
+       "description": "Choose Flutter over a Rust core, or plan UniFFI plus native Compose apps, and let that decide the desktop shell too. Best long-term mobile path, worst desktop-velocity trade today — and it does not reopen iOS, which 5.2.2 closes independently.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q1.4",
+     "header": "Quality",
+     "question": "Which TIDAL quality tiers does the first release support?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "audio-pipeline SKILL.md open decision 3 and references/decoding-and-codecs.md §2-§3 (AAC decoder absent from Fedora's default repos and from a from-scratch Windows GStreamer bundle); tidal-api/references/auth.md §4 ('The PKCE pair is the only way to get HI_RES_LOSSLESS'; sone skips hi-res entirely with no client_secret because those credentials return encrypted DASH); tidal-client-features/references/feature-matrix.md §2 (the four-tier cascade mechanism is tiered MVP)",
+     "options": [
+      {
+       "label": "Lossless now, lossy later (Recommended)",
+       "description": "LOSSLESS and HI_RES_LOSSLESS at launch; AAC LOW/HIGH added later behind a startup decoder probe that greys out unreachable tiers. HI_RES_LOSSLESS is conditional, not guaranteed by this answer: it needs a PKCE pair with a client_secret (q7.1) and is filtered out of the cascade pre-emptively whenever no secret is configured or the manifest comes back encrypted. A user exercising q7.1's override with a secret-less ID loses hi-res.",
+       "recommended": true,
+       "rationale": "FLAC is patent-free and always present in a GStreamer build, while AAC is missing from Fedora's default repos and from a from-scratch Windows bundle (sone-windows cannot decode HIGH/LOW for exactly this reason) — deferring lossy takes a packaging and patent question off the critical path without closing the door. Note this deliberately narrows the feature matrix, which tiers the full four-tier cascade MVP: the cascade mechanism still ships, only the AAC decode branch is deferred."
+      },
+      {
+       "label": "All four tiers at launch",
+       "description": "LOW, HIGH, LOSSLESS and HI_RES_LOSSLESS from day one, matching the feature matrix's MVP tier exactly. Complete coverage for every plan, at the cost of forcing AAC decoder bundling and the patent question into v1 on all three platforms — never fdk-aac, which is GPL-incompatible and non-distributable alongside GPL parts.",
+       "recommended": false
+      },
+      {
+       "label": "Lossless only, permanently",
+       "description": "Never decode AAC at all. Simplest possible codec story and the only branch where a pure-Rust engine stays viable (Symphonia has no HE-AAC), but permanently excludes lower plans and low-bandwidth listening.",
+       "recommended": false
+      },
+      {
+       "label": "16/44.1 ceiling for v1",
+       "description": "Cap at LOSSLESS and skip hi-res entirely, which means device-code login suffices and the PKCE browser handoff can be deferred. Cheapest login UX, but no 24/192 in the first release of a hi-res-oriented client, and the feature matrix tiers PKCE login MVP precisely because it unlocks the top tier.",
+       "recommended": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "r2",
+   "title": "Licence, project identity and contribution",
+   "rationale": "The licence, the crate boundary it lands on, the contributor agreement and the app ID are all one-way doors that must be settled before the first commit. The licence and the crate layout have to be decided together, or GPL-derived audio code ends up in a permissively-licensed crate.",
+   "questions": [
+    {
+     "id": "q2.1",
+     "header": "Licence",
+     "question": "Which licence does streamboat ship under?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "engineering-baseline/references/licensing-and-legal.md §2 (the core/apps split, scoped as 'API client, auth, manifest parsing, models'; LGPL and AGPL-for-the-server both named) and SKILL.md open decision 2; tech-stack-evaluation/references/packaging-and-policy.md §4 (iOS closed by 5.2.2 regardless of licence; whether GPL-3.0 is independently incompatible with App Store distribution is flagged unresearched)",
+     "options": [
+      {
+       "label": "GPL apps, Apache core (Recommended)",
+       "description": "GPL-3.0-only for the desktop app and daemon, Apache-2.0 for streamboat-core (API client, auth, manifest parsing, models). Other clients can reuse the core; the apps stay copyleft and may link GPL GStreamer plugins. Effectively irreversible once outside contributions arrive, since relicensing needs every contributor's consent.",
+       "recommended": true,
+       "rationale": "A permissive core maximises downstream reuse, which is the fastest route to shared maintenance of an unofficial API surface, and it keeps Android, F-Droid and non-App-Store embedding clean; GPL on the apps is what allows adapting sone/High Tide/Strawberry code and linking GPL GStreamer plugins. It does not buy an iOS path — guideline 5.2.2 closes the App Store to an unofficial TIDAL client regardless of licence, and whether GPL-3.0 is independently incompatible with App Store distribution is an unresearched question that must be verified before either claim enters a public document."
+      },
+      {
+       "label": "GPL apps, LGPL core",
+       "description": "The same split with streamboat-core under LGPL-3.0-or-later, which is python-tidal's shape (LGPL library, GPL apps on top). Keeps the core copyleft while still allowing non-GPL consumers to link it; the research rejects it only because LGPL's relinking requirement is contested for a statically-linked iOS binary — a cost that matters less once iOS is treated as closed.",
+       "recommended": false
+      },
+      {
+       "label": "GPL-3.0-only everywhere",
+       "description": "One licence for the whole workspace, matching sone, High Tide and Strawberry. Simplest to reason about, maximally permissive about adapting their code, and it makes q2.2 moot. Discourages reuse by other clients. AGPL-3.0 for the server component only is the narrower variant if hosted forks are a concern — the daemon does expose a network control surface.",
+       "recommended": false
+      },
+      {
+       "label": "MIT/Apache-2.0 everywhere",
+       "description": "Fully permissive, matching tidalrs, tidalt and TIDAL's own SDKs. Maximum downstream reuse, but every idea taken from the GPL reference clients — including sone's ALSA negotiation — must be genuinely reimplemented, GPL GStreamer plugins are off-limits, and it makes streamboat the path of least resistance for a closed commercial TIDAL client.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q2.2",
+     "header": "GPL line",
+     "question": "Which crate holds the audio engine and the per-OS output backends?",
+     "multiSelect": false,
+     "condition": "only if the licence split in q2.1 puts the core and the apps under different licences",
+     "grounding": "engineering-baseline/references/licensing-and-legal.md §2 (the permissive core is scoped as API client, auth, manifest parsing, models — not the engine); headless-and-tidal-connect/references/daemon-architecture.md §1 (the research's own core scope is wider: 'session/auth, catalogue, queue, player engine, output backends, Pushkin'). The two documents disagree; this question settles it.",
+     "options": [
+      {
+       "label": "GPL player crate (Recommended)",
+       "description": "streamboat-core stays narrow and Apache-2.0 (API client, auth, manifest parsing, models); the engine, the per-OS writers and the queue live in a GPL-3.0-only streamboat-player crate that the apps link. Adapting sone's ALSA hw_params negotiation or High Tide's GStreamer graph is then licence-clean, and the piece other clients actually want to reuse is still permissive.",
+       "recommended": true,
+       "rationale": "It makes the licence boundary and the crate boundary the same line, which is the only way the split survives contact with real code: ALSA negotiation, WASAPI exclusive setup and gapless concat are exactly the parts most likely to be adapted from GPL-3.0 sone, and putting them in an Apache-2.0 crate would relicense derived work by accident."
+      },
+      {
+       "label": "Engine in core, clean-room",
+       "description": "Keep the engine and output backends inside Apache-2.0 streamboat-core — the wider scope the daemon-architecture research assumes — and commit in writing that every backend is written from the ALSA/WASAPI/CoreAudio APIs and from sone's documented behaviour, never adapted from its source. Fewer crates, but the discipline is permanent and unenforceable by CI.",
+       "recommended": false
+      },
+      {
+       "label": "Move the whole core to GPL",
+       "description": "Abandon the permissive core and put everything under one copyleft licence. Removes the boundary problem entirely and makes every reference client's code fair game, at the cost of the downstream-reuse argument that motivated the split in the first place.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q2.3",
+     "header": "Contributor",
+     "question": "What contribution agreement do contributors sign? (Conventional Commits on trunk with tags is assumed either way.)",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "engineering-baseline/references/ci-and-repo-governance.md and SKILL.md open decision 3 (DCO vs CLA); licensing-and-legal.md §2 ('relicensing later requires every contributor's agreement unless you collect a CLA/DCO with relicensing rights, which most contributors dislike')",
+     "options": [
+      {
+       "label": "DCO sign-off (Recommended)",
+       "description": "A Developer Certificate of Origin sign-off on every contribution, checked in CI. Records provenance without asking contributors to assign rights. It does not enable relicensing later, which is why q2.1 has to be right the first time.",
+       "recommended": true,
+       "rationale": "It is the lightest artifact that keeps contribution provenance defensible for a project built on an unofficial API, and it matches what contributors to comparable Linux music clients already expect."
+      },
+      {
+       "label": "No agreement, GitHub metadata",
+       "description": "Lowest friction for drive-by contributors. Provenance rests on commit metadata alone, and relicensing later is impossible in practice.",
+       "recommended": false
+      },
+      {
+       "label": "CLA with relicensing rights",
+       "description": "A CLA granting relicensing rights keeps a future licence change open — the only mechanism that would let q2.1 be revisited. Materially deters contributors to a hobby-scale project.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q2.4",
+     "header": "App ID",
+     "question": "Which owner and app ID does streamboat use permanently?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "engineering-baseline/references/packaging-and-distribution.md §6.1a ('The app-ID / GitHub-owner choice is permanent — decide it as an explicit ADR before the first commit'); the same section on io.github.* verification being free and immediate for the repo owner. Precedents: io.github.lullabyX.sone and io.github.nokse22.high-tide are personal; Strawberry owns its own domain.",
+     "options": [
+      {
+       "label": "Keep personal account (Recommended)",
+       "description": "io.github.waayway.streamboat, matching the repository that already exists. This string is baked into the Flatpak ID and metainfo <id>, the Flathub repo name, the D-Bus/MPRIS bus name, the macOS bundle identifier, the config and cache directory names and the Windows AppUserModelID — moving later costs a Flathub end-of-life-rebase plus a user-data migration. Check the name is free on crates.io, npm, PyPI, AUR, Flathub, the Snap Store and winget before locking it in.",
+       "recommended": true,
+       "rationale": "It matches both maintained TIDAL client precedents, it is the status quo of the existing repository so it costs no migration, and an io.github.* ID is verified for free and immediately by authenticating as the repo owner."
+      },
+      {
+       "label": "New GitHub org",
+       "description": "Create an organisation and use io.github.<org>.streamboat. Gives a bus-factor-safe path to keeping the Flathub verification badge and to handing the project on, at the cost of moving the repository before the first commit.",
+       "recommended": false
+      },
+      {
+       "label": "Own a domain, reverse-DNS ID",
+       "description": "Register a domain and use a domain-based ID, as Strawberry does. Independent of any forge and the strongest long-term identity, but it adds a recurring cost and requires domain-based Flathub verification.",
+       "recommended": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "r3",
+   "title": "Architecture shape and core language",
+   "rationale": "A hw:/WASAPI-exclusive/CoreAudio-hog device cannot be shared between processes, so the client/server topology is an audio decision, not a UI one, and it must be settled before the engine trait exists. Whether closing the window releases the device is part of the same contract.",
+   "questions": [
+    {
+     "id": "q3.1",
+     "header": "Core lang",
+     "question": "Which language and runtime does the streamboat core use?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tech-stack-evaluation/references/scoring-and-candidates.md §1 (weighted matrix and its two self-identified gaps) and §4.14 (Go + Wails v3); tidal-oss-landscape SKILL.md open decision 1",
+     "options": [
+      {
+       "label": "Rust (Recommended)",
+       "description": "One workspace produces the daemon, the CLI and the desktop shell, with hand-written ALSA/WASAPI/CoreAudio writers where needed. Costs a second language at the UI boundary if a webview shell is chosen.",
+       "recommended": true,
+       "rationale": "It is the only candidate that demonstrably supports bit-perfect exclusive output, a shared daemon, a desktop GUI and a CLI from one codebase; sone is a working existence proof for exactly this product, and tidalrs gives an MIT-licensed API crate to start from."
+      },
+      {
+       "label": "Go + Wails v3",
+       "description": "Scores 80.7 and third overall — a webview shell like Tauri, the best headless story of any candidate, and the fastest to MVP. Loses on audio (every path crosses cgo to FFmpeg/ALSA), on mobile (1/5), and because Wails v3 is still beta as of 2026 (v3.0.0-beta.17, 2026-09-06). tidalt is the Go/TIDAL precedent for the daemon half, but it is a TUI, not a GUI.",
+       "recommended": false
+      },
+      {
+       "label": "Python via python-tidal",
+       "description": "Fastest route to a working client, matching High Tide and mopidy-tidal. Worst fit for a hand-written exclusive-output writer thread and for Windows/macOS packaging.",
+       "recommended": false
+      },
+      {
+       "label": "C++/Qt, Strawberry-shaped",
+       "description": "The most mature cross-platform audio engine in the reference set and a native toolkit for free. The slowest option to write, the hardest to keep a headless build free of GUI dependencies, and Qt 6's module-level GPL/LGPL mix needs its own audit.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q3.2",
+     "header": "Process",
+     "question": "How do the desktop GUI and the headless daemon share the core?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "headless-and-tidal-connect/references/daemon-architecture.md §1 (three models; the recommendation is 'Model 1 implemented on top of Model 3's library split', with the explicit warning that tidalt is a Go TUI with no webview so its shape does not transfer directly); tech-stack-evaluation/references/architecture-shapes.md §4",
+     "options": [
+      {
+       "label": "One binary, lock-based (Recommended)",
+       "description": "Model 1 on top of Model 3's library split: two Cargo artifacts over one core library, one command surface, and on startup the GUI tries to take the single-instance lock — the MPRIS bus name where a D-Bus session bus exists, a lock file or abstract Unix socket where it does not, which is the normal case for a system-unit Pi. If another instance already holds it, the GUI becomes a remote client. It only ever speaks the Command/Event types the control API exposes.",
+       "recommended": true,
+       "rationale": "It is the research's own hybrid recommendation, and it makes 'the GUI is a remote for another host's daemon' a config change rather than a rewrite — without forcing Windows and macOS users to run a supervised background process. The lock, not the audio device, is what is claimed: the device is opened only when playback starts."
+      },
+      {
+       "label": "GUI always a daemon client",
+       "description": "The desktop app never touches audio; it supervises and drives a local daemon, like MPD, Roon and Music Assistant. Forces the API to be good, but the desktop app must start and supervise a daemon, a crashed daemon is a broken app, and users on Windows and macOS resent a background service.",
+       "recommended": false
+      },
+      {
+       "label": "Separate binaries, no handoff",
+       "description": "Distinct streamboat and streamboatd binaries over a shared crate, librespot/ncspot-style, with no single-instance check. Simple to build, but state cannot be shared between a running GUI and a running daemon on one host and the device-ownership conflict is left for the user to resolve.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q3.3",
+     "header": "Headless OS",
+     "question": "Which platforms does headless/daemon mode target in the first release?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "headless-and-tidal-connect/references/daemon-architecture.md §1 (Windows services run in session 0 with no interactive audio endpoint by default — treated as unverified and named as a one-hour spike; macOS needs a per-user LaunchAgent, not a LaunchDaemon; snapclient has no Windows service mode and its own Windows answer is a third-party tray app, which the research reads as direct support for shipping Windows and macOS 'a GUI with a background/tray mode, not a true service'); tech-stack-evaluation SKILL.md open decision 20",
+     "options": [
+      {
+       "label": "Linux daemon + tray apps (Recommended)",
+       "description": "A real daemon on Linux — systemd user and system units, lingering for headless boxes, plus a Docker recipe — while Windows and macOS get always-on playback through the GUI's background/tray mode from q3.4, not a service. Still run the one-hour WASAPI-in-session-0 spike, but do not block v1 on its result.",
+       "recommended": true,
+       "rationale": "Every headless precedent in the reference set is Linux, and the research's own recommendation is exactly this middle path: it gives Windows and macOS users always-on playback without a session-0 audio problem, and without souvlaki's SMTC needing an HWND that a windowless Windows service cannot provide."
+      },
+      {
+       "label": "All three, real services",
+       "description": "Ship a Windows service and a macOS LaunchAgent alongside the systemd unit. True parity, but it requires resolving session-0 WASAPI on Windows first, and a windowless Windows service gets no SMTC media keys.",
+       "recommended": false
+      },
+      {
+       "label": "Linux plus macOS LaunchAgent",
+       "description": "Covers Linux servers and Macs used as always-on players; Windows headless stays a tray app. Half the extra work of full parity, and the macOS path at least has a documented per-user answer.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q3.4",
+     "header": "Window",
+     "question": "What happens when the user closes the desktop window?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tech-stack-evaluation SKILL.md open decision 22 and references/tauri-engineering-facts.md §16 ('the tray is the one desktop feature with no headless counterpart, and the close-window answer decides whether the desktop shell can ever hold the audio device while invisible')",
+     "options": [
+      {
+       "label": "Tray, close keeps playing (Recommended)",
+       "description": "A native tray icon with transport controls; closing the window hides it and playback continues, quitting is explicit. The desktop shell keeps the single-instance lock and the audio device while invisible, which is what makes q3.3's 'tray mode instead of a Windows service' answer work.",
+       "recommended": true,
+       "rationale": "It is the only shape where the desktop shell behaves like a player rather than a document editor, and it is the same mechanism that gives Windows and macOS always-on playback without a session-0 service — the two decisions are one decision."
+      },
+      {
+       "label": "Close quits, releases device",
+       "description": "No background lifetime: closing the window stops playback, releases the PCM handle and drops the lock. Simplest lifecycle and no tray work on three platforms, but Windows and macOS then have no always-on story at all and q3.3's recommendation collapses.",
+       "recommended": false
+      },
+      {
+       "label": "No tray, close quits",
+       "description": "Same as above with no tray icon anywhere, relying on the daemon for background playback. Cleanest Linux-desktop behaviour and the least per-OS code, at the cost of making the daemon mandatory for anything long-running.",
+       "recommended": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "r4",
+   "title": "UI toolkit and visual direction",
+   "rationale": "'Simple but beautiful' carries 18/100 in the stack scoring matrix but nothing so far asks what it means. The look is asked first because answering it after the toolkit makes it decorative — a 'GNOME citizen' or 'native per-OS' answer selects the toolkit, not the other way round.",
+   "questions": [
+    {
+     "id": "q4.1",
+     "header": "Look",
+     "question": "What should streamboat look like?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tech-stack-evaluation SKILL.md open decision 19 ('Answer before, not after, the toolkit decision — answering late risks reopening Recommendation 1'); references/real-world-players.md (sone, Feishin, Supersonic screenshot inventory)",
+     "options": [
+      {
+       "label": "One look everywhere (Recommended)",
+       "description": "A single distinctive streamboat identity on all three platforms, themeable from a small set of tokens. Ignores each OS's HIG, which some users read as un-native, and means accessibility has to be built rather than inherited.",
+       "recommended": true,
+       "rationale": "It is what every visually-admired reference client actually ships (sone, Feishin, Supersonic), it is the only branch where a webview's full pixel control pays for itself, and it keeps 'simple but beautiful' a decision made once rather than three times."
+      },
+      {
+       "label": "Native per-OS conventions",
+       "description": "Follow each platform's HIG, chrome and controls. Feels correct everywhere and inherits platform accessibility, but it pushes toward a native toolkit — it removes the webview options from q4.2 — and triples the design surface.",
+       "recommended": false
+      },
+      {
+       "label": "GNOME citizen first",
+       "description": "Design for libadwaita and treat Windows and macOS as ports. Best Linux desktop integration available, AT-SPI accessibility for free, and the only branch where GTK4's cross-platform weakness stops mattering — choosing it selects GTK4 in q4.2.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q4.2",
+     "header": "Shell",
+     "question": "Which desktop UI toolkit does streamboat use?",
+     "multiSelect": false,
+     "condition": "assumes a Rust core from q3.1 and the 'one look everywhere' answer from q4.1 — a 'GNOME citizen first' answer selects GTK4/libadwaita, and a 'native per-OS' answer removes the webview options",
+     "grounding": "tech-stack-evaluation/references/scoring-and-candidates.md §1 (the 90.2/82.3/78.4 matrix, its omission of binary size/RAM/startup, and the sensitivity re-scores) and §2 (Slint tri-licensing); tidal-oss-landscape SKILL.md open decision 17",
+     "options": [
+      {
+       "label": "Tauri 2 + web frontend (Recommended)",
+       "description": "A Rust backend with a webview UI, as sone ships. Full visual control and cheap theming, at the cost of WebKitGTK rendering divergence on Linux and two languages across an IPC boundary. Generate TypeScript types from Rust with ts-rs or tauri-specta rather than hand-maintaining them.",
+       "recommended": true,
+       "rationale": "sone is a working existence proof of this exact stack for this exact product, and it tops the weighted matrix at 90.2 and stays first under both alternative weightings the research computed. Read the score with its own caveats: binary size, RAM and startup — a criterion the owner named — are dropped from the matrix entirely, and the gap to Flutter (82.3) and Slint (78.4) is small enough that one weight change could reorder the middle of the table."
+      },
+      {
+       "label": "Slint, no webview",
+       "description": "One language end to end, a small native runtime and no browser engine. Tri-licensed: on a GPL-3.0 app the GPL arm applies cleanly with no attribution obligation, so the visible-attribution requirement only bites if q2.1 goes permissive. Its real costs are a thin .slint corpus for agent-assisted work and slower UI iteration.",
+       "recommended": false
+      },
+      {
+       "label": "GTK4 and libadwaita",
+       "description": "Excellent GNOME citizen with AT-SPI accessibility for free, matching High Tide. Weakest Windows and macOS story of any candidate and essentially no runtime theming.",
+       "recommended": false
+      },
+      {
+       "label": "Flutter over a Rust core",
+       "description": "One UI codebase for desktop and mobile via flutter_rust_bridge, second on the matrix at 82.3 and the biggest gainer when mobile is weighted up. Heavier toolchain and the weakest fit for per-OS audio integration.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q4.3",
+     "header": "Frontend",
+     "question": "Which frontend framework, styling and CSP posture go inside the webview?",
+     "multiSelect": false,
+     "condition": "only if a webview shell (Tauri) was chosen in q4.2",
+     "grounding": "tech-stack-evaluation/references/scoring-and-candidates.md §3 (Tailwind 4 + CSS custom properties; 'shadcn/ui+Radix optional — sone ships none, and looks good'); references/verification-notes.md (shadcn/ui's Tailwind v4/React 19 support could not be checked — ui.shadcn.com unreachable); SKILL.md open decisions 5 and 12 (CSP vs sone's security.csp: null)",
+     "options": [
+      {
+       "label": "React 19, Tailwind, shadcn (Recommended)",
+       "description": "React with Tailwind 4 tokens plus shadcn/ui and Radix primitives for accessible components, with a CSP enforced from the first commit — artwork, lyrics and user-supplied playlist text are remote content rendered in a webview that holds invoke, and retrofitting a CSP after a few hundred components is expensive. Most third-party code to review, but focus management and keyboard behaviour come mostly for free.",
+       "recommended": true,
+       "rationale": "React maximises the rate of agent-produced correct code and sone's atom split is a directly reusable template. Caveat: shadcn/ui's Tailwind v4 and React 19 support could not be verified during research because ui.shadcn.com was unreachable — confirm against shadcn's own docs before committing. This decision is cheap to reverse for the first weeks, unlike q2.1 or q5.1."
+      },
+      {
+       "label": "React 19, hand-built (sone)",
+       "description": "sone's exact and verified approach: Tailwind, lucide icons and CSS custom properties, no component library, 15 theme presets from a token swap. Zero third-party component surface to audit, at the price of writing every dialog, menu and focus trap — including the accessibility behaviour — yourself.",
+       "recommended": false
+      },
+      {
+       "label": "Svelte 5 and Tailwind",
+       "description": "Noticeably less code per component and a smaller bundle. Smaller training corpus and fewer reference implementations to copy from in this ecosystem.",
+       "recommended": false
+      },
+      {
+       "label": "SolidJS and Tailwind",
+       "description": "Fine-grained signals and excellent list performance for big library views. The smallest ecosystem of the three and the least precedent among music clients.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q4.4",
+     "header": "Browse",
+     "question": "How are the Home and Explore screens built?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tidal-client-features/references/browse-pages-screens.md §1 (two live schemas: legacy v1 GET pages/home returning rows[].modules[], and current v2 GET /v2/home/feed/{slug} returning header.vibes.items, items and cursor; python-tidal's use_legacy_endpoint is a caller flag, not a fallback — 'streamboat must implement its own tab enumeration and any v2 to v1 fallback itself'; sone parses both shapes independently; pages/for_you is a separate v1 surface)",
+     "options": [
+      {
+       "label": "Hybrid: v2 feed for Home (Recommended)",
+       "description": "Render the v2 home/feed/{slug} sections for Home and Explore — enumerating the tab bar from header.vibes.items, paging on the top-level cursor, expanding sections via apiPath — with a graceful unknown-section fallback, and hand-code Collection and entity pages. Decide separately whether to also parse the still-live v1 pages/home shape as a fallback; there is no automatic degradation. Two rendering paths to maintain.",
+       "recommended": true,
+       "rationale": "It is effectively what High Tide does and it splits the problem where the value is: editorial surfaces stay in parity for free and survive TIDAL adding section types, while the screens the user lives in are free to be 'simple but beautiful'."
+      },
+      {
+       "label": "Render page modules everywhere",
+       "description": "Drive every browse screen from the server-driven page schema. Maximum parity with TIDAL's editorial surface for the least code, but the whole UI inherits TIDAL's information architecture and every schema change is a UI change.",
+       "recommended": false
+      },
+      {
+       "label": "Hand-code every screen",
+       "description": "Build all screens from typed endpoints. Complete design freedom, but Home and Explore will never match the native app and each new TIDAL section type is invisible.",
+       "recommended": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "r5",
+   "title": "Audio engine, packaging and output",
+   "rationale": "The engine choice is the highest-variance decision in the project and the audio-pipeline and tech-stack reports openly disagree on it. The engine's packaging is part of the same decision: two hard GStreamer version floors sit above what Debian and Raspberry Pi OS ship, which is the daemon's own reference platform.",
+   "questions": [
+    {
+     "id": "q5.1",
+     "header": "Engine",
+     "question": "Which audio engine does the player build on?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "audio-pipeline SKILL.md CRITICAL callout (this skill recommends libmpv-first, tech-stack.md recommends GStreamer-first; neither states the conflict on its own) and references/stacks-comparison.md §3; audio-pipeline/references/output-backends.md §14 ('No equivalent recipe exists for macOS anywhere in the reference set'); references/tidal-manifest-api.md §6 (sone plays video through a completely separate path, hls.js in its webview)",
+     "options": [
+      {
+       "label": "GStreamer behind a trait (Recommended)",
+       "description": "GStreamer for demux and decode with per-platform PCM writers, libmpv kept as a second backend behind the same trait. Full signal-path introspection and every TIDAL audio path proven on Linux and Windows, but macOS exclusive output must be hand-written and macOS GStreamer packaging is unproven — no reference client ships GStreamer on macOS at all, so budget a GStreamer.framework or private dylib tree, universal arm64+x86_64, and notarization of roughly thirty unsigned dylibs.",
+       "recommended": true,
+       "rationale": "It is the engine with TIDAL's audio paths proven in shipping reference clients — DASH data-URI manifests, BTS direct URLs, and FLAC/AAC/E-AC-3 decode — and the only one that can honestly report the signal path, which is the strongest argument for a native client existing at all. Two honest qualifications: HLS video is not proven here (hlsdemux2 exists, but no reference client routes TIDAL video through it; sone uses hls.js in the webview), and macOS packaging is exactly as unproven as libmpv's — the real framing is 'GStreamer proven on Linux and Windows, unproven on macOS; libmpv unproven on Windows and macOS'. Choosing here settles which research document is authoritative."
+      },
+      {
+       "label": "libmpv behind a trait",
+       "description": "One dependency brings DASH, HLS, gapless, seek, buffering and exclusive output on all three desktops (coreaudio_exclusive included), and it collapses q5.2 entirely — FFmpeg's DASH path has no 1.26.10-equivalent floor. Costs: GPLv2+ unless built with -Dgpl=false, which also conflicts with App Store distribution; poor introspection into the real PCM path; and no project in the reference set links it, so its Windows/macOS distribution is unproven.",
+       "recommended": false
+      },
+      {
+       "label": "GStreamer Linux, libmpv elsewhere",
+       "description": "Play to each platform's strength and get macOS exclusive output for free. Means maintaining and testing two engine implementations from the first release, and two licence footprints.",
+       "recommended": false
+      },
+      {
+       "label": "Symphonia and hand-written out",
+       "description": "symphonia plus hand-written alsa/wasapi/coreaudio output and a hand-rolled DASH segment assembler. No third-party runtime to bundle and the best mobile story, but no HE-AAC (so no LOW tier) and no precedent for TIDAL anywhere.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q5.2",
+     "header": "GStreamer",
+     "question": "Does streamboat bundle GStreamer or link the system one?",
+     "multiSelect": false,
+     "condition": "only if GStreamer was chosen in q5.1",
+     "grounding": "audio-pipeline/references/output-backends.md §18 (the three options) and §12 (dashdemux2 outranks legacy dashdemux, so the fix is a startup gst_plugin_feature_set_rank call); references/decoding-and-codecs.md §1 (>= 1.26.10 for FLAC-in-DASH; Debian 13 trixie, the base for current Raspberry Pi OS, ships 1.26.2) and §4 / output-backends.md §4 (>= 1.28 for wasapi2sink exclusive); audio-pipeline SKILL.md open decision 11",
+     "options": [
+      {
+       "label": "Bundle pinned everywhere (Recommended)",
+       "description": "A pinned GStreamer and plugin set on all three platforms — a Flatpak with a pinned runtime plus GStreamer module, or an AppImage, on Linux. Uniform behaviour, both version floors met everywhere, roughly 20 MB per platform plus owning security updates for a media stack. The plugin set must deliberately include an AAC decoder if q1.4 keeps the lossy tiers, and never fdk-aac.",
+       "recommended": true,
+       "rationale": "Windows and macOS must bundle regardless, so bundling on Linux too is the only option where the daemon's own reference platform gets the same floors as everything else: Debian 13 ships 1.26.2, eight point releases below the FLAC-in-DASH floor and below the wasapi2sink exclusive floor. It also makes Flatpak cheap, which is the same channel the PipeWire question in q5.3 may keep bit-perfect alive under."
+      },
+      {
+       "label": "System on Linux, bundle else",
+       "description": "Cheapest Linux packaging and the distro-friendly answer, but it forces the rank-demotion workaround: both legacy dashdemux and dashdemux2 register, dashdemux2 outranks it, and only the legacy one demuxes FLAC-in-DASH below 1.26.10 — so streamboat must call gst_plugin_feature_set_rank(dashdemux2, GST_RANK_NONE) at startup. Gives Linux the worst FLAC-in-DASH story of the three platforms. Note the same rank collision exists in a naive Windows bundle.",
+       "recommended": false
+      },
+      {
+       "label": "System everywhere, require 1.26.10+",
+       "description": "Link the system GStreamer on every platform and declare >= 1.26.10 (>= 1.28 for Windows exclusive output) as a hard requirement. Smallest artifacts and no media stack to maintain, but it pushes the floor onto users and excludes Debian stable and current Raspberry Pi OS outright.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q5.3",
+     "header": "Bit-perfect",
+     "question": "How far does exclusive/bit-perfect output go in the first release?",
+     "multiSelect": false,
+     "condition": "assumes GStreamer or a pure-Rust engine from q5.1 — if libmpv was chosen, macOS exclusive output comes largely free via coreaudio_exclusive and 'all three, including macOS' becomes the cheaper answer",
+     "grounding": "audio-pipeline/references/output-backends.md §4-§7 (sone's ALSA writer, sone-windows' wasapi2sink exclusive; macOS hog mode documented by mpv but not verified on hardware), §3 vs engineering-baseline/references/packaging-and-distribution.md §2 (a direct conflict on Flatpak, see the description), §15 (bit-perfect through PipeWire unresolved); tidal-oss-landscape SKILL.md open decision 8",
+     "options": [
+      {
+       "label": "Linux and Windows first (Recommended)",
+       "description": "ALSA hw: and WASAPI exclusive in v1, off by default behind an advanced setting; macOS ships shared mode with an honest note that exclusive output is not yet implemented. Whether exclusive ALSA works under Flatpak is disputed between the two research documents — the audio-pipeline report infers /dev/snd is invisible without --device=all, while the engineering-baseline report cites Flatpak's own sandbox-permissions doc that --socket=pulseaudio already covers /dev/snd and warns against requesting --device=all — so resolve it with one flatpak run opening hw: before deciding whether the toggle is greyed out under confinement. Snap needs 'snap connect streamboat:alsa' either way.",
+       "recommended": true,
+       "rationale": "Both are proven twice over in the reference set, while macOS CoreAudio hog mode has zero precedent for TIDAL anywhere and needs a Mac plus a DAC to verify — a v2-shaped cost on the GStreamer branch. Also unresolved and deciding the same question by a different route: whether bit-perfect output through PipeWire is achievable at all, which would keep the feature alive inside Flatpak via the already-granted xdg-run/pipewire-0 access."
+      },
+      {
+       "label": "All three, including macOS",
+       "description": "Add a hand-written CoreAudio hog-mode writer (SupportsMixing=false, physical format set with a confirm loop) in v1. The strongest possible claim for the client, and the only unresearched subsystem in the project — mpv documents the behaviour but no source verified it on hardware, and one field report describes DAC/HDMI misrouting.",
+       "recommended": false
+      },
+      {
+       "label": "Shared mode only in v1",
+       "description": "Ship PulseAudio/PipeWire, WASAPI shared and CoreAudio shared, and add exclusive output later behind the trait. Fastest to a working player on all three OSes, but the headline differentiator is absent from the first release and q11.1's signal-path panel has little to show.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q5.4",
+     "header": "Rate change",
+     "question": "What happens at a track boundary when the sample rate or bit depth changes?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "audio-pipeline/references/playback-behavior.md §1-§2 and §11 (DAC PLL re-lock: no reference client pre-rolls silence after a device open); tidal-oss-landscape SKILL.md open decision 10 (whether concat-based gapless can be combined with an exclusive ALSA writer — sone gates them apart and nobody in the set has tried it); tech-stack-evaluation SKILL.md open decision 21 (sone reopens; tidalt falls back to plughw with a '(converted)' badge)",
+     "options": [
+      {
+       "label": "Reopen device, accept gap (Recommended)",
+       "description": "Hold the PCM open across same-format tracks for true gapless, reopen only on a format change and pay the audible gap plus a DAC settle delay. No reference client combines gapless concat with an exclusive-mode writer — sone gates them apart — so prototype this before it enters a design doc; the fallback if it fails is the plughw option below. Budget a ~200-300 ms silence pre-roll after each reopen, which no reference client does and which users otherwise hear as a truncated first note.",
+       "recommended": true,
+       "rationale": "Album playback is the whole point of a hi-res client, and holding the device open across same-format tracks gets gapless where it matters without ever resampling. It is also the project's most novel engineering claim, which is exactly why it should be proven by a spike rather than ratified on paper."
+      },
+      {
+       "label": "Fixed rate, always gapless",
+       "description": "Pin one output rate and resample everything, so the device never reopens. Perfectly seamless and required anyway for the Snapcast pipe in q10.2, but it is no longer bit-perfect.",
+       "recommended": false
+      },
+      {
+       "label": "Plughw fallback, badged",
+       "description": "tidalt's answer: negotiate the format directly on hw:, drop to plughw: when refused, and label those tracks as converted in the UI. Honest and never gaps, but silently gives up bit-perfection for some tracks.",
+       "recommended": false
+      },
+      {
+       "label": "Per-device user setting",
+       "description": "Let the user choose bit-perfect-with-gaps or fixed-rate-gapless per output device. Most flexible, but it is another setting to explain and both code paths must be maintained and tested.",
+       "recommended": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "r6",
+   "title": "Playback behaviour, DSP and on-disk data",
+   "rationale": "These decide what the signal path is allowed to do and what touches the disk. Every one of them is cheaper to state now than to retrofit: DSP breaks the bit-perfect claim by definition, and adding encryption and eviction to a storage layer later is a migration rather than a flag.",
+   "questions": [
+    {
+     "id": "q6.1",
+     "header": "Loudness",
+     "question": "What are the loudness-normalization and crossfade defaults?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "audio-pipeline/references/playback-behavior.md §2 and §4 (ReplayGain formula, bypassed in bit-perfect mode; crossfade structurally incompatible with exclusive device access); tidal-client-features/references/feature-matrix.md §2 (loudness normalization is three states NONE/ALBUM/TRACK, not a checkbox; crossfade confirmed shipping on iOS/Web in 2026, tiered 'later')",
+     "options": [
+      {
+       "label": "ReplayGain on by default (Recommended)",
+       "description": "Album-mode ReplayGain with preAmp 4, applied per decode branch upstream of the concat point, exposed as three states (off / album / track) rather than a checkbox, and no crossfade at all. In bit-perfect mode both the volume slider and normalization are bypassed, which must be stated in the UI rather than implied.",
+       "recommended": true,
+       "rationale": "It matches what TIDAL itself does for a normal listener, and crossfade is structurally incompatible with exclusive device access — Strawberry gates it off whenever an exclusive pipeline is active — so shipping it would mean a setting that silently disables the project's headline feature."
+      },
+      {
+       "label": "Normalization off by default",
+       "description": "Play what the master says unless the user opts in. Purist default that matches bit-perfect framing, but albums and mixes will jump in level for most listeners.",
+       "recommended": false
+      },
+      {
+       "label": "Add crossfade in shared mode",
+       "description": "Offer TIDAL's 0-15000 ms crossfade, automatically disabled whenever an exclusive output is active. Parity with what TIDAL ships on iOS and web, at the cost of a second queue-transition code path and a setting that behaves differently per output mode.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q6.2",
+     "header": "DSP",
+     "question": "Does streamboat ever process the signal — EQ, crossfeed, upsampling, room correction?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "audio-pipeline SKILL.md open decision 9 ('Any of it breaks bit-perfect by definition; CamillaDSP (external) is the \"we don't build this\" answer') and references/output-backends.md §7; tidal-client-features/references/feature-matrix.md §2 (equalizer is out-of-scope — the native app has none either)",
+     "options": [
+      {
+       "label": "Never, point at CamillaDSP (Recommended)",
+       "description": "No filter chain of any kind, stated as a product position in the README and the FAQ, with CamillaDSP named as the external route for users who want EQ or room correction. Every competing client has an EQ, so expect this to be a recurring feature request and answer it with a link rather than a backlog item.",
+       "recommended": true,
+       "rationale": "Any DSP breaks the bit-perfect claim the project is built on, and the native TIDAL client has no equalizer either so this is not a parity gap. Deciding not to build a filter chain is far cheaper than building one later, and it is worth stating explicitly rather than leaving implicit."
+      },
+      {
+       "label": "Shared-mode EQ only",
+       "description": "A simple EQ that is hard-disabled whenever an exclusive output is active, the same gating crossfade would need. Satisfies the most common request without ever touching a bit-perfect stream, at the cost of a setting that silently changes behaviour per output mode.",
+       "recommended": false
+      },
+      {
+       "label": "Full DSP chain, one mode",
+       "description": "Build a real filter chain and treat bit-perfect as one mode among several. Most capable and closest to what audiophile players like Roon offer, and the largest single addition to the audio pipeline in the project.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q6.3",
+     "header": "Caching",
+     "question": "What is streamboat's on-disk audio caching posture?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "audio-pipeline/references/playback-behavior.md §6 (sone caches metadata only, encrypted, 2 GB cap; High Tide's whole-track cache is capped and LRU-evicted, its real gaps are no encryption, no session tie and eviction only at window-open; High Tide also writes every track's MPD to one fixed shared path); headless-and-tidal-connect SKILL.md trap 7 (mopidy-tidal caches plain playable audio, go-librespot caches only still-encrypted bytes); tech-stack-evaluation/references/packaging-and-policy.md §4 (App Store 5.2.3 reads any such cache as a download feature on iOS)",
+     "options": [
+      {
+       "label": "No audio cache (Recommended)",
+       "description": "Metadata and artwork only, capped, encrypted at rest and evicted — sone's shape. No decodable audio ever reaches disk. Costs re-fetching on seek and offers nothing offline. One file still has to be got right regardless: the per-track DASH manifest must go to a unique temp file per streaming session in XDG_RUNTIME_DIR and be deleted on teardown, because High Tide writes every track's MPD to one shared path and overwrites it during prefetch.",
+       "recommended": true,
+       "rationale": "This is the sharpest legal line in the project and the cheapest defensible answer: sone ships exactly this and advertises 'no offline downloads' as part of its disclaimer. High Tide's cache is not the ripper case it is often described as — it is a 5 GB atime-LRU cache inside the XDG cache dir — but it is unencrypted, untied to the session's credentials, and evicted only at window-open, so it is not a design to inherit either."
+      },
+      {
+       "label": "Session-only opaque buffer",
+       "description": "A capped, chunk-keyed cache purged on exit and on logout, following go-librespot's posture of never writing decodable audio to disk. Makes seeking and network hiccups painless without producing a portable file. Do not follow mopidy-tidal's SQLite proxy here — it stores plain playable chunks, which is the shape to avoid.",
+       "recommended": false
+      },
+      {
+       "label": "Pinned offline, encrypted",
+       "description": "An explicit user pin, encrypted at rest, device-bound, revalidated on a validity window and invalidated on logout. Most useful and closest to the line the project has drawn — and on iOS it would read as a download feature under App Store guideline 5.2.3 regardless.",
+       "recommended": false
+      },
+      {
+       "label": "Decide after v1",
+       "description": "Ship with no audio on disk and revisit later. Keeps v1 simple, but retrofitting encryption, eviction and a credential tie into the storage layer afterwards is a migration rather than a flag.",
+       "recommended": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "r7",
+   "title": "TIDAL credentials, login and client identity",
+   "rationale": "These three decide what streamboat can reach and how it represents itself to a third party on every single request. The credential choice constrains both the quality ceiling and what an honest request even looks like.",
+   "questions": [
+    {
+     "id": "q7.1",
+     "header": "Credentials",
+     "question": "How are TIDAL client credentials handled in shipped binaries?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tidal-api/references/auth.md §4 and §11; engineering-baseline/references/secrets-and-tokens.md (Strawberry's build-time-optional ID, sone's XOR obfuscation); audio-pipeline SKILL.md open decision 10 (which client ID determines which tiers are reachable and whether streams come back encrypted)",
+     "options": [
+      {
+       "label": "Embedded, with override (Recommended)",
+       "description": "No credential in the repository; an optional build-time input supplies a default, and settings expose a user-supplied ID/secret. Say plainly in the docs that any shipped credential is extractable, and that a secret-less ID means the hi-res tiers in q1.4 are filtered out of the cascade.",
+       "recommended": true,
+       "rationale": "Both actively maintained desktop clients do this, it converts 'TIDAL revoked the key, the app is dead' into a support answer, and it makes distro packaging tractable because packagers can build with no credential at all — and the setting is functionally necessary anyway, since which tiers are reachable and whether streams come back encrypted depend on the ID in use."
+      },
+      {
+       "label": "User must supply their own",
+       "description": "Ship nothing; first run asks for a client ID. Cleanest legally and for Debian/Fedora, but the out-of-box experience is a paste-a-secret form that most users will not get past.",
+       "recommended": false
+      },
+      {
+       "label": "Embedded and obfuscated",
+       "description": "Ship the ecosystem pair masked in the source, as sone and python-tidal do. Best first-run experience, but the obfuscation is trivially reversible and misleads readers of the code.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q7.2",
+     "header": "Login",
+     "question": "Which OAuth flows ship, and which is the default per platform?",
+     "multiSelect": false,
+     "condition": "if q1.4 chose a 16/44.1 ceiling, PKCE can be deferred and 'device code only' becomes viable",
+     "grounding": "tidal-api/references/auth.md §2-§3 (PKCE required for HI_RES_LOSSLESS; redirect-capture strategies across the reference set) and §13 (never claim tidal:// — three different things already register it; use streamboat://); tidal-client-features/references/feature-matrix.md §1 (both flows tiered MVP)",
+     "options": [
+      {
+       "label": "Device code plus PKCE (Recommended)",
+       "description": "Device code with a locally generated terminal QR as the headless and CLI default; PKCE with a loopback redirect as the desktop default. Two flows to build and a token store that records which client pair minted each token, because refresh must use the matching one. Register streamboat:// for the redirect and deep links, never tidal://.",
+       "recommended": true,
+       "rationale": "It is the only combination that serves both fixed targets well: device code is the sole flow that works on a headless box, and PKCE is required for HI_RES_LOSSLESS — so a hi-res desktop client and a Pi daemon cannot share one flow. The feature matrix tiers both MVP for the same reason."
+      },
+      {
+       "label": "Device code only",
+       "description": "One flow everywhere, no browser handoff, works headless. Caps quality below hi-res, which contradicts a hi-res-capable positioning unless q1.4 already chose the 16/44.1 ceiling.",
+       "recommended": false
+      },
+      {
+       "label": "PKCE only",
+       "description": "High Tide's choice: full quality ceiling, one code path. Requires a browser and a paste-the-URL or embedded-webview step, which is the ugliest possible headless login.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q7.3",
+     "header": "Identity",
+     "question": "How does streamboat identify itself to TIDAL on ordinary API traffic?",
+     "multiSelect": false,
+     "condition": "partly constrained by the client-ID choice in q7.1 — events and requests ride on the token's client, so an embedded ecosystem credential narrows what an honest request can claim",
+     "grounding": "tidal-api SKILL.md open decision 11 ('Every reference client either impersonates TIDAL's own Android app or sends nothing distinctive; none has published whether an honest streamboat/… UA still works. Decide the default and test it against a live account before shipping') and references/transport.md §3",
+     "options": [
+      {
+       "label": "Honest UA where it works (Recommended)",
+       "description": "Send a distinctive streamboat/x.y User-Agent by default, and TIDAL's own device headers only on the specific endpoints that demand them. Untested: no reference client has published whether an honest UA still gets served, so verify against a live account before shipping and keep a documented fallback setting.",
+       "recommended": true,
+       "rationale": "It is the only default consistent with the rest of the project's posture — a player for subscribers that says what it is — and it keeps deliberate misrepresentation confined to the one endpoint (q8.2's play reporting) where the research shows there is no alternative, instead of applying it to every request by habit."
+      },
+      {
+       "label": "Impersonate TIDAL's Android app",
+       "description": "Send TIDAL's own client headers on every request, as the reference clients do. Lowest risk of an endpoint refusing to serve streamboat, and it makes the client indistinguishable from TIDAL's own traffic — which is precisely the objection.",
+       "recommended": false
+      },
+      {
+       "label": "Send nothing distinctive",
+       "description": "No custom User-Agent at all, the quiet default most reference clients land on by omission. Avoids both claims, and makes streamboat's traffic anonymous rather than honest.",
+       "recommended": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "r8",
+   "title": "Account data, privacy and writes",
+   "rationale": "These decide what streamboat stores locally and what it may change in the user's real TIDAL account. A bug at the writes tier damages the subscriber's account, not just the local app.",
+   "questions": [
+    {
+     "id": "q8.1",
+     "header": "Tokens",
+     "question": "Where do TIDAL tokens live?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "engineering-baseline/references/secrets-and-tokens.md (keyring formats per platform, Windows credential blob ceiling, the Flatpak Secret portal needing no permission, headless boxes having no unlocked keyring, High Tide's Flatpak keyring failure)",
+     "options": [
+      {
+       "label": "Keyring with file fallback (Recommended)",
+       "description": "OS keyring first, then an AES-256-GCM file whose key lives in the keyring, then a passphrase-derived key; 0600 file in a 0700 directory. Under Flatpak use the Secret portal, which needs no finish-arg; store only the refresh token in the Windows credential blob because of its size ceiling.",
+       "recommended": true,
+       "rationale": "A headless box has no unlocked keyring, so the encrypted-file path is the normal case rather than the exception, and High Tide's inability to unlock the login keyring under Flatpak shows what a keyring-only design does in the sandbox that Flathub distribution implies."
+      },
+      {
+       "label": "Keyring only, fail loudly",
+       "description": "Refuse to store credentials if no keyring is available. Strongest guarantee and simplest code; makes headless and sandboxed installs fail at login instead of working.",
+       "recommended": false
+      },
+      {
+       "label": "Add plaintext mode for servers",
+       "description": "Also allow a plaintext 0600 file behind an explicit flag with a loud startup warning, for unattended servers. Pragmatic for a locked-down Pi, and one grep away from a leaked refresh token.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q8.2",
+     "header": "Play report",
+     "question": "Does streamboat report finished plays back to TIDAL?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tidal-api/references/play-logging-and-privileges.md §3 (ec.tidal.com/api/event-batch; sone pins app-version 2.205.0, os-name Android, device-model Pixel 7; 'Events ride on that client's token, so they must describe that client'; the official web SDK sends the same conceptual event with one-for-one matching field names) and §4 (server-anchored time via GET /v1/ping); engineering-baseline SKILL.md open decision 4",
+     "options": [
+      {
+       "label": "Off by default (Recommended)",
+       "description": "Implement it, ship it disabled, and state plainly in the setting what enabling it sends. Regardless of the answer, the operational rules are fixed: log a play only past 30 seconds, never for a PREVIEW asset, drop permanently on a BatchResultErrorEntry (SenderFault) rather than retrying, and derive timestamps from a server-anchored clock via GET /v1/ping rather than the local system time — which matters concretely on a Pi with no RTC. Recently Played and Home personalisation stay stale until the user opts in.",
+       "recommended": true,
+       "rationale": "With the embedded Android ecosystem credential, the event must describe that client — the payload is Android-shaped because the token is — so enabling it should be a choice the user makes knowingly. A user-supplied client ID from q7.1 changes what an honest event looks like; the official web SDK sends the same event shape with web identifiers. It should still be available, because without it the user's own Daily Discovery, New Arrivals and Recently Played all quietly degrade."
+      },
+      {
+       "label": "On by default, disableable",
+       "description": "sone's choice: the user's TIDAL account behaves as they expect out of the box, disclosed in the README, the metainfo and settings. Outbound traffic to TIDAL that the user did not ask for, describing a client they are not running.",
+       "recommended": false
+      },
+      {
+       "label": "Never implement it",
+       "description": "No third-party events at all, less code. The user's TIDAL history silently stops reflecting what they actually played, and q11.2's scrobbling is the only listening record.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q8.3",
+     "header": "Writes",
+     "question": "How far may streamboat write to the user's real TIDAL account?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tidal-client-features SKILL.md open decision 9 (write-scope tiers); tidal-api SKILL.md open decision 8; tidal-client-features/references/feature-matrix.md §4 (favourite/unfavourite is MVP, playlist CRUD v1)",
+     "options": [
+      {
+       "label": "Library writes only (Recommended)",
+       "description": "Favourites, playlist create/edit/reorder (with ETag preconditions) and the queue, and nothing else. Covers what a player needs while leaving profile, Block, Picks and AI-playlist writes out of reach.",
+       "recommended": true,
+       "rationale": "Library writes are what makes a client usable rather than a viewer — favouriting is the single most-used mutation in any music app and the feature matrix tiers it MVP — and the tier boundary is where the blast radius of a bug stops being 'my playlist is wrong' and starts being 'my recommendations and public profile are wrong'."
+      },
+      {
+       "label": "Read-only against the account",
+       "description": "Never mutate anything server-side; favourites and playlists are managed in TIDAL's own apps. Zero risk to the subscriber's account, and a client most people will find crippled.",
+       "recommended": false
+      },
+      {
+       "label": "Add profile and taste writes",
+       "description": "Also allow Block, Picks, profile edits and AI playlist creation. Full parity with the native client, and the tier where a bug damages state the user cannot easily reconstruct.",
+       "recommended": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "r9",
+   "title": "Headless control surface",
+   "rationale": "The control contract constrains the core API surface more than any UI decision, and its versioning discipline is permanent once third-party clients exist. Both have to be fixed before either front end is written.",
+   "questions": [
+    {
+     "id": "q9.1",
+     "header": "Control API",
+     "question": "What is the primary control surface for headless mode?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "headless-and-tidal-connect/references/daemon-architecture.md §3-§4 and mpd-and-multiroom.md §1 and §6 (control-surface comparison; MPD's four access-control layers); tidal-hifi's documented REST vocabulary; go-librespot's published REST+WebSocket event vocabulary",
+     "options": [
+      {
+       "label": "HTTP+WebSocket, loopback (Recommended)",
+       "description": "One JSON protocol for the GUI, the CLI, a web remote and a future phone app, bound to 127.0.0.1 with a generated token and Host-header allowlisting; MPRIS/SMTC ship as adapters over it, with MPRIS registration living in the engine so it works in daemon mode. LAN exposure stays a deliberate, logged opt-in. Specify the track/album/playlist URI grammar before users have stored playlists — mopidy-tidal's composite scheme is the precedent.",
+       "recommended": true,
+       "rationale": "MPRIS is a day-one must-have regardless but cannot express search, browse or library, and a Unix socket cannot serve a phone — so the same protocol the GUI already speaks in-process is the only one that covers every client streamboat plans to have."
+      },
+      {
+       "label": "MPRIS/D-Bus only",
+       "description": "tidalt's shape: media keys, playerctl and desktop widgets, no new attack surface. Linux-only, needs a D-Bus session bus that a system-unit Pi does not have, and cannot express browsing, search or a remote client on another machine.",
+       "recommended": false
+      },
+      {
+       "label": "MPD protocol as primary",
+       "description": "Inherit the entire MPD client ecosystem as the native API. MPD's access control is richer than usually assumed — per-CIDR host_permissions, separate local_permissions for a Unix socket, and any number of password entries each with its own permission set, so a loopback listener needs no shared password at all — but its transport is unencrypted and network passwords travel in clear text. The real cost is forcing TIDAL's catalogue into MPD's file-database semantics plus a hand-written line-protocol server, since no drop-in Rust MPD server exists.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q9.2",
+     "header": "API scope",
+     "question": "Who hosts the control API listener, and how is it versioned?",
+     "multiSelect": false,
+     "condition": "only if HTTP+WebSocket was chosen as primary in q9.1",
+     "grounding": "headless-and-tidal-connect SKILL.md open decisions 9 and 10 (additive-and-tolerant MPD-style versioning vs exact-match Sendspin-style; whether the desktop GUI itself hosts the control API, which makes the desktop build inherit the token, loopback-default, connection-cap and macOS Local Network requirements) and references/daemon-architecture.md §1 and §4",
+     "options": [
+      {
+       "label": "Daemon only, additive (Recommended)",
+       "description": "Only streamboatd binds a listener; the GUI speaks the same Command/Event types in-process without opening a port. Version the protocol additively and tolerantly — a capabilities query like MPD's commands/protocol enable, unknown fields ignored, no field ever repurposed — so a client built against an older version keeps working.",
+       "recommended": true,
+       "rationale": "Additive-and-tolerant versioning is permanent once third-party clients exist and cannot be retrofitted, and keeping the listener out of the desktop build means the GUI does not inherit a token store, a connection cap, a loopback-binding default and a macOS Local Network permission prompt for a feature nobody asked for yet. The GUI can start hosting one later without breaking anything; unbinding one later breaks clients."
+      },
+      {
+       "label": "GUI hosts a listener too",
+       "description": "The desktop app binds the same loopback listener, so a phone or web remote can drive the desktop shell directly, not only a daemon. Falls out almost for free from 'the GUI has no private path into the engine' — but the desktop build then inherits the token generation, connection caps, loopback default and the macOS Local Network prompt that a pure daemon needs.",
+       "recommended": false
+      },
+      {
+       "label": "Daemon only, exact-match versions",
+       "description": "One protocol version per release, clients must match exactly, Sendspin-style. Removes all compatibility ambiguity and every third-party client breaks on every release — tolerable only while streamboat is the only client.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q9.3",
+     "header": "MPD",
+     "question": "Do we ship an MPD-compatible listener, and at what scope?",
+     "multiSelect": false,
+     "condition": "only if HTTP+WebSocket was chosen as primary in q9.1",
+     "grounding": "headless-and-tidal-connect/references/mpd-and-multiroom.md §1 (hand-written parser and state machine, no drop-in Rust server exists; browsing via lsinfo/search over a virtual tree is cheaper than assumed, on the mopidy-mpd precedent) and §6; the staged path's MPD step",
+     "options": [
+      {
+       "label": "Later, subset only (Recommended)",
+       "description": "Defer it, then implement status/currentsong/transport/queue/idle/albumart plus lsinfo/search browsing over a virtual tree, documented explicitly as a subset. Bind it to a Unix socket or loopback with local_permissions, which needs no shared password. Nothing else in the architecture depends on it.",
+       "recommended": true,
+       "rationale": "It is by far the largest item on the staged path — a hand-written line-protocol parser and state machine, larger than the whole control API — and it is the one stage that can be deferred indefinitely without blocking anything, so it should never sit on the critical path to v1."
+      },
+      {
+       "label": "Subset in v1",
+       "description": "Ship the subset at launch and get MALP, ncmpcpp, Cantata and mpc on day one. The largest ecosystem gain available, bought with the largest single chunk of protocol code in the project.",
+       "recommended": false
+      },
+      {
+       "label": "Fuller emulation with browsing",
+       "description": "Map the streaming catalogue into MPD's database model as Mopidy-MPD does. Best experience for existing MPD users; months of work and a permanent impedance mismatch between TIDAL's model and a file database.",
+       "recommended": false
+      },
+      {
+       "label": "Never",
+       "description": "Point MPD users at the HTTP API instead. Saves thousands of lines and keeps MPD-shaped semantics out of the core.",
+       "recommended": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "r10",
+   "title": "Stream ownership, multiroom and Connect",
+   "rationale": "TIDAL enforces one concurrent stream per account through the Pushkin websocket, so who holds the stream and how audio reaches other rooms are the same decision. Connect is already out of scope; only what streamboat says about it is open.",
+   "questions": [
+    {
+     "id": "q10.1",
+     "header": "Pushkin",
+     "question": "Does streamboat implement TIDAL's streaming-privileges websocket, and how assertively?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "headless-and-tidal-connect/references/daemon-architecture.md §6 (POST /v1/rt/connect returns a wss URL; outgoing USER_ACTION, incoming PRIVILEGED_SESSION_NOTIFICATION and RECONNECT; 'No OSS Linux client implements this'; the browser SDK's reconnect loop has no backoff, no jitter and no retry cap and re-POSTs rt/connect on every reconnect, so a long-offline daemon would hot-loop; on displacement the reference client is a hard stop, not a race to reclaim)",
+     "options": [
+      {
+       "label": "Connect, claim on intent (Recommended)",
+       "description": "Open the socket, register a hostname-derived clientDisplayName, and send USER_ACTION only on genuine user intent — never on autoplay, never on resume-after-network-hiccup. On PRIVILEGED_SESSION_NOTIFICATION, pause and surface 'paused: playback started on <device>' through every control surface; never auto-retry the claim. Do not copy the browser SDK's reconnect loop: add capped exponential backoff with jitter and a retry ceiling, and reconnect explicitly on token refresh.",
+       "recommended": true,
+       "rationale": "Without it a daemon left playing in another room is silently killed by TIDAL's backend, or worse keeps fighting the user's phone for the privilege — and it is the mechanism that makes q10.2's 'one daemon fans out to many rooms' the only workable multiroom shape. It has zero OSS precedent, so the reconnect discipline matters: an unbounded retry loop is exactly the behaviour that gets an unofficial client's account or client_id flagged."
+      },
+      {
+       "label": "Observe only, never claim",
+       "description": "Connect and honour PRIVILEGED_SESSION_NOTIFICATION by pausing, but never send USER_ACTION. streamboat can always be displaced and can never take the stream back from another device without the user going through TIDAL's own app. Safest possible posture, and confusing when the user presses play on the daemon and nothing happens.",
+       "recommended": false
+      },
+      {
+       "label": "Do not connect at all",
+       "description": "Skip the socket entirely and let displacement surface as a playback error (subStatus 4006). Least code and no extra outbound connection, but the failure looks like a streamboat bug rather than another device taking over, and the daemon has no way to know it lost the stream.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q10.2",
+     "header": "LAN audio",
+     "question": "Does streamboat ever send decoded audio to other machines?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "headless-and-tidal-connect/references/mpd-and-multiroom.md §2 and §5 (a bare FIFO produces sound with no title, artist, cover art or transport control in any Snapcast client; Snapcast's stream-plugin protocol is newline-delimited JSON-RPC 2.0 over stdin/stdout and 'a few hundred lines'; stream sources pin a fixed sampleformat per stream; snapserver advertises _snapcast._tcp). Every option is a re-transmission design that needs an explicit legal position.",
+     "options": [
+      {
+       "label": "Snapcast plugin output (Recommended)",
+       "description": "A raw PCM output backend at a fixed format feeding Snapcast, plus a 'streamboat snapcast-plugin' subcommand implementing Snapcast's JSON-RPC stream-plugin protocol so Snapweb and every Snapcast client show metadata and transport controls — a few hundred lines, not tens. Discover snapserver via _snapcast._tcp rather than requiring a hand-configured FIFO path. This is an explicit output mode: it resamples to one fixed format and is mutually exclusive with the bit-perfect variable-rate output in q5.4.",
+       "recommended": true,
+       "rationale": "It is the only architecture under which multiroom is possible at all given TIDAL's one-stream rule — one daemon holds the stream and fans PCM out — and it is the most defensible re-transmission case: same user, same host, no service impersonation. A bare FIFO is not the cheap version of this; it is the version that produces a nameless speaker."
+      },
+      {
+       "label": "Local audio devices only",
+       "description": "Audio never leaves the machine that authenticated. The cleanest possible position against TIDAL's consumer terms, and no multiroom at all.",
+       "recommended": false
+      },
+      {
+       "label": "Add Cast/AirPlay senders",
+       "description": "Push to Chromecast and AirPlay receivers directly. Big usability win on hardware people already own, and the point where re-transmission needs an explicit written legal position — a Cast sender means handing a receiver a signed TIDAL CDN URL or re-serving the stream.",
+       "recommended": false
+      },
+      {
+       "label": "Add an HTTP stream endpoint",
+       "description": "Expose the decoded stream over HTTP for any client on the LAN. Most flexible and least defensible; it is the shape a redistribution complaint would point at.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q10.3",
+     "header": "Connect",
+     "question": "What does streamboat say publicly about TIDAL Connect?",
+     "multiSelect": false,
+     "condition": "positioning only — building Connect in either direction is already ruled out and this question does not reopen it",
+     "grounding": "headless-and-tidal-connect/references/tidal-connect.md §5 and SKILL.md open decisions 7-8 (whether to approach TIDAL, and whether to point users at the third-party container that reuses iFi's device certificate)",
+     "options": [
+      {
+       "label": "Never, and say so (Recommended)",
+       "description": "Document that streamboat will never be a Connect target or controller and why, and do not point users at the third-party container that reuses iFi's device certificate. Still handle a Pushkin PRIVILEGED_SESSION_NOTIFICATION gracefully when the user hands off from the official app.",
+       "recommended": true,
+       "rationale": "Building it would require defeating deliberate obfuscation and forging a device identity — the exact circumvention line the project has already refused — and a plain public statement closes the recurring feature request permanently rather than leaving it as an implied 'later'."
+      },
+      {
+       "label": "Say never, ask TIDAL privately",
+       "description": "Publish the same 'never' statement, but privately ask TIDAL whether an open-source project can license Connect at all, and revisit only if the answer is yes. Cost, terms and eligibility are unknown rather than impossible, and asking costs only time — the public position does not change while the question is open.",
+       "recommended": false
+      },
+      {
+       "label": "List Connect devices in doctor",
+       "description": "Discover _tidalconnect._tcp on the LAN and show them in diagnostics, clearly labelled as not controllable. Useful when debugging a household's playback, and easily mistaken for a promise of support.",
+       "recommended": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "r11",
+   "title": "Surfaces beyond the core player",
+   "rationale": "Each of these is cheap alone and expensive in aggregate; they also shape the daemon's HTTP surface and its permission model.",
+   "questions": [
+    {
+     "id": "q11.1",
+     "header": "Extras",
+     "question": "Which non-parity extras ship in the first release?",
+     "multiSelect": true,
+     "condition": "",
+     "grounding": "tidal-client-features SKILL.md open decision 6 and references/feature-matrix.md §2 (signal-path transparency is tiered 'later (differentiator)'); tech-stack-evaluation SKILL.md open decision 7 (~2,500 lines of Rust in sone for the full set)",
+     "options": [
+      {
+       "label": "Signal-path panel (Recommended)",
+       "description": "A panel showing the real decode and output path — source format, device format, exclusive or shared, whether ReplayGain is bypassed, and 'lossy source, bit-perfect not applicable' on AAC tracks rather than a false bit-perfect claim.",
+       "recommended": true,
+       "rationale": "The feature matrix tiers this 'later', and overriding that is deliberate: once q5.3's exclusive-output work exists the engine must compute the true path anyway, so surfacing it is near-free at that point, and it is what distinguishes streamboat from every wrapper. A GStreamer engine makes it honest; a libmpv one makes it approximate."
+      },
+      {
+       "label": "Floating mini-player",
+       "description": "A small always-on-top now-playing window. Cheap in a webview shell, popular, and unrelated to everything else here.",
+       "recommended": false
+      },
+      {
+       "label": "Theming and presets",
+       "description": "Token-based themes with a colour picker, as sone ships 15 presets. Nearly free with a webview shell and a strong first impression; dead weight in a native toolkit.",
+       "recommended": false
+      },
+      {
+       "label": "Discord, OBS and MCP",
+       "description": "Discord Rich Presence, a browser-source overlay for streamers, and a local MCP server for agent control — the last two over the daemon's HTTP surface. Distinctive, and they widen the surface that must be token-gated and field-sanitized.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q11.2",
+     "header": "Scrobbling",
+     "question": "Which scrobbling integrations ship, and when?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tidal-client-features/references/feature-matrix.md (the native client has lastFm/* built in); sone ships all three behind one interface",
+     "options": [
+      {
+       "label": "Last.fm + ListenBrainz (Recommended)",
+       "description": "One scrobble abstraction with two backends. Last.fm is genuine native parity, ListenBrainz is the open-ecosystem choice, and the second costs little once the first exists.",
+       "recommended": true,
+       "rationale": "The interface is the expensive part and it is shared; adding ListenBrainz after Last.fm is close to free, and it is the listening record a user keeps when they leave TIDAL — which matters more here because play reporting to TIDAL is opt-in under q8.2."
+      },
+      {
+       "label": "Last.fm only",
+       "description": "Match exactly what the native client offers. One integration to test and support, and no open-ecosystem story.",
+       "recommended": false
+      },
+      {
+       "label": "None in v1",
+       "description": "Defer all scrobbling. Less to build and less credential storage; a visible gap for many of the users most likely to try an unofficial client.",
+       "recommended": false
+      },
+      {
+       "label": "Last.fm, Libre.fm, ListenBrainz",
+       "description": "sone's full set. Marginal extra cost once the abstraction exists, and three services to keep working.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q11.3",
+     "header": "Video",
+     "question": "Are music videos in scope?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tidal-client-features/references/quality-playback-queue.md (650k+ videos, VIDEO_MIX, VIDEOS search) and feature-matrix.md §2 (video tiered 'later'); tech-stack-evaluation SKILL.md open decision 16 (hls.js cannot handle Widevine — non-DRM HLS only)",
+     "options": [
+      {
+       "label": "Later, desktop only (Recommended)",
+       "description": "Out of v1; added afterwards as a separate HLS path on the desktop shell, sharing one queue with audio. Video search results and Videos collections show as unplayable until then, and Widevine-protected video stays out of reach regardless.",
+       "recommended": true,
+       "rationale": "It is an entirely separate pipeline and a surface a headless daemon can never render, so it does not belong in a release whose job is to prove the core across both front ends — but omitting it permanently is a visible parity gap against 650k+ videos."
+      },
+      {
+       "label": "Never, audio only",
+       "description": "Declare video out of scope and hide video entities. Keeps one pipeline and one queue model forever, at a permanent parity cost.",
+       "recommended": false
+      },
+      {
+       "label": "v1 alongside audio",
+       "description": "Ship video with the first release, as sone does with hls.js in the webview and a shared queue. Full parity early, and a second pipeline plus a video surface competing with headless-mode work.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q11.4",
+     "header": "Social",
+     "question": "How much of TIDAL's social surface does streamboat implement?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tidal-client-features/references/social-feed-creator.md (no OSS reference client implements Feed or Picks); tidal-api SKILL.md open decision 9",
+     "options": [
+      {
+       "label": "Follow artists only (Recommended)",
+       "description": "Treat following artists as a library feature and build nothing else: no Feed, no profiles, no Picks. Shared playlist links still open and play.",
+       "recommended": true,
+       "rationale": "Following artists is cheap and genuinely part of a library, while the rest of the social surface is a separate product that no open-source reference client has ever implemented and that is unrelated to playing music well."
+      },
+      {
+       "label": "Read-only profiles, playlists",
+       "description": "View public profiles and their shared playlists without following users. Makes shared links first-class, and adds screens with no playback value.",
+       "recommended": false
+      },
+      {
+       "label": "Feed and following users",
+       "description": "Follow other users and browse the Feed. A coherent slice of the native app, and a large one whose endpoints no reference client has mapped.",
+       "recommended": false
+      },
+      {
+       "label": "None at all",
+       "description": "No follows of any kind, including artists. The smallest surface; artist follows are what the user's TIDAL Home already reacts to, so this quietly diverges from their account.",
+       "recommended": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "r12",
+   "title": "Distribution, signing and updates",
+   "rationale": "Flathub's AI-disclosure regime and its ban on agent-authored submission PRs is a gating constraint on one Linux channel, code signing is real recurring money that must be budgeted before the first binary release, and an in-app updater is unacceptable on most of the channels streamboat will actually ship through.",
+   "questions": [
+    {
+     "id": "q12.1",
+     "header": "AI posture",
+     "question": "What is streamboat's public posture on AI-assisted development?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "engineering-baseline/references/packaging-and-distribution.md and tech-stack-evaluation/references/packaging-and-policy.md §3 (Flathub requirements read at HEAD 2026-09-07: disclosure required, AI agents may not open the submission PR or write its commit messages or review replies; the press-reported effective date is secondary sourcing and flagged unverified)",
+     "options": [
+      {
+       "label": "Disclose and gate PRs (Recommended)",
+       "description": "Publish a disclosure statement in CONTRIBUTING naming which parts are AI-assisted and to what extent, and keep every commit message and any Flathub submission PR human-authored. This applies whether or not Flathub is targeted, because the disclosure affects every commit and contributor.",
+       "recommended": true,
+       "rationale": "It is the only posture that keeps the discretionary Flathub channel reachable without pretending, it costs a statement and a review boundary rather than a change of method, and it is the honest answer for a project that is in fact being built this way."
+      },
+      {
+       "label": "No AI-generated material",
+       "description": "Prohibit AI-generated code, docs and packaging outright. Simplest possible answer to every policy question, and it discards the development method this project is being built with.",
+       "recommended": false
+      },
+      {
+       "label": "Use AI, no disclosure",
+       "description": "Develop as convenient and publish no statement. Least overhead, and it forecloses Flathub (whose review is discretionary and can reject on the extent of generated material) while leaving contributors guessing.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q12.2",
+     "header": "Channels",
+     "question": "Which distribution channels ship with the first release?",
+     "multiSelect": true,
+     "condition": "",
+     "grounding": "engineering-baseline/references/packaging-and-distribution.md (Flathub rejects console software and needs a tagged release history; Homebrew needs notarization, a repo at least 30 days old, and any one of 90 forks / 90 watchers / 225 stars for a self-submission — 30 / 30 / 75 if someone else submits — plus a download cooldown for some ecosystems that rules out promising same-day brew install); tech-stack-evaluation SKILL.md open decisions 13, 15 and 23",
+     "options": [
+      {
+       "label": "Releases, AUR, deb/rpm (Recommended)",
+       "description": "GitHub Releases with checksums, an AUR source and -bin pair, and a hosted apt/dnf repo. Covers Linux desktop and headless immediately, since Flathub will not accept console software anyway. Fix the Linux glibc and WebKitGTK floors here by pinning the CI build container in the first workflow file.",
+       "recommended": true,
+       "rationale": "It is the only set available on day one — Flathub needs a tagged release history and Homebrew needs notarization plus a repo older than 30 days and one of its notability numbers — and shipping this breadth first is exactly what makes Flathub optional rather than critical."
+      },
+      {
+       "label": "Flathub once tags exist",
+       "description": "Submit the GUI to Flathub after a sustained commit history and tagged releases exist, with a human-authored submission PR per q12.1. Widest reach on Linux and where both High Tide and sone are listed; review is discretionary, and the exclusive-output confinement question in q5.3 has to be answered before the UI can tell the truth about it.",
+       "recommended": false
+      },
+      {
+       "label": "Windows MSI and winget",
+       "description": "Makes Windows first-class from the first release. Decide the WebView2 install mode here — downloadBootstrapper (0 MB, needs network at install) through fixedVersion (~180 MB, freezes the webview build); default to the evergreen bootstrapper and set the floor at Windows 10 April 2018 or later, which is where WebView2 is preinstalled. Without signing, SmartScreen warns on every install.",
+       "recommended": false
+      },
+      {
+       "label": "macOS DMG, Homebrew later",
+       "description": "A notarized DMG now, with a Homebrew cask once the age and notability thresholds are met. Decide universal (Intel + Apple Silicon) versus Apple-Silicon-only here: a universal build roughly doubles build time and artifact size and requires every bundled native library, including the whole GStreamer or libmpv tree from q5.2, to itself be universal. Without notarization, macOS downloads are effectively unusable and no cask is possible.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q12.3",
+     "header": "Signing",
+     "question": "Who pays for code signing, and from when?",
+     "multiSelect": false,
+     "condition": "the answer follows q1.2 — a Linux-first v1 defers most of this cost",
+     "grounding": "engineering-baseline/references/packaging-and-distribution.md §5-§6 (Apple Developer Program $99/yr covering Developer ID and notarization; Azure Trusted Signing reported at $9.99/mo Basic; EV certificate roughly $280-500/yr on a hardware token; Trusted Signing certificates are non-exportable; eligibility is narrower for individuals — organisations in a listed set of countries, individual developers US or Canada only, no free/trial Azure subscriptions, individual onboarding reportedly paused and new organisation customers needing three years of verifiable history). The pricing and eligibility text comes from a search index over Microsoft's pages, not a direct fetch — re-verify before budgeting.",
+     "options": [
+      {
+       "label": "Both platforms, budgeted (Recommended)",
+       "description": "Apple Developer Program plus a Windows signing certificate, in place before the first binary release on those platforms. Roughly $220/year if Azure Trusted Signing is available to you, or roughly $380-600/year if you must buy an EV certificate — check the eligibility gate first (US or Canada for an individual, a paid Azure subscription, three years of history for a new organisation, individual onboarding possibly paused). Trusted Signing certificates cannot be exported, so losing eligibility means losing the ability to sign.",
+       "recommended": true,
+       "rationale": "Unsigned builds are not merely untidy: without notarization there is no Homebrew cask and macOS downloads are effectively unusable, and without Windows signing SmartScreen warns on every install — so the alternative is shipping two of the three named platforms in a state most users cannot get past."
+      },
+      {
+       "label": "macOS notarization only",
+       "description": "Pay for Apple at $99/year, accept SmartScreen warnings on Windows. Fixes the platform where unsigned is closest to unusable, and sidesteps the Trusted Signing eligibility question entirely.",
+       "recommended": false
+      },
+      {
+       "label": "Neither for v1",
+       "description": "Ship Linux properly and treat Windows and macOS as best-effort unsigned builds. No recurring cost, and a bad first impression on two of the three named platforms — consistent only with a Linux-first answer to q1.2.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q12.4",
+     "header": "Updates",
+     "question": "How do installed copies of streamboat get updated?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tidal-oss-landscape SKILL.md open decision 9 and tech-stack-evaluation SKILL.md open decision 14 (the Tauri updater covers only AppImage, .app.tar.gz and MSI+NSIS; an in-app updater is never acceptable on Flatpak, Snap, AUR or Nix, where the package manager owns the binary); engineering-baseline SKILL.md open decision 5 (update check on by default for source/manual installs, off for managed packages)",
+     "options": [
+      {
+       "label": "Check and notify only (Recommended)",
+       "description": "Managed packages update themselves; self-contained bundles check a version endpoint and tell the user, linking to the release. The check is on by default for source and manual installs and compiled out or defaulted off for managed packages, and it is a plain HTTPS request with no identifying payload.",
+       "recommended": true,
+       "rationale": "It is the only mechanism that is correct on every channel streamboat actually ships to: a self-updating binary is wrong on Flatpak, Snap, AUR, Nix and any distro package, and the Tauri updater covers only three of the bundle formats anyway. Notifying costs one endpoint and no signing key infrastructure."
+      },
+      {
+       "label": "Signed updater for bundles",
+       "description": "A signed in-app updater for AppImage, the macOS .app and MSI/NSIS installs, disabled everywhere a package manager owns the binary. Best experience for users who downloaded a bundle directly, at the cost of an update signing key, an appcast feed and a second release-artifact pipeline.",
+       "recommended": false
+      },
+      {
+       "label": "No update mechanism",
+       "description": "No check and no updater; users learn about releases from the repository or their package manager. Zero code and zero outbound requests, and manual installs quietly go stale — which matters more than usual for a client whose API can change under it.",
+       "recommended": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "r13",
+   "title": "First milestone, testing and repository shape",
+   "rationale": "The crate layout, the definition of 'done' for the first milestone and the provenance of every test fixture must exist before Cargo.toml does. Fixture provenance in particular is a one-way door once real captures are in public git history.",
+   "questions": [
+    {
+     "id": "q13.1",
+     "header": "First goal",
+     "question": "What is the first milestone that counts as done?",
+     "multiSelect": false,
+     "condition": "given the release shape chosen in q1.1 — this is sequencing inside that release, not a change to its scope",
+     "grounding": "headless-and-tidal-connect SKILL.md staged path steps 1-6; tech-stack-evaluation/references/architecture-shapes.md §4 (the transport is picked at bootstrap from day one)",
+     "options": [
+      {
+       "label": "Playable spike, then UI (Recommended)",
+       "description": "Log in, resolve a manifest and play one track to the end from the CLI, through the same Command/Event types the GUI will use, with the audio engine already behind its trait and the gapless-plus-exclusive combination from q5.4 prototyped. No browse UI yet.",
+       "recommended": true,
+       "rationale": "The manifest-to-DAC path carries every unknown that could invalidate the architecture — encrypted-manifest refusal, DASH parsing, device negotiation, the engine-choice conflict, and the untried gapless-with-exclusive-writer claim — so proving it end to end first is what makes the remaining decisions cheap to act on."
+      },
+      {
+       "label": "Auth and browse UI first",
+       "description": "Login plus search and library screens with playback stubbed. Shows visible progress early, validates the UI direction from round 4, and defers every audio unknown to a point where they are more expensive to be wrong about.",
+       "recommended": false
+      },
+      {
+       "label": "Daemon and CLI first",
+       "description": "A working streamboatd with the control API, MPRIS and device-code login before any GUI. Fastest path to a usable Pi player, with the desktop shell arriving late enough that GUI-shaped requirements can force protocol changes.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q13.2",
+     "header": "Binaries",
+     "question": "What is the binary shape that gets installed and packaged?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "tech-stack-evaluation SKILL.md open decision 24 (unreconciled naming between architecture-shapes.md and headless-connect.md — pick one before Cargo.toml exists); headless-and-tidal-connect/references/daemon-architecture.md §1 (librespot's crate boundaries as the model for where core ends)",
+     "options": [
+      {
+       "label": "streamboat + streamboatd (Recommended)",
+       "description": "Two artifacts: streamboat, the desktop shell with CLI subcommands, and streamboatd, a webview-free daemon. A CI job builds streamboatd in a container with no GTK or WebKit to prove it. The internal crate split behind them (whether the engine is its own crate) follows from q2.2 and is a rename, not a redesign.",
+       "recommended": true,
+       "rationale": "It resolves the open naming conflict, and the two-artifact split is the half a CI job can actually enforce — building the daemon in a GUI-free container is what stops the headless path silently regressing into a desktop dependency."
+      },
+      {
+       "label": "One binary, daemon subcommand",
+       "description": "Ship a single streamboat binary where 'streamboat daemon' is a mode, as tidalt does. Simplest to install, document and package, and the webview then links into every install including headless ones — which is exactly what the CI guard above exists to prevent.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q13.3",
+     "header": "Testing",
+     "question": "How much testing and CI at the start?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "engineering-baseline/references/testing-strategy.md (parser/transport split, fixture capture, opt-in live canaries; High Tide and tidal-hifi ship zero automated tests of TIDAL behaviour and python-tidal does not run its suite in CI); tech-stack-evaluation testing notes (tauri-driver has no macOS support — Apple ships no WKWebView WebDriver)",
+     "options": [
+      {
+       "label": "Unit and fixture tests (Recommended)",
+       "description": "Parser/transport split with recorded API fixtures and wiremock, component tests in the frontend, clippy/fmt/lint gates, and a CI job building the daemon in a GTK/WebKit-free container. Fork-safe: no job requires a secret or a live TIDAL account. No end-to-end UI automation yet.",
+       "recommended": true,
+       "rationale": "An unofficial-API client cannot run live credentials in CI, so fixtures against a parser/transport split are where the real defect-catching happens — and the headless container build is the single cheapest test that protects the architecture the whole project rests on. The two most-cited reference clients ship no TIDAL behaviour tests at all, so this is cheap ground to be materially better on."
+      },
+      {
+       "label": "Add e2e via tauri-driver",
+       "description": "Also drive the built app on Linux and Windows CI. Catches wiring regressions the unit tests cannot; Apple ships no WKWebView WebDriver, so macOS needs a different workaround or goes uncovered.",
+       "recommended": false
+      },
+      {
+       "label": "Rust unit tests only",
+       "description": "Minimum viable gate while the shape is still moving. Fastest early, and it lets manifest-parsing and quality-cascade regressions reach releases unnoticed.",
+       "recommended": false
+      }
+     ]
+    },
+    {
+     "id": "q13.4",
+     "header": "Fixtures",
+     "question": "Where do the API test fixtures come from?",
+     "multiSelect": false,
+     "condition": "",
+     "grounding": "engineering-baseline SKILL.md open decision 15 and references/testing-strategy.md §2 ('synthetic (structure-preserving, content-invented) vs. real captured TIDAL API responses committed to a public test-fixtures directory — a legal/ToS posture decision, not only a redaction mechanic')",
+     "options": [
+      {
+       "label": "Synthetic fixtures (Recommended)",
+       "description": "Structure-preserving, content-invented fixtures written by hand from the documented schemas — real field names and shapes, invented titles, artists and IDs. Nothing of TIDAL's catalogue is republished, at the cost of fixtures that can drift from the real wire format unless a live canary test is run against a real account periodically.",
+       "recommended": true,
+       "rationale": "It is the same family of decision as the caching line in q6.3 and the play-reporting line in q8.2, and it is a one-way door: once real captured catalogue responses are in public git history they cannot be removed from clones. Synthetic fixtures keep the repository free of a third party's content while still testing every parser branch."
+      },
+      {
+       "label": "Real captures, redacted, public",
+       "description": "Capture real responses with a scrub script, redact tokens and user identifiers, and commit them. Highest fidelity to the actual wire format and the fastest way to reproduce a parsing bug, and it republishes TIDAL's catalogue metadata in a public repository.",
+       "recommended": false
+      },
+      {
+       "label": "Real captures, kept private",
+       "description": "Keep a capture script in the repository and the captures themselves gitignored, so each developer generates their own from their own account. Full fidelity with nothing republished, and CI cannot run those tests — which puts the parser tests back in the same place they started.",
+       "recommended": false
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "already_decided": [
+  "Target platforms: desktop Linux, Windows and macOS AND a headless/server/CLI mode, both now; mobile is a future target the architecture must not preclude.",
+  "streamboat talks to the unofficial api.tidal.com v1/v2 API used by python-tidal/High Tide/sone, requiring the user's own paid TIDAL subscription — the official Developer API's Player module is closed-source, web/iOS/Android only, and cannot run headless, so it cannot be the playback spine.",
+  "The official openapi.tidal.com/v2 API may be used opportunistically for metadata, playlists, lyrics and ISRC/UPC lookup with the same Bearer token — no second login is required.",
+  "streamboat is a player for subscribers, never a downloader or ripper: no DRM circumvention, no OLD_AES or Widevine handling, no credential pooling, no export path, no playback without a logged-in subscriber.",
+  "Encrypted manifests (encryptionType != NONE, a non-empty encryptionKey, or securityType/securityToken) are refused loudly with an explanation pointing at the client-ID setting; hi-res tiers are filtered out of the cascade pre-emptively so users rarely hit the wall.",
+  "TIDAL Connect is permanently out of scope in both directions — no target, no controller. Only the public positioning around it is still open (q10.3).",
+  "Never redistribute a vendor's proprietary binary or device certificate.",
+  "One TIDAL account = one concurrent stream, enforced by TIDAL's Pushkin channel: multiroom must be one daemon holding the single stream and fanning PCM out to endpoints, never one daemon per room. Whether and how streamboat speaks that protocol is q10.1.",
+  "streamboat-core carries no UI, no windowing and no desktop-OS dependency; the daemon is built as a separate Cargo artifact that must not link a webview, enforced by CI.",
+  "The GUI reaches the engine only through the same Command/Event types the control API exposes — there is no private path into the engine.",
+  "Every listener binds loopback by default; LAN exposure is a deliberate, logged, token-protected opt-in, paired with Host-header allowlisting.",
+  "No telemetry to the project's developers and no hosted crash reporting: local crash dumps plus a 'generate debug bundle' command, with redaction by construction rather than by review.",
+  "The forge is GitHub (github.com/Waayway/streamboat). Flathub io.github.* app-ID verification, private vulnerability reporting and CI secret scoping all follow from it; only the owner/app-ID within GitHub is still open (q2.4).",
+  "360 Reality Audio is dead (removed by TIDAL 2024-07-24) and must not be implemented; Dolby Atmos is not decoded locally — at most a passthrough flag kept in the manifest-request layer for later.",
+  "MQA/HI_RES-era content is gone from the service; the tier is not a product target.",
+  "adaptive=false on every manifest request — mid-track representation switching means a format change, a device reopen and an audible gap.",
+  "Play reporting, when enabled, is suppressed for PREVIEW assets; assetPresentation != FULL is a distinct playback state with its own UI.",
+  "Never claim the tidal:// URI scheme — Strawberry's OAuth redirect, sone/High Tide deep links and TIDAL's own desktop app all register it. Use streamboat:// for both the OAuth redirect and content deep links.",
+  "Never link fdk-aac: it is GPL-incompatible and non-distributable alongside GPL parts. AAC decoding, if built, goes through LGPL FFmpeg's avdec_aac or faad.",
+  "Strings are externalised from the first commit and a complete English localisation ships; the user's real locale is passed to TIDAL's locale parameter rather than hardcoding en_US.",
+  "MPRIS registration lives in the engine, not the GUI, so it works in daemon mode.",
+  "Bit-perfect mode bypasses both the volume slider and ReplayGain, and this is stated in the UI rather than implied. 'Bit-perfect' is scoped per track by source type and is never claimed for a lossy AAC source.",
+  "Never run git commit, push, checkout, stash, reset or clean in this repository."
+ ],
+ "notes": "Ordering and dependencies: rounds 1-2 fix scope, platform commitments and the one-way-door legal decisions; q2.2 only applies if q2.1 splits the licence; round 4's toolkit question follows the look question and assumes a Rust core; round 4's frontend question assumes a webview shell; q5.2 applies only on the GStreamer branch and q5.3's cost depends on the same answer; q9.2 and q9.3 assume the HTTP+WebSocket answer in q9.1; q7.2 relaxes if the quality ceiling in q1.4 drops to 16/44.1; q12.3 follows the platform answer in q1.2; q13.1 sequences inside the release shape chosen in q1.1. Conflicts between research documents that the owner is settling by answering, not inheriting: (1) the audio-pipeline report recommends libmpv-first while tech-stack.md recommends GStreamer-first — q5.1 decides which document is authoritative for engine code; (2) the two reports disagree on whether exclusive ALSA works inside a Flatpak — audio-pipeline infers /dev/snd is invisible without --device=all, engineering-baseline cites Flatpak's own sandbox-permissions doc that --socket=pulseaudio already covers /dev/snd and warns against requesting --device=all — resolve it with one flatpak run opening hw: rather than by picking a document (q5.3); (3) the permissive-core scope differs between licensing-and-legal.md (API client, auth, manifest parsing, models) and daemon-architecture.md (also engine, output backends and Pushkin) — q2.2 decides. Deliberately excluded as delegable or already answered by research: the i18n mechanism (gettext for a GTK build, Fluent for a Rust/JS one; externalising strings from commit one is already settled) and the translation platform (start with plain PRs against the string catalogue; move to Weblate or Crowdin only when translators ask); explicit-content filtering (client-side, ship whenever cheap); streamboat:// protocol-handler registration (a per-platform install-time opt-in); multi-account support (key the credential schema by account from day one, expose it later); buffering numbers (configurable, with roughly 23 MB of decoded PCM per prerolled branch as the headless default); the ReplayGain missing-value sentinel and peak-pairing behaviour; DASH parser details (use a real XML parser with the full identifier set, never a regex); release cadence and release-automation tooling (pick one appropriate to the chosen stack once the stack exists); and the native remote/discovery protocol shape (defer until a phone remote is actually built — and re-check first, because Sendspin's spec currently states no licence at all, which is a blocker on copying its design rather than a caveat; librespot's MIT zeroconf pairing is the fallback). Two caveats to carry into any public-facing document: TIDAL's Developer Terms, Developer Guidelines and consumer Terms could not be read directly during research (tidal.com and developer.tidal.com were blocked), so every legal quotation must be verified against the primary source before it is published; and the Windows signing prices and eligibility rules in q12.3 come from a search index over Microsoft's pages rather than a direct fetch, so re-verify them before budgeting. File written to /home/user/streamboat/docs/research/decision-tree.json (13 rounds, 47 questions)."
+}

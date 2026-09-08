@@ -162,24 +162,10 @@ All from `ref:tidal-connect/README.md` and `ref:tidal-connect/bin/common.sh`:
 - **IPv6 is mandatory.** "Tidal connect won't work if your system does not support ipv6" (issue
   #21). No workaround known.
 - **avahi-daemon must be running.** Not installed by default on DietPi.
-- **ALSA card indices move; the app does NOT uniformly open `default`.** `write_audio_config()`
-  emits `pcm.tidal-audio-device` + `pcm.tidal-softvol` and passes `tidal-softvol` when softvol is
-  enabled (`ENABLE_SOFTVOLUME=yes`, the shipped default); it passes `$CREATED_ASOUND_CARD_NAME` when
-  that variable is set and softvol is off; it passes `custom` when the user supplies their own
-  `asound.conf` via `userconfig/`; and it falls back to `default` only when none of the above apply.
-  `entrypoint.sh` then invokes the binary with `--playback-device $(get_playback_device)`. Indices
-  change simply because a USB DAC was or wasn't powered on at boot.
-- **Software volume needs care.** `common.sh` runs `amixer -c <idx> controls | grep 'Master'`; if no
-  `Master` exists it creates a softvol named `Master`; if one already exists it creates
-  `SoftMaster` and logs a warning that the TIDAL slider will move the *hardware* volume and affect
-  every other player on that card.
-- **Exclusive device locking.** "Tidal Connect will access exclusively your audio device if you
-  select it in your … Tidal App." Check with `watch cat /proc/asound/<card>/pcm0p/sub0/hw_params` —
-  anything other than `closed` means busy.
-- **Pre-flight test tone, and it is opt-out.** `aplay -D $PLAYBACK_DEVICE
-  /assets/audio/short-low-tone-48k.wav`, falling back to the 44.1 kHz file; the app starts if a tone
-  played *or* if `ENABLE_GENERATED_TONE=no` was set (`tone_skipped=1`), which skips the device check
-  entirely.
+- **ALSA operational lore (card-name-not-index resolution, `Master`/`SoftMaster` softvol collision,
+  the opt-out pre-flight test tone, the busy check via `hw_params != closed`, and the 26 per-DAC
+  presets) is owned by `raspberry-pi-deployment.md` §1 of this same skill** — cite it rather than
+  restating; this file previously carried a second copy of the same material.
 - **Multi-word friendly names break Avahi for some users** (issue #216) — the default was changed to
   a single word.
 - **Raspberry Pi 5**: `tidal_connect_application: error while loading shared libraries:
@@ -190,12 +176,8 @@ All from `ref:tidal-connect/README.md` and `ref:tidal-connect/bin/common.sh`:
   to pin the minimum CPU frequency around 600 MHz to stop crackling. No measured decode-CPU
   benchmark exists anywhere in the reference set — don't quote one.
 
-The repo ships **26** per-DAC `asound.conf` presets in `userconfig/` (not "~40" — count them
-yourself: `ls ref:tidal-connect/userconfig/*.asound.conf | wc -l`) and a tested-device table in
-`assets/known-devices.md` (Aune S6, Chord Qutest, FiiO K11, Fosi DS1, HiFiBerry DAC+/Digi+ Pro, iFi
-ZEN DAC V2, IQaudIO DAC, Topping D10, SMSL A8, Yulong D200, Apple USB dongle, RPi HDMI/headphone
-outputs, …). **This table and these presets are directly reusable as streamboat's own ALSA device
-compatibility database.**
+The per-DAC preset count and the tested-device table are covered in `raspberry-pi-deployment.md`
+§1's canonical treatment, referenced above.
 
 ### 2.5 Quality ceiling — the decisive product argument
 
@@ -217,6 +199,12 @@ README, next to the "we are not a Connect target" statement.
   `avahi-browse -a | grep -i tidal`. Records carry a ~120 s TTL, which is why a rapidly restarting
   target can collide with its own stale advertisement. [confirmed, documented-web:
   https://raw.githubusercontent.com/TonyTromp/tidal-connect-docker/master/docs/TROUBLESHOOTING.md]
+  **Do not carry the ~120 s figure into streamboat's own `_streamboat._tcp` design.** RFC 6762 §10
+  recommends 120 s only for records containing a *host name* (A/AAAA/SRV); PTR and TXT records — the
+  ones a controller actually browses to find a service *instance* — default to **75 minutes**. Budget
+  `_streamboat._tcp`'s own TTL at the RFC default, and send an RFC 6762 goodbye packet (TTL=0) on
+  clean daemon shutdown rather than relying on expiry to clear a stopped daemon from a browse list.
+  [inferred from RFC 6762 §10]
 - The advertisement publishes at least the service (friendly) name and model name — the two values
   passed as `-f` and `--model-name`.
 - **Port and TXT record keys are not documented in any source read for this project, but this is a
@@ -340,6 +328,18 @@ Readings:
     and the `etag`/`itemsEtag` concurrency fields the desktop client's Redux store uses — neither
     appears in the `/playQueues` OpenAPI spec. So "cloudConnect the wire protocol" is still closed;
     "a server-side queue resource" is not.
+  - **Write limits and payload shape — documented but not yet stated anywhere in this skill, and an
+    implementation built without them fails on the first real playlist.** Every future-relationship
+    write (`add`, `update`, `remove` on `relationships/future`) is capped at **20 items per call**
+    (`maxItems: 20`), so a 500-track queue costs 25 authenticated round trips, not one. Adds carry a
+    required `meta.mode` drawn from `ADD_TO_FRONT | ADD_TO_BACK | ADD_BEFORE | REPLACE_ALL |
+    REPLACE_ALL_AND_CURRENT | ADD_TO_FRONT_REPLACE_CURRENT`, plus optional `batchId` (uuid),
+    `legacySource` and `positionBefore`. Ordering is **cursor-based** (`positionBefore`,
+    `meta.itemCursor`), not index-based — do not model this as an array with integer positions.
+    Add-payload item types are `tracks|videos|albums|playlists`; current/remove/update item types are
+    narrower, `tracks|videos` only. [verified-source
+    `ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json`, spec 1.10.104,
+    `components.schemas.PlayQueuesFutureRelationship{Add,Update,Remove}Operation_Payload*`]
 
 **Conclusion, revised**: the Connect **transport** (mDNS target discovery, device-to-device handoff,
 `cloudConnect`) is as closed as the target side — streamboat can enumerate `_tidalconnect._tcp`
@@ -364,7 +364,8 @@ GUI-feature angle plus `tidal://` deep links and OS media controls.
 | Option | Technically possible? | Legal / distribution posture | Verdict |
 | --- | --- | --- | --- |
 | **(a) Bundle the proprietary `tidal_connect_application`** | Yes on ARM Linux — exactly what `edgecrush3r/tidal-connect` does | Redistributing an unlicensed binary extracted from device firmware, plus **iFi's device certificate**, is copyright infringement and identity misuse. GioF71 explicitly keeps the binary *out* of his repository and ships config only. The whole chain survives on obscurity, not permission. | **Reject.** Incompatible with an open-source project that wants Flathub/distro packaging. |
-| **(b) Reimplement the Connect target (or controller) protocol** | No precedent exists anywhere. Requires defeating `advobfuscator`, recovering the WebSocket protocol, **and** obtaining or forging a device certificate. | Reverse-engineering a security/identity mechanism is the clearest possible fit for TIDAL's consumer-terms prohibition on "circumventing or modifying … any security technology" (see the `tidal-api` skill's legal reference). Unlike using the unofficial streaming API with a paid account, this is not a defensible gray area. | **Reject.** Highest legal risk in the whole project, for a feature capped in quality anyway. |
+| **(b) Reimplement the Connect target protocol** | No precedent exists anywhere. Requires defeating `advobfuscator`, recovering the WebSocket protocol, **and** obtaining or forging a device certificate. | Reverse-engineering a security/identity mechanism is the clearest possible fit for TIDAL's consumer-terms prohibition on "circumventing or modifying … any security technology" (see the `tidal-api` skill's legal reference). Unlike using the unofficial streaming API with a paid account, this is not a defensible gray area. | **Reject, permanently.** Highest legal risk in the whole project, for a feature capped in quality anyway. |
+| **(b') Reimplement the Connect *controller* protocol** | No precedent exists anywhere either — but this half is **not** certificate-gated the way the target is: a controller only needs to discover and talk to someone else's target, not present a device identity of its own. The blocker is purely an undocumented wire protocol with zero precedent to reverse-engineer from. | Weaker version of the same legal risk as (b) — still reverse-engineering a security-adjacent protocol, but without the device-certificate forgery/reuse problem. | **Out of scope**, not "reject" — revisit only if someone publishes a wire capture of the controller protocol. Don't conflate this with (b); the target verdict is unconditional, this one is conditional on new evidence. |
 | **(c) Skip Connect; offer a streamboat-native remote** | Yes, entirely under streamboat's control | No TIDAL IP involved; the daemon is just another logged-in subscriber client. | **Adopt.** See `daemon-architecture.md` and `mpd-and-multiroom.md`. |
 
 **What streamboat should still do about Connect** (cheap, honest, useful):

@@ -41,19 +41,25 @@ recommended one.
 ## Testing tooling per stack
 
 - **Rust**: `cargo test`, `wiremock` for HTTP, `insta` for snapshot assertions on parsed manifests,
-  `criterion` if needed. **Correction (fact-checked), fuller picture than "thin testing":** SONE's
-  `[dev-dependencies]` is indeed just `tempfile = "3"`, but that is not the whole test story — SONE
-  has 145 `#[test]` functions across 22 `#[cfg(test)]` modules in 16 files, all on std-only tooling
-  (no mocking framework, no snapshot crate), covering `tidal_api.rs` (playback-info sub-status
-  classification), `pipeline_probe.rs`, `rate_gate.rs`,
+  `criterion` if needed. **Correction (fact-checked twice), fuller picture than "thin testing" but
+  narrower than an earlier version of this file claimed:** Sone's `[dev-dependencies]` is indeed
+  just `tempfile = "3"` — no HTTP-mocking library, no snapshot crate — and that absence is a real
+  signal, not a misleading one. Sone has **151 tests (145 `#[test]` + 6 `#[tokio::test]`)** across
+  22 `#[cfg(test)]` modules in 16 files, all std-only, covering `tidal_api.rs` (playback-info
+  sub-status classification), `pipeline_probe.rs`, `rate_gate.rs`,
   `scrobble/{lastfm,listenbrainz,musicbrainz}.rs`, `mcp/sanitizer.rs`, `logging.rs`, `theme_config.rs`,
-  `commands/{playback,updates}.rs`. The accurate framing: **everything except the audio engine is
-  unit-tested**; `audio.rs` (3,309 lines, the hardest code in the project) specifically has zero
-  `#[cfg(test)]` modules. That split — not a blanket "thin testing" verdict — is the template worth
-  copying. See `references/architecture-shapes.md` §7 for the design consequence (a headless-testable
-  `AudioEngine` backend).
-- **Frontend**: Vitest + `@testing-library/react` + jsdom is exactly SONE's setup (`vitest` 4.1.7,
-  `@testing-library/react` 16.3.2, `jsdom` 29.1.1), with `knip` for dead-code detection. SONE has
+  `commands/{playback,updates}.rs`. **The accurate framing, corrected from an earlier "everything
+  except the audio engine is unit-tested" claim here**: what's actually covered is pure
+  decision-functions across most modules (sub-status classification, rate-gate arithmetic, scrobble
+  thresholds, LRC parsing) — not the HTTP transport layer, not the manifest parsers against real
+  payloads, and not `audio.rs` (3,309 lines, the hardest code in the project — zero
+  `#[cfg(test)]` modules). The lack of a mocking library is exactly why the transport layer has no
+  coverage; don't read "151 tests" as implying a copyable harness for the hard parts, which is
+  precisely why `streamboat-engineering-baseline`'s own testing strategy has to build one from
+  scratch. See `references/architecture-shapes.md` §7 for the design consequence (a
+  headless-testable `AudioEngine` backend).
+- **Frontend**: Vitest + `@testing-library/react` + jsdom is exactly Sone's setup (`vitest` 4.1.7,
+  `@testing-library/react` 16.3.2, `jsdom` 29.1.1), with `knip` for dead-code detection. Sone has
   test files colocated with components (`Header.test.tsx`, `PlayerBar.test.tsx`,
   `NowPlayingDrawer.escape.test.tsx`, `MediaCard.explicit.test.tsx`, `HomeSection.compactGrid.test.tsx`).
 - **E2E**: `tauri-driver` works on **Windows and Linux only** — "macOS not having a WKWebView driver
@@ -67,13 +73,13 @@ recommended one.
 ## Brief items not covered by this research pass
 
 - **Accessibility per candidate** has no row anywhere in the main report, though
-  `engineering-baseline.md:1234,1253` tags both the screen-reader approach and the automated a11y
+  `docs/research/engineering-baseline.md:1234,1253` tags both the screen-reader approach and the automated a11y
   gate **[STACK]** — deferred there, unanswered here too. For the recommended stack: ARIA plus the
   platform webview's accessibility tree (Tauri/Electron), versus AccessKit (egui/iced/Slint), AT-SPI
   (GTK), or UIA/NSAccessibility (Qt/Avalonia). Custom window chrome (see
   `references/tauri-engineering-facts.md` §3) means keyboard focus management and ARIA on the custom
   titlebar/player controls is real, uncalibrated work.
-- **i18n mechanism** is likewise tagged **[STACK]** at `engineering-baseline.md:1403` and unanswered:
+- **i18n mechanism** is likewise tagged **[STACK]** at `docs/research/engineering-baseline.md:1403` and unanswered:
   react-i18next/Fluent/ICU MessageFormat for the recommended stack vs. gettext for a GTK alternative.
 - **Frontend framework within Recommendation 1** (React 19 vs. Svelte 5 vs. Solid vs. Vue — Vue is
   named in the brief and never evaluated beyond describing Cider) gets one open question and one

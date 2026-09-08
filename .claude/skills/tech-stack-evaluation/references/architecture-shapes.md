@@ -20,22 +20,36 @@ pick and why.
 
 ---
 
-## §1 Shape 1 — single Rust workspace (core crate + desktop UI crate + daemon binary)
+## §1 Shape 1 — single Rust workspace (core crate + control-API crate + desktop UI crate)
+
+**This is the reconciled layout — adopt this, not the earlier `streamboat-player`-as-its-own-crate
+sketch below.** Inlined verbatim from `docs/research/headless-connect.md:1839-1841` §15
+("Recommendation: Model 1 implemented on top of Model 3's library split"), which is the more recently
+reconciled of the two crate layouts this research produced:
 
 ```
 streamboat/
   crates/
-    streamboat-core/      # HTTP client, OAuth (device code + PKCE), models, catalog, library, cache
-    streamboat-player/    # AudioEngine trait, gstreamer backend, queue + state machine, ReplayGain
-    streamboat-proto/     # command/event types, serde, shared by daemon + clients (single source of truth)
-    streamboat-daemon/    # headless binary: WebSocket server, MPRIS, systemd unit, config
+    streamboat-core/      # session/auth (OAuth device-code + PKCE), catalogue, queue, player engine
+                           # (the AudioEngine trait — §0 of audio-engine-comparison.md — and its
+                           # backends), output backends incl. a pipe/fd target, Pushkin. No UI, no
+                           # server.
+    streamboat-server/    # control API (HTTP+WS), MPRIS, mDNS, optional MPD listener. Depends on core.
+    streamboat-proto/     # command/event types, serde, shared by server + clients (single source of truth)
     streamboat-cli/       # TUI / one-shot client over the protocol
   desktop/
     src-tauri/            # thin Tauri shell: window, tray, deep links, global shortcuts
     src/                  # React frontend
 ```
 
-- **State sync**: none needed in the desktop default path — the Tauri shell links `streamboat-player`
+One shipped binary carries the user-facing command surface (`streamboat`, `streamboat daemon`,
+`streamboat play`, `streamboat service install`) via subcommands, built from two artifacts per
+`docs/research/headless-connect.md` §15's own reconciliation with the daemon-build-isolation
+requirement in `docs/research/tech-stack.md:816-817`: a GUI binary that links the webview, and a
+`streamboatd`-shaped daemon binary that must not — enforce with a workspace dependency graph and a CI
+job that builds the daemon crate in a container with no GTK/WebKit installed.
+
+- **State sync**: none needed in the desktop default path — the Tauri shell links `streamboat-core`
   directly and dispatches the same `Command` enum in-process. No IPC latency, no hot-path
   serialization.
 - **Latency**: Tauri `invoke` round-trips are sub-millisecond for small payloads; the only
@@ -44,6 +58,10 @@ streamboat/
 - **Complexity**: lowest of the three. One language, one build, `cargo test` covers the engine.
 - **Weakness**: the UI is coupled to Rust. A future Flutter or Compose mobile UI needs Shape 2's
   binding layer added on top — additive, not a rewrite, provided the core stays UI-agnostic.
+
+**Superseded (kept as a one-line note, not a competing option):** an earlier draft of this file split
+the player engine into its own `streamboat-player` crate alongside `streamboat-core`,
+`streamboat-proto`, a `streamboat-daemon` crate and `streamboat-cli`. The layout above replaces it.
 
 ## §2 Shape 2 — core as a library with FFI/UniFFI bindings to a non-Rust UI
 
@@ -73,7 +91,7 @@ else is a client).
   not stream a position tick at UI framerate.
 - **Latency**: local loopback WebSocket is sub-millisecond, irrelevant in practice.
 - **Complexity**: highest. Every UI action becomes a protocol message; every state read becomes a
-  subscription. Needs a reconnect story, a versioned protocol, an auth story for the socket (SONE
+  subscription. Needs a reconnect story, a versioned protocol, an auth story for the socket (Sone
   gates its MCP server on a generated token — copy that).
 - **Offline**: the desktop app is useless without the daemon running — a real UX regression for the
   95% single-machine case.
@@ -92,9 +110,9 @@ gets Shape 1's simplicity for the common case and Shape 3's reach without a seco
 plain browser (served by the daemon as a web remote — the cheapest possible answer to "mobile
 later", years before a Tauri/Flutter mobile app), then no component may call `invoke` directly. Every
 call must go through a `Transport` interface picked at bootstrap. This is cheap to enforce on day one
-and expensive to retrofit after ~100 component files exist — decide whether `streamboat-daemon` serves
-a browser UI or is MPRIS-bridge-only *before* writing the first component (see Open decision #10 in
-`SKILL.md`).
+and expensive to retrofit after ~100 component files exist — decide whether `streamboat-server`
+(binary `streamboatd`) serves a browser UI or is MPRIS-bridge-only *before* writing the first
+component (see Open decision #10 in `SKILL.md`).
 
 ## §4a TIDAL's account-wide streaming-privileges constraint (Pushkin) — not just device-local
 
@@ -107,22 +125,15 @@ account** will revoke each other's playback even though they hold different soun
 machines — device ownership alone does not model this, and this report's original hybrid design does
 not either.
 
-**Protocol shape**, read directly from the official TIDAL SDKs:
-
-- `POST {legacyApiUrl}/rt/connect` with `Authorization: Bearer <accessToken>` returns the websocket
-  URL (`ref:tidal-sdk-web/packages/player/src/internal/services/pushkin.ts`).
-- The client sends `USER_ACTION` with a `{startedAt}` payload when the user starts playback.
-- The client receives `PRIVILEGED_SESSION_NOTIFICATION` (payload: `clientDisplayName`, `sessionId`,
-  `endsAt {clientTime, serverTime}`, `updatedAt`) and `RECONNECT`.
-- The web SDK surfaces this as a `streaming-privileges-revoked` CustomEvent whose detail names the
-  other device (`ref:tidal-sdk-web/packages/player/src/api/event/streaming-privileges-revoked.ts`).
-  The same module exists in the Android SDK
-  (`ref:tidal-sdk-android/player/streaming-privileges/`) and iOS SDK
-  (`ref:tidal-sdk-ios/Sources/Player/PlaybackEngine/Internal/StreamingPrivileges/StreamingPrivilegesHandler.swift`).
-- On the REST side, SONE classifies `playbackinfo` `subStatus` **4006** as "streaming privileges
-  lost" and deliberately excludes it from its terminal-error list (terminal: 4005, 4010,
-  4030-4032, 4034, 4035 — `ref:sone/src-tauri/src/tidal_api.rs:15-18,6755`): it recovers and must not
-  delete the track, and a `4xxx` sub-status on a 401 is never fixed by a token refresh.
+**Protocol shape**: owned canonically by
+`headless-and-tidal-connect/references/daemon-architecture.md` §6, including the reconnect/backoff
+and token-rebinding analysis this file does not cover — cite it rather than restating the message
+vocabulary. Headline facts worth keeping in mind here: `POST {legacyApiUrl}/rt/connect` returns the
+websocket URL, the client sends `USER_ACTION` and receives `PRIVILEGED_SESSION_NOTIFICATION`/
+`RECONNECT`, and on the REST side `playbackinfo` `subStatus` **4006** ("streaming privileges lost")
+is the non-terminal signal a client discovers this from if it isn't watching the websocket — see
+`tidal-api/references/transport.md` §6 for the canonical terminal/non-terminal sub-status table
+(the literal set, not a range).
 
 **Consequences for streamboat's design:**
 
@@ -137,7 +148,21 @@ not either.
    playback from an already-running daemon **on the same account** is a user-visible handoff, not a
    transparent one — the daemon's session gets revoked, audibly, the moment the GUI starts playing.
 
-**Unresolved**: whether the unofficial `api.tidal.com` surface used by SONE/High Tide/python-tidal
+**Related, unresolved race — gap identified during fact-checking: multi-process OAuth token
+refresh.** The recommended hybrid (§4) explicitly allows a daemon and a GUI on the same machine and
+account to coexist ("try to claim the device/D-Bus name; if already claimed, become a client"), but
+the OAuth token is shared state between those two processes: in TIDAL's common refresh flow,
+whichever process refreshes first invalidates the other's refresh token — independently of the
+Pushkin account-privilege problem above. `docs/research/engineering-baseline.md` already flags "multi-process token
+races" as open. `docs/research/headless-connect.md` names a concrete reference implementation: `tidalrs` exposes an
+`on_authz_refresh_callback` token-refresh hook, cited there as "a reference implementation for
+`streamboat-core`'s refresh loop and the multi-process token-refresh notification problem"
+(`ref:tidalrs/src/lib.rs:271-281,321,401`). The stack-level decision: either only the device-owning
+process ever refreshes and pushes the new token to clients over the control protocol (making it a
+`streamboat-proto` message, not just a keyring concern), or refresh is serialised behind a file lock.
+Decide this alongside item 3 above — both are protocol design, not implementation detail.
+
+**Unresolved**: whether the unofficial `api.tidal.com` surface used by Sone/High Tide/python-tidal
 exposes this websocket in the same shape as the official SDKs, or something different — confirm
 against a live account before implementing. See `tidal-api`/`tidal-oss-landscape` skills for the
 unofficial-API side of this.
@@ -185,6 +210,17 @@ access from a non-GUI process — unsolved anywhere in this survey. Windows need
 §5, gets no SMTC — the honest scope statement is "no now-playing integration in headless Windows
 mode," not a promise to eventually fake an HWND.
 
+**Headless login/pairing UX is out of scope for this file by design — read `docs/research/headless-connect.md` §13
+alongside it.** This report's own login content (`tauri-plugin-oauth` loopback listener + a `tidal://`
+deep link, see `tauri-engineering-facts.md` §2) is desktop-shaped; "headless now" means the daemon
+needs its own answer on day one. `docs/research/headless-connect.md` §13 documents terminal+QR device-code login
+(`ref:tidalt/internal/tidal/loginprint.go`), a local web-page PKCE flow
+(`ref:mopidy-tidal/mopidy_tidal/web_auth_server.py` on port 8989), pre-provisioned tokens via env
+vars, and an HTTP-exposed device-auth code (`go-librespot`'s `GET /auth/code`) — plus the
+keyring-with-encrypted-file-fallback pattern both `tidalt` and Sone use, which matters more on a
+headless box with no unlocked Secret Service. Concrete consequence: `axum` belongs in the daemon
+crate from day one for login, not only for the control API.
+
 **The daemon's own arm64/Raspberry Pi release pipeline is unresolved beyond that one Docker note —
 gap identified during fact-checking.** tidalt's `linux/arm64` image is the only arm64 precedent in
 the survey, and it sidesteps cross-compilation entirely by building inside per-arch container images
@@ -197,12 +233,23 @@ cross-compiling a pure-Rust binary — one more reason to keep `symphonia`/libmp
 target-triple list (`aarch64-unknown-linux-gnu` at minimum, `armv7-unknown-linux-gnueabihf` for
 32-bit Pi OS) and the build mechanism explicitly before the first Pi release.
 
+**ARM is treated as a daemon-only concern above; desktop ARM targets are never named — gap identified
+during fact-checking.** Every `arm64`/`aarch64` mention in this file is inside the Pi-daemon
+paragraph. Desktop has ARM questions too: `aarch64-pc-windows-msvc` (WebView2 ships on Windows on
+ARM), arm64 Linux desktop (Asahi, Pi desktop builds, ARM laptops), and the macOS universal-binary
+question (`tauri-engineering-facts.md`). Since this report establishes Tauri cannot cross-compile and
+needs three separate release pipelines already, each additional architecture multiplies that number —
+directly affecting the MVP effort estimate. Not researched further here; the decision to make
+explicit is a v1 target-triple list across *all* platforms in one place, with the honest default
+being x86_64 Linux + one of x86_64/arm64 Windows (not both) + macOS universal-or-Apple-Silicon-only,
+and arm64 Linux limited to the headless daemon package.
+
 ## §7 The audio test harness problem
 
 CI runners have no sound card, and **no reference project tests its audio engine in-process** except
 partially:
 
-- SONE's `audio.rs` (3,309 lines, the hardest code in the project) has **zero** `#[cfg(test)]`
+- Sone's `audio.rs` (3,309 lines, the hardest code in the project) has **zero** `#[cfg(test)]`
   modules; its only audio-specific test artefact is a 21-line `src-tauri/tests/gapless_probe.py`; its
   only dev-dependency is `tempfile = "3"` (`ref:sone/src-tauri/Cargo.toml`).
 - tidalt is the partial exception: `internal/player/alsa_fallback_test.go` (68 lines) covers the

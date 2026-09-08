@@ -127,10 +127,16 @@ part of the official client contract on every platform, not an Android-only mech
 
 No OSS Linux client implements this. Consequence of skipping it: streamboat will not take over the
 stream when the user starts playing on another device, and `subStatus 4006` (streaming privileges
-lost) will occasionally appear instead of proactively yielding. That is graceful degradation, not a
-blocker — reasonable to defer past v1. The web SDK's message types
-(`USER_ACTION` out; `PRIVILEGED_SESSION_NOTIFICATION` in, carrying `clientDisplayName`/`endsAt`/
-`sessionId`) are the cheapest starting point if streamboat ever implements it.
+lost) will occasionally appear instead of proactively yielding. **Scope qualifier, not a flat
+verdict**: for a single desktop GUI with a user watching, that is graceful degradation, reasonable
+to defer past v1. For streamboat's headless daemon, it is not — a daemon has no user watching, so a
+silent revocation is unrecoverable rather than merely ugly, and multiroom (one privileged session
+shared across output endpoints) is impossible without it. Since the owner has committed to shipping
+headless now, treat this as day-one work, not deferred. Full protocol depth (message vocabulary,
+reconnect/backoff, token-rebinding) is owned by
+`headless-and-tidal-connect/references/daemon-architecture.md` §6 — cite it rather than restating;
+regardless of GUI-vs-daemon scope, the `PlaybackRevoked`/`streaming_privileges_revoked` event
+should exist in the protocol from day one either way.
 
 ## 6. A separate offline-plays channel exists, and `/v1/users/{id}/activity` does not
 
@@ -140,5 +146,5 @@ TIDAL's own iOS SDK for offline plays, posted from its own on-disk queue, distin
 `ec.tidal.com` channel above. No OSS client uses it, and it's irrelevant if `playbackmode=OFFLINE` is
 ruled out by policy (`references/playback.md` §11 recommends exactly that) — worth confirming as
 absent-by-design rather than an open question. Separately: `/v1/users/{id}/activity` does **not**
-exist in any checkout (grepped across all 22) — the only activity surface is the v2
+exist in any checkout (grepped across all 21) — the only activity surface is the v2
 `feed/activities` endpoint documented in `references/catalog-and-library.md` §5.

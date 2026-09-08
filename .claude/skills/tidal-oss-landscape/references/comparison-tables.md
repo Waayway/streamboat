@@ -16,7 +16,7 @@ uncorrected originals and the reasoning behind each fix. Per-project narrative i
 | Project | Stack | Platforms | Quality ceiling | Bit-perfect | Feature breadth | License | Stars | Maturity | Fit for streamboat |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | **Sone** | Tauri 2 + Rust + React 19/TS | Linux desktop | HI_RES_LOSSLESS 24/192 | **Yes** (exclusive ALSA) | Very high (~28 areas) | GPL-3.0-only | 437 | Active, 1 maintainer, v0.21.0, **no CI at all** | **Closest architectural model — but invert its state-ownership shape, see `sone-deep-dive.md` §3** |
-| **sone-windows** | same, forked | Windows (+Linux/mac via Tauri) | HI_RES_LOSSLESS | Yes (WASAPI2 exclusive) | High, minus 8 modules | GPL-3.0-only | n/a | Stale fork of v0.16.0, "may not be maintained" | Windows sink + DLL bundling only |
+| **Sone-windows** | same, forked | **Windows only — corrected by the third fact-check pass** (Linux `#[cfg]` arm retained from upstream and still builds there; **no macOS arm exists anywhere**, so "Tauri is cross-platform" does not make this fork macOS-capable) | HI_RES_LOSSLESS | Yes (WASAPI2 exclusive) | High, minus 8 modules | GPL-3.0-only | n/a | Stale fork of v0.16.0, "may not be maintained" | Windows sink + DLL bundling only |
 | **High Tide** | Python + GTK4/libadwaita + python-tidal | Linux (Flatpak) | HI_RES_LOSSLESS | No | High | GPL-3.0 | 671 | Active community, 90 open issues | UI/UX + Flatpak + PKCE model |
 | **Strawberry** | C++17 + Qt 6 + GStreamer | Linux free; macOS/Windows builds **sponsor-only** | HI_RES_LOSSLESS | **No dedicated path** — WASAPI-exclusive is an explicit Windows setting; Linux "exclusive" is only inferred from an `hw:`/`plughw:` device prefix; macOS has none | TIDAL = one backend of many | GPL-3.0 | 3,948 | Very mature, very active | Encryption posture + settings model + Windows WASAPI-exclusive reference |
 | **tidal-hifi** | Electron (castlabs Widevine) + TS | Linux, Windows, macOS | Whatever the web player serves (Chromium resamples to 48k by default) | No | Medium-high | MIT | 1,725 | Very active, real CI | Anti-model for audio; borrow the local API + controller-fallback pattern + packaging CI checklist |
@@ -35,6 +35,10 @@ uncorrected originals and the reasoning behind each fix. Per-project narrative i
 | **tidalgo** | Go | any | LOSSLESS | n/a | Minimal | none | 1 | Dead (2018) | Historical |
 | **dotnet-tidal-usdk** | C#/.NET Core | any | HIGH | n/a | Minimal | MIT + anti-piracy clause | 0 | Dead (2020) | Licence-clause precedent |
 
+**No project in this table ships a macOS build with any precedent for bit-perfect output, media
+integration, or code signing** — see `packaging-distribution.md` §8 for the full five-item macOS
+work list this correction implies (added by the third fact-check pass).
+
 **Read the "Maturity" column as age + release cadence + CI, not community size.** Contributor data
 (`sone-deep-dive.md` §10) shows Strawberry's "very mature, very active" rating is not a better bus
 factor than Sone's — `jonaski` has 5,678 commits vs. the next *human* contributor at 28; the #2
@@ -43,6 +47,10 @@ contributors) and mopidy-tidal (12, a genuine 3-person history) are not effectiv
 single-maintainer.
 
 ## 2. Table B — auth and secrets
+
+Per-project reference data below; for the streamboat storage recommendation itself (keyring-first
+with encrypted-file fallback, the Windows blob-limit trap, the Secret-portal KDF requirement) see
+`streamboat-engineering-baseline/references/secrets-and-tokens.md` §2-3.
 
 | Project | Flow(s) | Client credentials | Token storage |
 | --- | --- | --- | --- |
@@ -64,7 +72,7 @@ single-maintainer.
 | --- | --- | --- | --- | --- | --- |
 | Sone Normal | GStreamer `uridecodebin` | `autoaudiosink` | Yes (`concat` preroll) | delegated to the sound server | `volume` element, Sone's formula |
 | Sone DirectAlsa | GStreamer → `appsink` | own ALSA writer thread | **No** (disabled) | Yes — reopens PCM per format hint | scalar in writer (off in bit-perfect) |
-| sone-windows | GStreamer | `wasapi2sink exclusive=… low-latency=true` | Yes | via WASAPI exclusive | same |
+| Sone-windows | GStreamer | `wasapi2sink exclusive=… low-latency=true` | Yes | via WASAPI exclusive | same |
 | High Tide | `playbin3` | auto/pulse/alsa/jack/oss/pipewire | Yes via `about-to-finish` (off on pipewiresink) | No | `rgvolume`/`rglimiter` chain |
 | Strawberry | GStreamer `playbin3` | per-platform; WASAPI-exclusive on Windows (explicit setting), inferred `hw:`/`plughw:` "exclusive" on Linux (not bit-perfect by itself), no exclusive path on macOS | Yes | No dedicated rate-matching — always two `audioresample` elements, unconstrained caps | ReplayGain **or** EBU R128 (R128 forces float caps, incompatible with bit-perfect) |
 | tidal-hifi | Chromium | Chromium → PulseAudio/PipeWire | No | Only via a 192k Chromium flag + manual PW/Pulse reconfiguration | web player's |

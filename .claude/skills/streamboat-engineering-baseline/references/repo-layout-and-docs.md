@@ -12,7 +12,12 @@ points at a shallow clone — see `sources.md`.
 
 ## 1. Workspace layout
 
-Target shape (names **[STACK]**-adjusted, structure is not):
+Target shape (names **[STACK]**-adjusted, structure is not). **Crate layout below matches the
+reconciled shape owned by `tech-stack-evaluation/references/architecture-shapes.md` §1 — fix that
+file first if this one drifts from it again**: the player engine lives inside `core`, not a
+separate `audio` crate (an earlier draft of this file used that split; it's superseded); the
+control-API/MPRIS/mDNS/MPD-listener crate is `server` (its binary is `streamboatd`, not a crate
+named `daemon`); there is a `proto` crate for the shared command/event protocol:
 
 ```
 /
@@ -24,10 +29,10 @@ Target shape (names **[STACK]**-adjusted, structure is not):
 ├── SECURITY.md
 ├── .gitattributes             # line-ending normalisation + LFS decision (testing-strategy.md §11)
 ├── crates|packages|src/
-│   ├── core/                  # API client, auth, models, manifest parsing — permissive license
-│   ├── audio/                 # pipeline, sinks, gapless, ReplayGain — platform-conditional
-│   ├── daemon/                # headless: MPRIS/D-Bus + local control API
-│   ├── cli/                   # thin client over daemon; also the debug/diagnostic tool
+│   ├── core/                  # API client, auth, models, manifest parsing, player engine, output backends — permissive license
+│   ├── proto/                 # shared command/event protocol types (streamboat-proto)
+│   ├── server/                # headless: control API (HTTP+WS), MPRIS/D-Bus, mDNS, optional MPD listener — binary `streamboatd`
+│   ├── cli/                   # thin client over server; also the debug/diagnostic tool
 │   └── desktop/                # GUI
 ├── contracts/                 # vendored OpenAPI + hand-written v1 JSON Schemas
 ├── tests/
@@ -132,7 +137,7 @@ python-tidal ships `CODE_OF_CONDUCT.md`; most of the others do not.
 **Issue templates**: use GitHub's YAML forms with required fields, as tidal-hifi does — installation
 method (dropdown), distro, version, pre-submission checklist with `required: true`
 (ref:tidal-hifi/.github/ISSUE_TEMPLATE/bug_report.yml). Ship four: bug, playback/audio issue,
-feature request, question. **The playback template is the important one** — copy sone's field list
+feature request, question. **The playback template is the important one** — copy Sone's field list
 verbatim (version, install source, distro+version, desktop/session, GPU+driver, output device,
 sample rate/bit depth, exclusive-mode on/off, affected tracks, log path)
 (ref:sone/.github/ISSUE_TEMPLATE/playback_issue.md).
@@ -146,14 +151,14 @@ circumventing TIDAL's DRM are out of scope and will not be accepted.
 
 **Branch strategy**: `main` protected, feature branches, squash merge, release tags on `main`. A
 `develop` branch (tidal-hifi) only pays off with several contributors and a slow release train;
-for a solo/small project, trunk plus tags is simpler and matches sone, tidalt and the SDKs.
+for a solo/small project, trunk plus tags is simpler and matches Sone, tidalt and the SDKs.
 
 ## 4. Developer environment
 
 streamboat depends on GStreamer/ALSA/PipeWire/system audio libraries; "install these 30 packages"
 is where contributors bounce, and CI reproducibility depends on the same answer — yet nothing in
 §1–3 says how a contributor gets a working build. Five of the 21 checkouts ship a Nix flake with a
-devShell: sone, high-tide, mopidy-tidal, python-tidal, TidaLuna. sone's is the instructive one —
+devShell: Sone, high-tide, mopidy-tidal, python-tidal, TidaLuna. Sone's is the instructive one —
 its devShell adds nodejs/pnpm/cargo/cargo-tauri and its `shellHook` exports
 `GST_PLUGIN_SYSTEM_PATH_1_0` composed from gstreamer plus plugins-base/good/bad/gst-libav, exactly
 the class of setup that breaks on a bare distro (ref:sone/flake.nix). high-tide's flake pulls in

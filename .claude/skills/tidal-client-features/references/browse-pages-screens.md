@@ -27,7 +27,7 @@ Also surfaced as `tidal:home` / `tidal:for_you` in `ref:mopidy-tidal/mopidy_tida
 - Sections page with a top-level `cursor`, passed back as `?cursor=`. Each section carries
   `hasMore` and an `apiPath` used for "View All" expansion (client-side:
   `homepage/LOAD_AND_ENQUEUE_ALL_VIEW_ALL_TRACKS`).
-- `ref:python-tidal/tidalapi/session.py:1041-1060` (`Session.home(use_legacy_endpoint)`): this is a
+- `ref:python-tidal/tidalapi/session.py:1042-1060` (`Session.home(use_legacy_endpoint)`): this is a
   plain `if`/`else` on the caller-supplied flag, **not a fallback** —
   `use_legacy_endpoint=False` (default) calls `home/feed/static` with
   `deviceType=BROWSER&locale&platform=WEB`; `use_legacy_endpoint=True` calls `pages/home` instead.
@@ -106,10 +106,19 @@ The live API returns more: Sone's `TidalMix.mix_type` doc comment also lists
 (`ref:sone/src-tauri/src/tidal_api.rs:841-847`) — this is what backs the "Your History" Home
 category. **`NEW_HISTORY_MIX` is a separate thing** — a `Feed` `activityType`, not a `mix_type`
 value (`ref:sone/src-tauri/src/tidal_api.rs:7076`, its Feed-activity-flattening test); don't file it
-under `MixType`. The official v2 spec models the personalised families as separate resources
-(`/userDailyMixes`, `/userDiscoveryMixes`, `/userNewReleaseMixes`, `/userOfflineMixes`) reachable
-from `/userRecommendations/{id}/relationships/{myMixes,discoveryMixes,newArrivalMixes,offlineMixes}`,
-and explicitly documents that new `MixType` values can appear at any time. Don't hard-code a closed
+under `MixType`.
+
+**The official v2 spec models the personalised families as item resources, not collection
+resources — there is no `GET /userDailyMixes` (it 404s).** The only paths that exist are
+`/userDailyMixes/{id}` and `/userDailyMixes/{id}/relationships/items` (same shape for
+`userDiscoveryMixes`, `userNewReleaseMixes`, `userOfflineMixes` — verified directly against
+`ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json`, each of the four only defines a `GET`
+on `/{resource}/{id}` and `/{resource}/{id}/relationships/items`). **There is no way to enumerate
+these resources except by `{id}` you already have** — the ids come from
+`/userRecommendations/{id}/relationships/{myMixes,discoveryMixes,newArrivalMixes,offlineMixes}`:
+fetch the user's `/userRecommendations` resource first, walk the relevant relationship to collect
+ids, then `GET` each `/user*Mixes/{id}` (or its `/relationships/items`) individually. The spec also
+explicitly documents that new `MixType` values can appear at any time — don't hard-code a closed
 enum for this.
 
 **Client actions** (`ref:TidaLuna/plugins/lib/src/redux/types/actions/actionTypes.ts`):
@@ -240,6 +249,6 @@ underlying lyrics/credits data exists.
 
 **There is no separate always-on-top mini-player window in the official desktop client's action
 namespace** — `view/MINIMIZE` is plain window minimisation, not a floating mini-player. Sone and
-sone-windows *add* a floating mini-player as a differentiator, which is itself evidence the
+Sone-windows *add* a floating mini-player as a differentiator, which is itself evidence the
 official app lacks one. Tier: **later (differentiator)** — cheap, popular with the OSS clients, no
 schema risk, but not a parity gap to close.

@@ -10,6 +10,7 @@ points at a shallow clone — see `sources.md`.
 3. Settings-file versioning and migration
 4. Logs and rotation
 5. Telemetry and crash reporting
+6. Data portability between install formats
 
 ## 1. Paths
 
@@ -39,7 +40,7 @@ Notes and traps:
   automatically for XDG dirs (verified by direct fetch of the flatpak sandbox-permissions doc); a
   hardcoded `~/.foo` needs `--persist=.foo`, which bind-mounts to `~/.var/app/$FLATPAK_ID/.foo`.
   Use the XDG APIs and this is free.
-- **Under Snap**, `$SNAP_USER_COMMON` / `$SNAP_USER_DATA`; the `home` plug is what sone requests
+- **Under Snap**, `$SNAP_USER_COMMON` / `$SNAP_USER_DATA`; the `home` plug is what Sone requests
   (ref:sone/snap/snapcraft.yaml).
 - Support an override: `STREAMBOAT_CONFIG_DIR`, `STREAMBOAT_CACHE_DIR`, `STREAMBOAT_DATA_DIR`,
   `STREAMBOAT_LOG_DIR`, plus `--config-dir` etc. on the CLI. Headless/server deployments and the
@@ -65,13 +66,21 @@ tri-state so a stale hit is served immediately while a refresh runs.
 mopidy-tidal's separate *audio* cache defaults are also worth noting: `playback_cache = false`
 (off by default), `playback_cache_max_entries = 1024`,
 `playback_cache_buffer_bytes = 16777216` (16 MiB), backed by SQLite with LRU eviction by
-`last_used` and a `manual` flag that pins entries
-(ref:mopidy-tidal/mopidy_tidal/ext.conf, ref:mopidy-tidal/mopidy_tidal/gstreamer_proxy/cache.py:337-352).
+`last_used` (ref:mopidy-tidal/mopidy_tidal/ext.conf,
+ref:mopidy-tidal/mopidy_tidal/gstreamer_proxy/cache.py:283,337-352). **Correction — its `manual`
+column is not a working pin, do not copy it as one.** `evict()` is `DELETE FROM head WHERE id NOT
+IN (SELECT id FROM head WHERE not manual ORDER BY last_used DESC, id DESC LIMIT ?)` — the retained
+("keep") set is `WHERE not manual`, so a `manual = true` row is *excluded* from the keep-set and
+gets deleted first, the opposite of pinning. `manual` is also never set to `TRUE` anywhere in
+`mopidy_tidal/` — only the `CREATE TABLE` default `FALSE` and that `WHERE` clause reference it; no
+code path flips it. Copy the SQLite-with-WAL LRU shape (sound, and gives multi-process safety for
+free via SQLite's own locking — see `secrets-and-tokens.md` §7) but design streamboat's own pin
+flag as `WHERE manual OR id IN (<keep-set>)` if wanted; the reference column is vestigial.
 
 For streamboat:
 
 - Expose the cap in settings with a sane default (2 GiB metadata+images), show current usage
-  (sone surfaces `CacheStats` with per-tier counts and MB), and ship a "clear cache" action.
+  (Sone surfaces `CacheStats` with per-tier counts and MB), and ship a "clear cache" action.
 - Keep an **audio buffer cache** strictly separate from the metadata cache, off by default, with
   its own smaller cap, and document plainly that it is a playback buffer for a logged-in
   subscriber and not a library of files. Never write full decrypted tracks to a
@@ -79,22 +88,18 @@ For streamboat:
   Sone states the boundary in its own metadata: "SONE is a streaming client only and does not
   support offline downloads" (ref:sone/data/io.github.lullabyX.sone.metainfo.xml).
 - Cache entries must carry a `schema_version`; bump it and drop the tier on format change rather
-  than trying to migrate. **Cheaper primary mechanism, used by sone**: version the whole cache
+  than trying to migrate. **Cheaper primary mechanism, used by Sone**: version the whole cache
   directory (`cache_dir/v{CURRENT_SCHEMA_VERSION}/`, currently `v5`) and on startup delete any
   sibling `v*` directory that is not current — an O(1) migration that reclaims all disk from old
   formats in one step (ref:sone/src-tauri/src/cache.rs:190,200-215,267-271). Keep the per-entry
   `schema_version` field too, as a belt-and-braces guard, but make the directory scheme primary.
 - Never cache stream manifests across restarts — they expire and a stale manifest is a confusing
-  failure. The ~1-hour figure comes from source, not documentation: tidal-sdk-web's own client-side
-  constant is `const MANIFEST_EXPIRATION_MS = 3600000; // 1 hour`
-  (ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts:79), used to
-  stamp an `expires` timestamp and trigger "a complete reload since manifest has expired"
-  (ref:tidal-sdk-web/packages/player/nativePlayer.ts:182). Treat this as the SDK's own client-side
-  assumption, not a documented server guarantee — an earlier draft of this document attributed the
-  figure to "tidal-sdk-web docs", which do not state it. High Tide's rule is "Cache manifests
-  per-session (in-memory) only".
-- **sone encrypts every cache entry, not just settings.** §1's storage table (in `SKILL.md`)
-  hedges ("Encrypted or plain cache dir, user-configurable"), but the reference implementation is
+  failure. The one-hour expiry figure, resume-after-long-pause handling, the separately-expiring
+  CDN token, and the no-Authorization-header finding are owned by
+  `audio-pipeline/references/playback-behavior.md` §7 — cite it rather than restating. High Tide's
+  rule is "Cache manifests per-session (in-memory) only".
+- **Sone encrypts every cache entry, not just settings.** `secrets-and-tokens.md` §1's storage
+  table hedges ("Encrypted or plain cache dir, user-configurable"), but the reference implementation is
   unconditional: `<hash>.dat` is written as
   `let encrypted = self.crypto.encrypt(data)?; fs::write(&dat_path, &encrypted)?`
   (ref:sone/src-tauri/src/cache.rs:429-433) — the same AES-256-GCM envelope as
@@ -106,7 +111,7 @@ For streamboat:
 ## 3. Settings-file versioning and migration
 
 §2 requires a `schema_version` on cache entries; the settings file needs the equivalent, and it is
-a harder problem because settings cannot simply be dropped and rebuilt like a cache tier. sone hit
+a harder problem because settings cannot simply be dropped and rebuilt like a cache tier. Sone hit
 this after shipping and had to retrofit a migration path — its own log lines document it:
 `log::warn!("Failed to migrate settings to encrypted: {e}")` /
 `log::info!("Migrated settings.json to encrypted format")` (ref:sone/src-tauri/src/lib.rs:346-348).
@@ -118,7 +123,7 @@ retrofit.
 
 ## 4. Logs and rotation
 
-Copy sone's numbers (ref:sone/src-tauri/src/logging.rs):
+Copy Sone's numbers (ref:sone/src-tauri/src/logging.rs):
 
 - Rotate at 5 MB (`Criterion::Size(5_000_000)`), keep 9 rotated files
   (`Cleanup::KeepLogFiles(9)`) → ~50 MB ceiling, numbered naming, current file
@@ -135,7 +140,7 @@ Copy sone's numbers (ref:sone/src-tauri/src/logging.rs):
 
 Log locations: `~/.local/state/streamboat/logs` (Linux), `%LOCALAPPDATA%\streamboat\logs`
 (Windows), `~/Library/Logs/<bundle-id>` (macOS). Print the resolved path in `--version`/About so
-bug reports can quote it — sone's issue template does exactly that.
+bug reports can quote it — Sone's issue template does exactly that.
 
 ## 5. Telemetry and crash reporting
 
@@ -150,7 +155,7 @@ bug reports can quote it — sone's issue template does exactly that.
   fetches the latest release tag (ref:sone/src-tauri/src/commands/updates.rs).
 - **Crash reporting: do not run a crash-reporting service.** Options ranked:
   1. **Local crash dumps + a "generate debug bundle" button** (recommended). No server, no
-     consent problem, no PII exfiltration risk. See `i18n-a11y-observability.md` §3 for the
+     consent problem, no PII exfiltration risk. See `i18n-a11y-observability.md` §5 for the
      debug-bundle shape.
   2. Self-hosted collector (Sentry self-hosted / GlitchTip) — only with explicit opt-in at first
      run, a documented retention period, and scrubbing of paths, usernames and URLs.
@@ -158,13 +163,33 @@ bug reports can quote it — sone's issue template does exactly that.
   Note that a crash dump from an audio app can contain decoded PCM in memory. If you ship
   minidumps, exclude heap by default.
 - **Local logs are a listening-history record — resolve the tension with "no telemetry" on
-  purpose.** `i18n-a11y-observability.md` §5 recommends logging `track_id` and playback lifecycle
+  purpose.** `i18n-a11y-observability.md` §3 recommends logging `track_id` and playback lifecycle
   at `info` with the ~50 MB rotated ceiling above; the result is a plaintext file containing a
   timestamped record of everything the user played. Logs never leave the machine, so "no
   telemetry" (to *streamboat's developers*) stays true, but the file is personal data all the same.
   Do four things: (1) log the track id at `debug`, not `info`; (2) the debug-bundle manifest
-  (`i18n-a11y-observability.md` §7) must call out that included log files contain listening
+  (`i18n-a11y-observability.md` §5) must call out that included log files contain listening
   history, so "redacted" is not misread as "anonymised"; (3) `streamboat purge`
-  (`secrets-and-tokens.md` §8) deletes logs too; (4) keep sone's pre-start plaintext logging toggle
+  (`secrets-and-tokens.md` §8) deletes logs too; (4) keep Sone's pre-start plaintext logging toggle
   above, but label it in settings as "file logging (records what you play)", not a developer-only
   switch. No reference project addresses this tension explicitly.
+
+## 6. Data portability between install formats
+
+**Gap: the recommended packaging sequence guarantees a user loses local data on their first
+upgrade path, and nothing above draws that consequence.** AppImage ships first
+(`packaging-and-distribution.md` §4), Flathub arrives only "after several months of tagged
+releases" (`packaging-and-distribution.md` §1), and §1 above already documents that Flatpak
+redirects every XDG directory to `~/.var/app/$FLATPAK_ID/{config,cache,data}`. A user who follows
+the recommended upgrade path — AppImage at launch, Flatpak once it lands — finds an empty app with
+no tokens, no settings, no cache, with no error explaining why. No reference project solves this;
+the closest acknowledgement is Sone's own comment that the keyring "may be unreachable on next
+launch (e.g. AppImage with different D-Bus session)" (ref:sone/src-tauri/src/crypto.rs) — same
+class of problem, but for the key rather than the data. Specify: (1) `streamboat export`/`import`
+of the settings document — secrets re-entered on import, not exported, or exported only under an
+explicit passphrase — which doubles as backup/machine-move; (2) a first-run probe checking other
+well-known locations (`~/.config/streamboat`, `~/.var/app/<app-id>/config/streamboat`,
+`$SNAP_USER_COMMON`) and offering an explicit import rather than migrating silently; (3) document
+in `docs/packaging.md` what each package format's uninstall does and does not remove (pairs with
+the `streamboat purge` action, `secrets-and-tokens.md` §8). Sequence import with §3's settings
+`version` field — import must run the same forward-only migration ladder as a normal upgrade.

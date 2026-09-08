@@ -44,9 +44,15 @@ cited as `ref:<project>/<path>`.
   `ref:strawberry/src/`, 2026-09-07; the original count was wrong by ~11x, apparently from an `xargs
   wc -l` batching bug that silently truncated to the last batch's "total" line). Strawberry is by far
   the **largest** codebase in this survey — roughly 3.5x SONE's combined Rust+TS — which changes how
-  its evaluation in §4.11 should be read: it is proof Qt/GStreamer can hit bit-perfect on **Linux and
-  Windows only** (see the correction two bullets down — Strawberry has no macOS exclusive/hog-mode
-  path either), not a size comparable to a solo-owner MVP.
+  its evaluation in §4.11 should be read: **correction, previously said "Linux and Windows only"
+  here — it is proof Qt/GStreamer can hit bit-perfect on Windows only.**
+  `GstEngine::ExclusiveModeSupport()` (see the correction two bullets down) returns `true` only for
+  `wasapisink`/`wasapi2sink`, both Windows-only elements. Its Linux `exclusive_mode_` flag is a
+  separate, weaker mechanism that fires purely because the configured ALSA device string starts
+  with `hw:` **or `plughw:`** (`ref:strawberry/src/engine/gstenginepipeline.cpp:632-637`) —
+  `plughw:` is a converting plug layer, so this is a device-prefix inference, not a dedicated
+  bit-perfect code path (`rg -i 'bit.perfect' strawberry/src/` returns nothing). Strawberry has no
+  macOS exclusive/hog-mode path either, not a size comparable to a solo-owner MVP.
 - **Cross-platform is not free even inside one stack.** SONE is Linux-only; Windows support exists
   only as a *separate fork*, `sone-windows`, whose README says "Ported with help from AI agents" and
   "may not be actively or correctly maintained". **Correction (fact-checked): the fork's delta is not
@@ -217,6 +223,49 @@ falls back to `plughw:` only when `snd_pcm_hw_params` refuses the format — dis
 refusal (retries through the plug layer, sets `bitPerfect=false`, UI badge shows `(converted)`) from a
 busy device (keeps retrying `hw:` on `-EBUSY`, never downgrades).
 
+**ALSA buffer/period/XRUN numbers (gap filled during fact-checking — the original draft named
+`start_threshold`/`avail_min` without values).** The two reference implementations disagree by ~5x on
+buffer depth, so this is a real decision, not a default to copy blindly:
+
+- **SONE**: `hwp.set_buffer_time_near(500_000, Nearest)` and `hwp.set_period_time_near(50_000,
+  Nearest)` — a 500 ms buffer with a 50 ms period. Because, in its own words, "`snd_pcm_hw_params()`
+  resets start_threshold to 1 (immediate start on first writei), which causes underruns when the writer
+  can't keep up from frame one," it then sets `start_threshold` to the largest period-aligned value
+  ≤ buffer_size ("Match GStreamer alsasink: start_threshold = buffer_size (full pre-fill)") and
+  `avail_min = period_size` (`ref:sone/src-tauri/src/audio.rs:685-712`). On `EPIPE` an `alsa_recover(pcm,
+  errno)` helper logs `"[alsa-writer] XRUN, recovering"` and calls `pcm.prepare()`; on suspend it loops
+  `resume()` and falls back to `prepare()` (`:861-881`). The writer is a plain named
+  `std::thread::Builder::new().name("alsa-writer")` thread (`:832-834`).
+- **tidalt**: the opposite ordering — `period_size = 1024` frames is set **first**, then `buffer_size =
+  period_size * 4` (~23 ms period / ~93 ms buffer at 44.1 kHz), with the in-source rationale "Set
+  period size first so the DAC gets a sane interrupt rate (~23ms at 44100 Hz)... Setting buffer first
+  and then querying period_size_min can return absurdly small" values (`ref:tidalt/internal/player/
+  alsa.c:67-95`). It leaves `sw_params` at ALSA defaults otherwise.
+- **Neither reference project requests real-time scheduling** — no `SCHED_FIFO`, no `rtkit`, no
+  `PTHREAD_PRIO` anywhere in either checkout. Treat RT priority for the writer thread as unproven-but-
+  unused precedent, not a requirement, when deciding whether a GC'd runtime's scheduling jitter is
+  actually disqualifying (relevant to how strongly §4.9/§4.12 lean on that argument).
+
+**A format or sample-rate change between tracks forces a full device close+reopen — state this as a
+constraint, not a bug.** SONE's `reopen_alsa()` doc comment: "Close and reopen ALSA device with new
+format. ... HW params [cannot be changed] in-place after `snd_pcm_drop()` — need full close+reopen"
+(`ref:sone/src-tauri/src/audio.rs:836`). It is called from four places in the writer loop, emits an
+`audio-error` event with `"kind": "format_change_failed"` on failure, and emits
+`audio-bit-depth-changed {from, to}` plus a signal-path `record_bit_depth_promotion` entry when the
+negotiated depth differs from the source (`:990-1002,1071,1096,1118,1143,1210,1261`). Consequences:
+(1) the reopen is unavoidable in a bit-perfect design, not an implementation gap — a TIDAL queue
+routinely mixes 44.1/16, 44.1/24 and 96/24 tracks, so **gapless across a format boundary is impossible
+by construction** even before backend-specific limits apply; (2) it costs the per-device warm-up/PLL-
+lock delay item 9 already recommends, on every such boundary, not just at stream start; (3) the
+`AudioEngine` trait needs `FormatChanged`/`ReopenFailed` events alongside the warm-up parameter.
+**This is an owner decision the earlier draft never surfaced, not only an engineering detail**: accept
+an audible gap at every format boundary in strict bit-perfect mode (SONE's answer — reopen, pay the
+gap); fix the device at one rate and let a plug layer convert non-matching tracks (tidalt's documented
+`plughw:` fallback, which sets `bitPerfect=false` and shows a `(converted)` badge rather than pretending
+the whole queue is bit-perfect); or group/reorder the queue by format (no reference project does this).
+Whichever is chosen, put it beside the two other bit-perfect-mode product decisions §2.1 already states
+plainly (locked volume, no ReplayGain) — it is the same class of call.
+
 #### 2.2 Candidate audio engines
 
 | Engine | Bit-perfect Linux | Bit-perfect Windows | Bit-perfect macOS | DASH/HLS | Gapless | Deployment cost off-Linux |
@@ -244,11 +293,23 @@ Notes that matter:
   symphonia does not decode EAC3/AC4; GStreamer and FFmpeg/mpv do (with `gst-libav` /
   `gstreamer1.0-libav`, which SONE's package deps include). If Atmos is ever in scope, pure-Rust
   decode is out.
-- **Gapless conflicts with bit-perfect** in every engine: gapless requires holding the device open
-  across tracks, which forces a single format. SONE resolves this by making gapless Normal-mode-only
-  and panicking if the code path is reached in DirectAlsa
+- **Gapless-vs-bit-perfect conflict is per-backend, not a cross-engine law — correction (fact-checked):
+  an earlier draft stated this as universal, and the report's own Windows evidence contradicts that.**
+  On SONE's Linux `DirectAlsa` backend, gapless and exclusive ALSA are mutually exclusive by
+  construction: it panics if `concat()` (the gapless path) is reached while `DirectAlsa` is active
   (`"PlaybackBackend::concat() called on DirectAlsa — gapless is normal-only"`,
-  `ref:sone/src-tauri/src/audio.rs:156`). Copy that decision explicitly rather than discovering it.
+  `ref:sone/src-tauri/src/audio.rs:150-158`). But on Windows, `sone-windows`' `wasapi2sink
+  exclusive=true` code (`ref:sone-windows/src-tauri/src/audio.rs:1234-1247`) sits **inside** the file's
+  own `// ── Normal path (unchanged) ──` branch (`:1188`) — i.e. the same `concat`-based gapless
+  GStreamer pipeline SONE uses on Linux. Exclusive mode and gapless coexist in one Windows pipeline;
+  they are two mutually exclusive backends on Linux. **Do not copy "gapless and bit-perfect are
+  mutually exclusive" as a stack-wide rule** — model it per backend: `DirectAlsa` disables gapless by
+  construction; a GStreamer-sink backend (`wasapi2sink`, and any future `osxaudiosink`/CoreAudio sink)
+  rides exclusive mode inside the gapless pipeline, and whether the sink correctly re-enters exclusive
+  mode after the `concat` element renegotiates format on a track boundary is **unverified** — nothing in
+  either checkout tests it. Give the `AudioEngine` trait a per-backend
+  `supports_gapless_with_exclusive() -> bool` capability query rather than one global "bit-perfect mode"
+  flag.
 
 #### 2.3 Recommendation for the audio layer
 
@@ -265,15 +326,24 @@ Put an `AudioEngine` trait in `streamboat-player` with a small surface
    (`ref:strawberry/src/engine/gststartup.cpp:58-75`, upstream issue #1227). Budget a Windows
    hardware-verification step (confirm the DAC actually receives exclusive-mode, unresampled PCM, not
    just that the pipeline builds) before shipping this as a claim, and keep `directsoundsink` as a
-   documented fallback rank. **The minimum GStreamer version that exposes `wasapi2sink`'s `exclusive`
-   property is not established** — `gstreamer.freedesktop.org` is blocked in this environment and
-   neither `sone-windows` nor Strawberry pins one. Because that property lives in one boolean on one
-   `gst-plugins-bad` element, a missing property is a *silent* failure (the pipeline builds and plays
-   in shared mode with no error) — copy Strawberry's defensive idiom rather than assuming the property
-   exists: it gates exclusive mode on `g_object_class_find_property(sink_class, "exclusive")` before
-   setting it (`ref:strawberry/src/engine/gstenginepipeline.cpp:722-726`), and pair that with a loud
-   runtime log/assert when the property is absent so a silent shared-mode fallback is never mistaken
-   for bit-perfect.
+   documented fallback rank. **Resolved (fact-checked, was previously "not established"): the minimum
+   GStreamer version that exposes `wasapi2sink`'s `exclusive` property is 1.28.** Read directly from
+   upstream source (`gstreamer.freedesktop.org` is still blocked in this environment, but the plugin
+   source is not): `subprojects/gst-plugins-bad/sys/wasapi2/gstwasapi2sink.cpp` declares the property
+   with the gtk-doc annotation `/** GstWasapi2Sink:exclusive: * * Since: 1.28 */` immediately above
+   `g_object_class_install_property(gobject_class, PROP_EXCLUSIVE, g_param_spec_boolean("exclusive", …))`
+   (lines 195-204), with `DEFAULT_EXCLUSIVE` `FALSE` (line 64)
+   (https://raw.githubusercontent.com/GStreamer/gstreamer/main/subprojects/gst-plugins-bad/sys/wasapi2/gstwasapi2sink.cpp).
+   **This is a hard floor for whatever GStreamer runtime the Windows installer bundles** — pin it
+   explicitly (the MSI/Merge-Module version, or the bundled DLL set) and treat any older runtime as
+   "silently falls back to shared mode," which is exactly the failure mode the next sentence describes.
+   Because that property lives in one boolean on one `gst-plugins-bad` element, a missing property is a
+   *silent* failure (the pipeline builds and plays in shared mode with no error) — copy Strawberry's
+   defensive idiom rather than assuming the property exists: it gates exclusive mode on
+   `g_object_class_find_property(sink_class, "exclusive")` before setting it
+   (`ref:strawberry/src/engine/gstenginepipeline.cpp:722-726`), and pair that with a loud runtime
+   log/assert when the property is absent (or the runtime is < 1.28) so a silent shared-mode fallback is
+   never mistaken for bit-perfect.
 3. The Rust bindings are healthy: `gstreamer` 0.25.3 (2026-06-29), MIT/Apache, feature flags for
    GStreamer 1.16 → 1.30 (MSRV 1.92, edition 2024 — newer toolchain requirement than SONE's pinned
    0.23; SONE — the codebase an agent is most likely to imitate — targets the older 0.23 API, so expect
@@ -337,6 +407,35 @@ streamboat/
 - **Complexity**: lowest of the three. One language, one build, `cargo test` covers the engine.
 - **Weakness**: the UI is coupled to Rust. A future Flutter or Compose mobile UI needs Shape 2's
   binding layer added on top — but that is additive, not a rewrite, provided the core stays UI-agnostic.
+
+**This crate layout conflicts with `headless-connect.md`'s, and that document should be treated as
+authoritative for the daemon/core split (gap identified during fact-checking).** This report's Shape 1
+puts the player engine in its own `streamboat-player` crate alongside `streamboat-core`, `streamboat-
+proto`, `streamboat-daemon` and `streamboat-cli`. `/home/user/streamboat/docs/research/headless-
+connect.md` §15 instead folds the engine into `streamboat-core` ("session/auth, catalogue, queue,
+player engine, output backends, Pushkin — no UI, no server") and names the daemon crate `streamboat-
+server` ("the control API (HTTP+WS), MPRIS, mDNS, optional MPD listener"), and it already cites this
+document at `tech-stack.md:122,505-508` for the build-artifact split — line numbers that predate this
+edit pass and no longer resolve to that content. Two things to fix, not just note: (1) pick one crate
+layout — this report defers to `headless-connect.md`'s `streamboat-core`/`streamboat-server` naming as
+the more recently reconciled one and asks the reader to treat *this* document's `streamboat-player`
+split as superseded, cross-referencing rather than duplicating; (2) `headless-connect.md`'s `core`
+includes a **pipe output backend** (writing PCM to a file descriptor, for Snapcast/multiroom sending)
+alongside ALSA/WASAPI/CoreAudio — the `AudioEngine` trait surface §2.3 proposes
+(`load/play/pause/seek/set_volume/position/events` plus a warm-up parameter) has no slot for an output
+that is not a hardware device; add one before the trait is load-bearing across both documents.
+
+**The `AudioEngine` trait must abstract over two structurally different kinds of backend, not one
+swappable-sink shape (gap identified during fact-checking).** The two *proven* implementations in the
+survey are not two instances of one shape: Linux bit-perfect in SONE is an `appsink` plus a hand-rolled
+writer thread that does its own format probing, its own `hw_params`/`sw_params` negotiation (numbers
+above), its own XRUN recovery, and its own device close+reopen on format change — call this a **"raw
+device writer"** backend. Windows exclusive mode in `sone-windows` is three `set_property` calls on a
+stock GStreamer element (`wasapi2sink`, `ref:sone-windows/src-tauri/src/audio.rs:1236-1247`) with all
+negotiation, buffering and recovery delegated to the sink — call this a **"delegated sink"** backend
+(libmpv and a future `osxaudiosink`/CoreAudio-hog-mode path are the same shape). Format-probing, warm-up
+and XRUN recovery exist only in the first kind; budget the Windows/macOS backends as "unverified, no
+negotiation visibility," not "done, one sink swap."
 
 #### Shape 2 — core as a library with FFI/UniFFI bindings to a non-Rust UI
 
@@ -436,6 +535,20 @@ design, none of which the original draft named:
    playback from an already-running daemon on the same account is a user-visible handoff, not a
    transparent one** — the daemon's session gets revoked, audibly, the moment the GUI starts playing.
 
+**Multi-process OAuth token refresh is a related, unresolved race (gap identified during
+fact-checking).** The hybrid above explicitly allows a daemon and a GUI on the same machine and account
+to coexist ("try to claim the device/D-Bus name; if it is already claimed, become a client"), but the
+OAuth token is shared state between those two processes: in TIDAL's common refresh flow, whichever
+process refreshes first invalidates the other's refresh token, independently of the Pushkin
+account-privilege problem above. `engineering-baseline.md` already flags "multi-process token races" as
+open; `headless-connect.md` points at a concrete reference implementation — `tidalrs` exposes an
+`on_authz_refresh_callback` token-refresh hook, cited there as "a reference implementation for
+`streamboat-core`'s refresh loop and the multi-process token-refresh notification problem"
+(`ref:tidalrs/src/lib.rs:271-281,321,401`). The stack-level decision belongs here: either only the
+device-owning process ever refreshes and pushes the new token to clients over the control protocol
+(making it a `streamboat-proto` message, not just a keyring concern), or refresh is serialised behind a
+file lock. Decide this alongside item 3 above — both are protocol design, not implementation detail.
+
 **Headless is a solved problem shape on Linux/systemd only — containers, macOS and Windows still need
 answers.** "Headless/server/CLI now" means the first thing a server user does is run it in Docker on a
 NAS or a Pi. tidalt's Docker recipe generalises directly: expose sound devices with `--device /dev/snd`
@@ -449,6 +562,19 @@ CoreAudio from a non-GUI process) or a Windows service (souvlaki's SMTC needs an
 service gets no now-playing integration) — treat both as open engineering work, not solved-elsewhere
 problems.
 
+**Headless login/pairing UX is out of scope here by design — it lives in the sibling document (gap
+identified during fact-checking: this report's only login content, `tauri-plugin-oauth` + a `tidal://`
+deep link, is desktop-shaped, and "headless now" means the daemon needs its own answer on day one).**
+`/home/user/streamboat/docs/research/headless-connect.md` §13 covers this in depth and should be read
+alongside this section, not substituted for: it documents terminal+QR device-code login
+(`ref:tidalt/internal/tidal/loginprint.go`), a local web-page PKCE flow
+(`ref:mopidy-tidal/mopidy_tidal/web_auth_server.py` on port 8989), pre-provisioned tokens via env vars,
+and an HTTP-exposed device-auth code (`go-librespot`'s `GET /auth/code`) — plus the keyring-with-
+encrypted-file-fallback pattern both `tidalt` and SONE use, which matters more on a headless box with no
+unlocked Secret Service. Concrete consequence for the sub-decision table in "Implications for
+streamboat" below: `axum` belongs in the daemon crate from day one for login, not only for the control
+API.
+
 **The daemon's own arm64/Raspberry Pi release pipeline is unresolved beyond that one Docker note.** (Gap
 identified during fact-checking.) tidalt's `linux/arm64` Docker image is the only arm64 precedent in the
 survey and it sidesteps cross-compilation entirely by building inside per-arch container images
@@ -460,6 +586,17 @@ cross-compiling a pure-Rust binary — one more reason to keep `symphonia`/libmp
 `AudioEngine` trait specifically for the arm64 daemon target, not only for macOS/Windows. State the
 target-triple list (`aarch64-unknown-linux-gnu` at minimum, `armv7-unknown-linux-gnueabihf` for 32-bit
 Pi OS) and the build mechanism explicitly before the first Pi release; not researched further here.
+
+**ARM is treated as a daemon-only concern throughout this report; desktop ARM targets are never named
+(gap identified during fact-checking).** Every `arm64`/`aarch64` mention above is inside the Pi-daemon
+paragraph. Desktop has ARM questions too: `aarch64-pc-windows-msvc` (WebView2 ships on Windows on ARM),
+arm64 Linux desktop (Asahi, Pi desktop builds, ARM laptops), and the macOS universal-binary question in
+§4.1. Since §4.1 already establishes that Tauri cannot cross-compile and needs three separate release
+pipelines, each additional architecture multiplies that number — directly affecting the effort estimate
+in Recommendation 1. Not researched further here; the decision to make explicit is a v1 target-triple
+list across *all* platforms in one place, with the honest default being x86_64 Linux + one of
+x86_64/arm64 Windows (not both) + macOS universal-or-Apple-Silicon-only, and arm64 Linux limited to the
+headless daemon package.
 
 **The audio engine is the hardest component and the one no reference project tests in-process.**
 SONE's `audio.rs` (3,309 lines, the hardest code in the project) has zero `#[cfg(test)]` modules; its
@@ -586,6 +723,38 @@ framework, which is the hook for shipping `GStreamer.framework` or `libmpv`.
 defensible); entitlements are applied at signing time via `bundle.macOS.entitlements`, which is where a
 Hardened Runtime exception for the media backend would go.
 
+**macOS CPU-architecture strategy is undecided and not previously mentioned (gap identified during
+fact-checking) — it also constrains the audio-backend choice.** Tauri supports `tauri build --target
+universal-apple-darwin`, which builds both Rust targets and `lipo`s them into one `.app` running
+natively on Intel and Apple Silicon; community guidance
+(https://github.com/orgs/tauri-apps/discussions/9419,
+https://dev.to/hiyoyok/building-a-universal-binary-with-tauri-v2-its-easier-than-you-think-1b53 —
+both via search 2026-09-08, `v2.tauri.app` itself blocked here; verify against the official
+distribute/macos page before publishing) puts the cost at roughly double the build time (two full
+compiles) and roughly double the artifact size, and — the part that connects to §2/§2.3 — **every
+bundled sidecar or native library must itself be universal**, ffmpeg being the community's own named
+example. Consequences: (1) this is an owner decision (drop Intel and ship Apple-Silicon-only, or pay
+2x build+size for a universal binary); (2) a lipo'd `libmpv.dylib` is one fat dylib, while a universal
+GStreamer plugin tree is a much bigger packaging job — an argument for libmpv on macOS this report
+otherwise makes only on packaging-weight grounds; (3) it interacts with the `minimumSystemVersion`
+recommendation just above, since raising the floor to 12.0+ is itself close to where Intel support
+becomes moot.
+
+**System tray / close-window behaviour has no sub-decision row despite being a first-week product
+decision for a music player (gap identified during fact-checking).** SONE does not use Tauri's built-in
+tray plugin on Linux: it depends on `ksni = "0.3"` (StatusNotifierItem over D-Bus) under
+`[target.'cfg(target_os = "linux")'.dependencies]` (`ref:sone/src-tauri/Cargo.toml:69`), while its
+packages *still* declare `libayatana-appindicator3-1` (deb, `ref:sone/src-tauri/tauri.conf.json:43`) and
+`libappindicator-gtk3` (rpm, `:62`) as runtime dependencies — because Tauri's own Linux prerequisites
+list `libayatana-appindicator3-dev` regardless (§4.1, day-1 developer-environment paragraph above), so
+that dependency arrives via Tauri whether or not the tray plugin is used. The tray is the one desktop
+feature with no headless counterpart and no cross-platform equivalent to `ksni` (Windows/macOS use their
+native tray APIs directly). It is also linked to a real product decision: does closing the window quit
+the app, or keep it playing in the tray/background? That decision determines whether the desktop shell
+can ever hold the audio device while invisible, which interacts with §3's "first process claims the
+device, later ones become clients" rule above. Add both as an explicit sub-decision row and an Open
+Question rather than leaving them implicit.
+
 **For a Tauri project to build for Android/iOS, the app crate must be a library from day one** — this
 is the concrete shape "do not preclude mobile" implies, and it is cheap now and expensive to retrofit
 after ~100 components exist: `[lib] crate-type = ["staticlib", "cdylib", "rlib"]`, all startup logic in
@@ -710,7 +879,12 @@ Against: the Elm architecture forces every UI interaction through one `Message` 
 which is verbose for a media app with dozens of concurrent async loads; and iced's API has churned
 hard across 0.9→0.10→0.12→0.13→0.14, so agent-generated code frequently targets a dead API. Psst
 (Rust Spotify client) sits on druid and its author observed that "most of the complexity in the UI code
-is due to deficiencies of the Druid reactive architecture" — the same family of problem.
+is due to deficiencies of the Druid reactive architecture" — the same family of problem. **Date this
+quote (fact-checked addition): it is from `jpochyla` in `github.com/jpochyla/psst` discussion #359,
+January 2023**, in a thread about migrating Psst to Xilem "in the next few months, probably" — i.e. it
+predates iced 0.14.0's reactive-rendering rewrite (2025-12-07) by nearly three years and is evidence
+against the Elm/druid *family* of architecture circa 2023, not evidence against iced 0.14 specifically.
+Weight it accordingly rather than as live 2026 evidence.
 
 #### 4.4 Rust + egui — not recommended for the primary UI
 
@@ -750,9 +924,12 @@ files compiled to `.ui`, GStreamer `playbin3` with `about-to-finish` gapless and
 Flatpak on `org.gnome.Platform` 50.
 
 Its Flatpak `finish-args` are instructive for the bit-perfect question:
-`--socket=pulseaudio`, `--filesystem=xdg-run/pipewire-0:ro`. There is **no** `--device=all`, so raw
-ALSA `hw:` access is not available inside that sandbox. High Tide offers `alsasink device=<dev>` in its
-sink menu, but a Flatpak build cannot reach an exclusive `hw:` device without widening the sandbox.
+`--socket=pulseaudio`, `--filesystem=xdg-run/pipewire-0:ro`. **Correction, previously stated
+backwards here**: there is no `--device=all`, but `--socket=pulseaudio` alone already grants raw
+ALSA `hw:` access — Flatpak's own sandbox helper binds `/dev/snd` into the sandbox whenever that
+socket is requested (see `engineering-baseline.md` §6.1 for the primary-source citation).
+High Tide's `alsasink device=<dev>` sink option is reachable inside this Flatpak build as shipped,
+with no sandbox widening required.
 
 Strengths: it is by far the smallest codebase in the survey (6,821 lines of Python) for a real,
 Flathub-published TIDAL client, and Python is very agent-friendly. Weaknesses that kill it here:
@@ -809,17 +986,24 @@ available to any stack.
 #### 4.11 Qt/QML — not recommended, but respectable
 
 Strawberry is the proof: C++17 with Qt 6 (`QT_MIN_VERSION 6.8.0` on Windows/macOS, `6.4.0` elsewhere,
-`ref:strawberry/CMakeLists.txt:228-232`), GStreamer with `autoaudiosink` / `osxaudiosink` /
-`directsoundsink` / `wasapisink`, bit-perfect on Linux via ALSA exclusive, GPL-3.0. **Correction
+`ref:strawberry/CMakeLists.txt:229-233` — correction, fact-checked: not `228-232`/`230-242`, the two
+different mis-citations this report carried in two places), GStreamer with `autoaudiosink` / `osxaudiosink` /
+`directsoundsink` / `wasapisink`, **verified bit-perfect on Windows only** (correction, previously
+said "on Linux via ALSA exclusive" here — see below), GPL-3.0. **Correction
 (fact-checked): its `src/` is ~166,100 lines of C++/headers, not 14,708** — 491 `.cpp` (121,981 lines)
 + 568 `.h` (44,141 lines) across 40 subdirectories; `src/core` alone is 21,510 lines. Strawberry is the
 **largest** codebase in this entire survey, roughly 3.5x SONE's Rust+TS combined — read its "works on
 all three desktop OSes with a coherent look" achievement against that scale, not against a solo-owner
-MVP budget, and **not as proof of tri-platform bit-perfect** (correction, fact-checked): its own
-`GstEngine::ExclusiveModeSupport()` returns `true` only for `wasapisink`/`wasapi2sink`
-(`ref:strawberry/src/engine/gstengine.cpp:523-525`), so Strawberry offers exclusive mode on Windows
-(WASAPI) and, implicitly, on Linux (ALSA `hw:`/`plughw:` device strings set `exclusive_mode_` at
-`ref:strawberry/src/engine/gstenginepipeline.cpp:632-635`) — but nothing on macOS. Its `osxaudiosink`
+MVP budget, and **not as proof of tri-platform, or even bi-platform, bit-perfect** (correction,
+fact-checked twice over): its own `GstEngine::ExclusiveModeSupport()` returns `true` only for
+`wasapisink`/`wasapi2sink` (`ref:strawberry/src/engine/gstengine.cpp:523-525`) — both Windows-only
+elements, so this function proves Windows only. Its Linux `exclusive_mode_` flag
+(`ref:strawberry/src/engine/gstenginepipeline.cpp:632-637`) is a separate, weaker mechanism: it
+fires purely because the configured ALSA device string starts with `hw:` **or `plughw:`** — and
+`plughw:` is by definition a converting plug layer, so this is a device-prefix *inference*, not a
+verified bit-perfect code path (`rg -i 'bit.perfect' strawberry/src/` returns nothing anywhere in
+the codebase). Do not read "implicitly, on Linux" as offering the same evidence tier as the
+Windows finding — nothing on macOS either. Its `osxaudiosink`
 use is device *enumeration* only (`ref:strawberry/src/engine/macosdevicefinder.cpp:27,73`); there is no
 CoreAudio hog-mode or `kAudioStreamPropertyPhysicalFormat` code anywhere in `src/`. That makes
 Strawberry *additional* evidence for this report's own "macOS bit-perfect is unproven in every
@@ -941,6 +1125,14 @@ this is the mechanical next step, not new research.
 
 ### 6. What real music players in each stack look like
 
+**Scoping note (fact-checked correction): Supersonic and Feishin are not TIDAL-client precedents.**
+Supersonic talks to Subsonic/OpenSubsonic servers and Jellyfin only; Feishin talks to Navidrome,
+Jellyfin and OpenSubsonic-compatible servers. Neither has ever spoken to TIDAL's API — read their rows
+below as **stack-and-audio-engine comparators only** (both delegate bit-perfect audio to libmpv, which
+is directly relevant to §2.2/§2.3), not as evidence for manifest handling, quality cascades, or
+`subStatus`/session behaviour. SONE, sone-windows, High Tide, tidalt, tidal-hifi and Strawberry are the
+rows with actual TIDAL precedent.
+
 | Project | Stack | What it looks like / notable | Source |
 |---|---|---|---|
 | **SONE** | Tauri 2 + React 19 + Tailwind 4 + Jotai; Rust/GStreamer audio | Dark, Spotify-shaped: left sidebar, card grids, bottom player bar, now-playing drawer, full-screen player, floating resizable miniplayer, 15 theme presets + full colour picker, synced lyrics, signal-path panel with a "PRISTINE" verdict badge. Screenshots in `ref:sone/data/sone_homepage_readme.png`, `sone_drawer_readme.png`, `sone_theme_readme.png`; repo https://github.com/lullabyX/sone | verified from checkout |
@@ -950,8 +1142,8 @@ this is the mechanical next step, not new research.
 | **Decibels** | GJS + TypeScript + GTK4 + libadwaita | GNOME audio player with a waveform view | web |
 | **Psst** | Rust + druid | Native-widget Spotify client, deliberately plain; author cites druid's reactive architecture as the source of most UI complexity, with Xilem as the intended successor. As of Feb 2026 requires the user's own Spotify Developer Client ID for Web API features | web |
 | **Spot** | Rust + GTK4 | GNOME-styled Spotify client, same visual family as High Tide | web |
-| **Supersonic** | Go + Fyne 2.8; **libmpv** for audio | Dark/light built-in themes, dense grid+list layout; ReplayGain, 15-band EQ, gapless, "optional audio exclusive mode". **Correction (fact-checked): v0.22.1, not v0.22.0** — and its GitHub release timestamp reads 2024-08-09, which if accurate means ~2 years with no release; verify before citing it as an "actively maintained" comparator. AppImage bundles mpv; Linux needs `libmpv1`/`libmpv2`. Flatpak build "does not support CJK fonts as the sandboxing breaks font lookup". https://github.com/dweymouth/supersonic | web |
-| **Feishin** | Electron + React 19 + Mantine + Zustand + electron-vite; **mpv** for audio | Full Spotify-alike for Navidrome/Jellyfin/Subsonic; synced lyrics, smart playlist editor. v1.15.1, 2026-07-19, ~9k stars. Bit-perfect requires `--audio-device=alsa/…`, `--gapless-audio=no`, exclusive mode; Flathub build uses PipeWire and won't do it | web |
+| **Supersonic** (Subsonic/Jellyfin, not TIDAL — comparator only) | Go + Fyne 2.8; **libmpv** for audio | Dark/light built-in themes, dense grid+list layout; ReplayGain, 15-band EQ, gapless, "optional audio exclusive mode". **v0.22.1** (corrected from an earlier v0.22.0 citation), released **2026-08-09** — **correction (fact-checked): a prior draft's staleness caution ("~2 years with no release") was wrong.** GitHub renders a current-year release date with no year suffix, which is what produced the "2024-08-09" misreading; corroborated by the project's main-branch `go.mod`, which requires `fyne.io/fyne/v2 v2.8.0` (released 2026-07-13) via a `replace` directive pinned to a 2026-08-09 fork commit — a 2024 release cannot depend on a package released in mid-2026. Supersonic is actively maintained and the repo has moved to **github.com/supersonic-app/supersonic**. AppImage bundles mpv; Linux needs `libmpv1`/`libmpv2`. Flatpak build "does not support CJK fonts as the sandboxing breaks font lookup". | web |
+| **Feishin** (Navidrome/Jellyfin/OpenSubsonic, not TIDAL — comparator only) | Electron + React 19 + Mantine + Zustand + electron-vite; **mpv** for audio | Full Spotify-alike; synced lyrics, smart playlist editor. v1.15.1, 2026-07-19, ~9k stars. Bit-perfect requires `--audio-device=alsa/…`, `--gapless-audio=no`, exclusive mode; Flathub build uses PipeWire and won't do it | web |
 | **tidal-hifi** | Electron (castLabs `v43.0.0+wvcus`) wrapping TIDAL's web player | Looks exactly like TIDAL web, because it *is* TIDAL web. Adds MPRIS, an Express HTTP API with Swagger, themes | `ref:tidal-hifi/package.json` |
 | **tidalt** | Go + BubbleTea + Lipgloss TUI; FFmpeg + ALSA via cgo | Terminal UI with progress bar and text input; also `tidalt daemon` headless + MPRIS2. Screenshot at `ref:tidalt/docs/tui.png` | verified from checkout |
 | **Strawberry** | C++17 + Qt 6.4/6.8 + GStreamer | Classic desktop three-pane collection manager; audiophile focus incl. DSD for local files | `ref:strawberry/` |
@@ -964,7 +1156,7 @@ this is the mechanical next step, not new research.
 
 | Target | Path | Notes / gotchas |
 |---|---|---|
-| **Flathub** | `flatpak-builder` manifest, `org.gnome.Platform` (High Tide uses 50) or `org.freedesktop.Platform` | Exclusive ALSA needs a wider sandbox than High Tide's (`--socket=pulseaudio`, `--filesystem=xdg-run/pipewire-0:ro`); plan for `--device=all`, which reviewers question. **AI policy applies — see §9.** Trademark rule: an app "cannot mention `Firefox` in its name or use any of the official icon, logo or artwork" — the same logic applies to TIDAL's marks. |
+| **Flathub** | `flatpak-builder` manifest, `org.gnome.Platform` (High Tide uses 50) or `org.freedesktop.Platform` | **Correction, previously stated backwards**: `--socket=pulseaudio` (as in High Tide's and Sone's shipped manifests) already grants `/dev/snd` — Flatpak's own sandbox helper binds it whenever that socket is requested. Exclusive ALSA `hw:` does **not** need `--device=all`; do not plan for it or expect reviewer pushback on this specific point. **AI policy applies — see §9.** Trademark rule: an app "cannot mention `Firefox` in its name or use any of the official icon, logo or artwork" — the same logic applies to TIDAL's marks. |
 | **Snap** | `snapcraft.yaml`, `base: core24`, `confinement: strict` | SONE's plugs include `audio-playback` and `alsa`; `alsa` is a manual-connect interface, hence its README's `sudo snap connect sone:alsa`. SONE also has to override the gnome extension's WebKit bind path ("it targets gnome-46-2404, which ships no WebKit -> blank window") — a Tauri-on-Snap-specific trap. |
 | **AUR** | PKGBUILD | SONE ships both `sone` (from source) and `sone-bin`. Cheap and expected by Arch users. |
 | **deb / rpm** | `tauri build` emits both; SONE additionally builds them in Docker per-distro (`build-scripts/build/{deb,rpm,pacman}.sh`) and hosts an apt/dnf/zypper repo on Cloudsmith | SONE's deb `depends` list is the real dependency footprint of this design: `libwebkit2gtk-4.1-0`, `libgtk-3-0`, `libayatana-appindicator3-1`, `libgstreamer1.0-0`, `gstreamer1.0-plugins-{base,good,bad}`, `gstreamer1.0-libav`, `gstreamer1.0-alsa`, `libsecret-1-0`, `libasound2 \| libasound2t64`, `librsvg2-common`, `pulseaudio-utils`. |
@@ -1012,15 +1204,21 @@ every one of the Rust-native candidates, not just the recommended one.
 Testing tooling per stack, since agents need a test to aim at:
 
 - Rust: `cargo test`, `wiremock` for HTTP, `insta` for snapshot assertions on parsed manifests,
-  `criterion` if needed. **Correction (fact-checked), fuller picture than "thin testing":** SONE's
-  `[dev-dependencies]` is indeed just `tempfile = "3"`, but that is not the whole test story — SONE has
-  145 `#[test]` functions across 22 `#[cfg(test)]` modules in 16 files, all on std-only tooling (no
-  mocking framework, no snapshot crate), covering `tidal_api.rs` (playback-info sub-status
-  classification), `pipeline_probe.rs`, `rate_gate.rs`, `scrobble/{lastfm,listenbrainz,musicbrainz}.rs`,
-  `mcp/sanitizer.rs`, `logging.rs`, `theme_config.rs`, `commands/{playback,updates}.rs`. The accurate
-  framing: everything except the audio engine is unit-tested; `audio.rs` specifically — the hardest
-  code in the project — has zero `#[cfg(test)]` modules (see the headless-audio-testing note below).
-  That split, not a blanket "thin testing," is the template worth copying.
+  `criterion` if needed. **Correction (fact-checked twice over), fuller picture than "thin testing"
+  but narrower than an earlier version of this passage claimed:** SONE's
+  `[dev-dependencies]` is indeed just `tempfile = "3"` — no HTTP-mocking library, no snapshot crate
+  — and that absence is a real signal, not a misleading one. SONE has **151 tests (145 `#[test]` +
+  6 `#[tokio::test]`)** across 22 `#[cfg(test)]` modules in 16 files, all std-only, covering
+  `tidal_api.rs` (playback-info sub-status classification), `pipeline_probe.rs`, `rate_gate.rs`,
+  `scrobble/{lastfm,listenbrainz,musicbrainz}.rs`, `mcp/sanitizer.rs`, `logging.rs`,
+  `theme_config.rs`, `commands/{playback,updates}.rs`. **The accurate framing, corrected from an
+  earlier "everything except the audio engine is unit-tested" claim here**: what's actually
+  covered is pure decision-functions across most modules (sub-status classification, rate-gate
+  arithmetic, scrobble thresholds, LRC parsing) — not the HTTP transport layer, not the manifest
+  parsers against real payloads, and not `audio.rs` (the hardest code in the project — zero
+  `#[cfg(test)]` modules, see the headless-audio-testing note below). The lack of a mocking library
+  is exactly why the transport layer has no coverage; don't read "151 tests" as implying a
+  copyable harness for the hard parts.
 - Frontend: Vitest + `@testing-library/react` + jsdom is exactly SONE's setup (`vitest` 4.1.7,
   `@testing-library/react` 16.3.2, `jsdom` 29.1.1), with `knip` for dead-code detection. SONE has
   test files colocated with components (`Header.test.tsx`, `PlayerBar.test.tsx`,
@@ -1290,10 +1488,13 @@ exactly at the FFI boundary; desktop Flutter apps are recognisable as such.
 - **GTK4 (Rust or Python)** — produces the nicest Linux app in the survey and a foreign-looking app
   everywhere else, against an explicit three-OS requirement. Revisit only if the owner narrows scope
   to Linux.
-- **Qt/QML** — technically capable of a great deal, and Strawberry proves bit-perfect on **Linux and
-  Windows**. **Correction (fact-checked): Strawberry does not prove macOS bit-perfect** — its
-  `ExclusiveModeSupport()` covers only `wasapisink`/`wasapi2sink`
-  (`ref:strawberry/src/engine/gstengine.cpp:523-525`) and its CoreAudio use is device enumeration only
+- **Qt/QML** — technically capable of a great deal, and Strawberry proves bit-perfect on **Windows
+  only**, via `wasapisink`/`wasapi2sink`. **Correction (fact-checked twice over): not Linux and not
+  macOS** — its `ExclusiveModeSupport()`
+  (`ref:strawberry/src/engine/gstengine.cpp:523-525`) covers only `wasapisink`/`wasapi2sink`, both
+  Windows-only elements; its Linux "exclusive" flag is an unverified `hw:`/`plughw:` device-prefix
+  inference, not a dedicated code path (`rg -i 'bit.perfect' strawberry/src/` finds nothing); and
+  its CoreAudio use is device enumeration only
   (`ref:strawberry/src/engine/macosdevicefinder.cpp`); no hog-mode or physical-format code exists in
   `src/`. Rejected on total surface area (C++ + QML + CMake + Qt deployment + LGPL linking rules) for a
   solo developer, and on agent reliability in QML.
@@ -1321,8 +1522,15 @@ exactly at the FFI boundary; desktop Flutter apps are recognisable as such.
    revisited on macOS.
 2. **Register MPRIS from the engine, not from the GUI**, so `playerctl` and media keys work in daemon
    mode (tidalt calls this out explicitly).
-3. **Make gapless and bit-perfect mutually exclusive by construction**, mirroring SONE's
-   Normal-vs-DirectAlsa split, and say so in the UI.
+3. **Model gapless-vs-bit-perfect exclusivity per backend, not as one stack-wide rule — correction
+   (fact-checked): an earlier draft of this item stated it as universal, mirroring only SONE's Linux
+   `DirectAlsa`/Normal split, and the report's own Windows evidence contradicts a universal reading**
+   (`sone-windows`' `wasapi2sink exclusive=true` runs inside the same `concat`-based gapless pipeline
+   SONE uses on Linux, `ref:sone-windows/src-tauri/src/audio.rs:1188,1234-1247` — see §2.2). Give the
+   `AudioEngine` trait a `supports_gapless_with_exclusive() -> bool` capability query per backend: panic
+   or refuse on `DirectAlsa` as SONE does; treat any GStreamer-sink or libmpv backend's gapless+exclusive
+   interaction as unverified until measured, and say so in the UI rather than assuming SONE's Linux rule
+   travels.
 4. **Do not persist stream manifests across restarts.** High Tide caches them in memory per session,
    resetting `self.manifest` per track with no TTL (`ref:high-tide/src/lib/player_object.py:140,457-491`).
    **Correction (fact-checked, "uncertain"): the specific "~1 hour manifest / ~24 hour segment URL"
@@ -1440,6 +1648,25 @@ Only the owner can decide these:
     Windows service gets no now-playing integration) — but this was never posed as an owner decision.
     The owner said "headless/server/CLI…now"; decide explicitly whether that means Linux+Docker in v1
     with macOS launchd and a Windows service deferred, given the concrete costs above.
+20. **Format-boundary gaps in strict bit-perfect mode: accept the audible gap, fall back to a plug
+    layer, or group the queue by format?** (Added — gap identified during fact-checking; see the new
+    §2.1 paragraph.) A device close+reopen at every sample-rate/bit-depth change is a bit-perfect-mode
+    constraint, not a bug — no reference project avoids it, and it makes gapless across a format
+    boundary impossible in principle. This is the same class of call as the volume-lock and no-
+    ReplayGain decisions §2.1 already states as settled; it needs its own answer.
+21. **Native tray, or none — and does closing the window quit the app or keep it playing in the
+    background?** (Added — gap identified during fact-checking; see the new §4.1 paragraph.) The tray is
+    the one desktop feature with no headless counterpart, and the close-window answer determines whether
+    the desktop shell can ever hold the audio device while invisible.
+22. **macOS: universal binary (Intel + Apple Silicon) or Apple-Silicon-only?** (Added — gap identified
+    during fact-checking; see the new §4.1 paragraph.) A universal build roughly doubles build time and
+    artifact size and requires every bundled native library (GStreamer or libmpv) to itself be universal
+    — a real argument for libmpv on macOS beyond the packaging-weight case already made.
+23. **Which crate layout: this report's `streamboat-player`-as-its-own-crate, or
+    `headless-connect.md`'s `streamboat-core`-includes-the-engine / `streamboat-server`?** (Added — gap
+    identified during fact-checking; see the new §3 note under Shape 1.) Pick one before `Cargo.toml`
+    exists; this report defers to `headless-connect.md`'s naming as the more recently reconciled of the
+    two.
 
 Unverified or low-confidence in this report — flagged so downstream agents do not treat them as fact:
 
@@ -1482,10 +1709,11 @@ Unverified or low-confidence in this report — flagged so downstream agents do 
   WebView2 install-mode table, the macOS `bundle.macOS.frameworks` hook, and the mobile `crate-type`
   requirement (all added to §4.1) **were** read directly from `raw.githubusercontent.com` mirrors of the
   same docs and are higher-confidence.
-- **The minimum GStreamer version that exposes `wasapi2sink`'s `exclusive` property (§2.3, item 2)** —
-  `gstreamer.freedesktop.org` is blocked in this environment and neither `sone-windows` nor Strawberry
-  pins one. Copy Strawberry's defensive `g_object_class_find_property` check and a loud runtime
-  assertion in the meantime, rather than assuming the property exists.
+- ~~The minimum GStreamer version that exposes `wasapi2sink`'s `exclusive` property~~ — **resolved**
+  (moved out of Unverified): it is `Since: 1.28`, read directly from
+  `gst-plugins-bad/sys/wasapi2/gstwasapi2sink.cpp` on `raw.githubusercontent.com` (the
+  `gstreamer.freedesktop.org` docs mirror of the same fact remains blocked in this environment, but the
+  plugin source itself was reachable). See §2.3, item 2.
 - **Which Rust crate would drive libmpv as backend #2 (§2.3)** — not named, versioned, or
   licence-checked in this pass. Candidates are `libmpv2`/`libmpv-sys` on desktop and `media_kit` on the
   Flutter path (Recommendation 3); each needs its own check, plus a note that mpv's build configuration
@@ -1620,8 +1848,9 @@ Unverified or low-confidence in this report — flagged so downstream agents do 
   (68 lines, covers the `plughw:` fallback); supports the §3 audio-test-harness note.
 - `ref:tidal-hifi/package.json` — `"electron": "github:castlabs/electron-releases#v43.0.0+wvcus"`,
   MIT, electron-builder targets, mpris-service; supports the Electron evaluation.
-- `ref:strawberry/CMakeLists.txt:228-232,242` — C++ with Qt, `QT_MIN_VERSION` 6.8.0 on
-  `APPLE OR WIN32`, else 6.4.0 (corrects an earlier `:230-242` line citation).
+- `ref:strawberry/CMakeLists.txt:229-233` — C++ with Qt, `QT_MIN_VERSION` 6.8.0 on
+  `APPLE OR WIN32`, else 6.4.0 (corrects two earlier, mutually inconsistent line citations,
+  `:228-232` and `:230-242`, to the single correct range — `find_package` itself is at line 242).
 - `ref:strawberry/src/` (recount, 2026-09-07) — ~166,122 lines of C++/headers (491 `.cpp` = 121,981
   lines; 568 `.h` = 44,141 lines; `src/core` alone 21,510 lines) across 40 subdirectories — corrects an
   earlier "14,708 lines" count, which came from an `xargs wc -l` invocation whose batching silently
@@ -1708,6 +1937,15 @@ Unverified or low-confidence in this report — flagged so downstream agents do 
   https://gstreamer.freedesktop.org/documentation/deploying/mac-osx.html — packing the GStreamer MSI and
   running it via `msiexec`, Merge Modules, and the warning that on-demand plugin loading makes trimming
   risky; supports the Windows/macOS packaging burden.
+- https://raw.githubusercontent.com/GStreamer/gstreamer/main/subprojects/gst-plugins-bad/sys/wasapi2/gstwasapi2sink.cpp
+  (fetched during fact-checking) — the `exclusive` property on `GstWasapi2Sink` is annotated `Since:
+  1.28` (lines 195-204), `DEFAULT_EXCLUSIVE` `FALSE` (line 64); resolves the previously-"not
+  established" minimum-GStreamer-version gap in §2.3, item 2.
+- https://github.com/orgs/tauri-apps/discussions/9419 and
+  https://dev.to/hiyoyok/building-a-universal-binary-with-tauri-v2-its-easier-than-you-think-1b53
+  (via search, 2026-09-08; `v2.tauri.app` itself blocked here) — `tauri build --target
+  universal-apple-darwin`, cost roughly 2x build time/size, every bundled native library must itself be
+  universal; supports the new §4.1 macOS-architecture paragraph.
 - https://crates.io/api/v1/crates/slint — 1.17.1, 2026-07-07, `GPL-3.0-only OR
   LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0`, MSRV 1.92, femtovg/software/Skia/WGPU.
 - https://github.com/slint-ui/slint/blob/master/LICENSE.md , https://slint.dev/pricing — royalty-free
@@ -1751,13 +1989,21 @@ Unverified or low-confidence in this report — flagged so downstream agents do 
   v2 remains the stable release. Re-check this URL rather than trusting a cached beta number.
 - https://fyne.io/blog/2026/07/13/fyne-v2.8-released/ — Fyne 2.8, 2026-07-13, 1,000+ commits,
   Wayland auto-selected on Linux, Go 1.22 minimum.
-- https://github.com/dweymouth/supersonic — Go + Fyne 2.8, mpv audio, **v0.22.1 (corrected from
-  v0.22.0)**, gapless + ReplayGain + 15-band EQ + "optional audio exclusive mode", AppImage bundles mpv,
-  Flatpak CJK font limitation; release timestamp reads 2024-08-09 — check for staleness before citing.
+- https://github.com/supersonic-app/supersonic/releases/tag/v0.22.1 (repo moved from
+  `dweymouth/supersonic`) and
+  https://raw.githubusercontent.com/dweymouth/supersonic/main/go.mod — Go + Fyne 2.8, mpv audio,
+  v0.22.1, released **2026-08-09** (confirmed against `go.mod`'s `fyne.io/fyne/v2 v2.8.0` requirement
+  and its `replace` directive's 2026-08-09 pseudo-version — an earlier draft misread GitHub's
+  no-year-suffix current-year date as 2024-08-09 and wrongly flagged the project as stale; it is
+  actively maintained). Subsonic/OpenSubsonic + Jellyfin client only — not a TIDAL precedent, cited here
+  for its libmpv audio backend and Go+Fyne stack only. Gapless + ReplayGain + 15-band EQ + "optional
+  audio exclusive mode", AppImage bundles mpv, Flatpak CJK font limitation.
 - https://github.com/jeffvli/feishin/releases , https://deepwiki.com/jeffvli/feishin — Electron +
   React 19 + Mantine + Zustand + electron-vite, mpv backend, v1.15.1 on 2026-07-19.
-- https://github.com/jpochyla/psst — Rust + druid; author's note on druid architecture and Xilem;
-  as of Feb 2026 needs a user-supplied Spotify Developer Client ID.
+- https://github.com/jpochyla/psst — Rust + druid; as of Feb 2026 needs a user-supplied Spotify
+  Developer Client ID.
+- https://github.com/jpochyla/psst/discussions/359 (dated January 2023) — the author's note on druid
+  architecture and Xilem; date it when citing, since it predates iced 0.14's reactive-rendering rewrite.
 - https://apps.gnome.org/Amberol/ — GTK4 + Rust + GStreamer, latest 2026.1 on 2026-04-05.
 - https://github.com/flathub-infra/documentation/commit/992f57b30de98ddbd5e80959e9672998c83c8c97 —
   "Reword LLM policy to make it clear it's not allowed"; file

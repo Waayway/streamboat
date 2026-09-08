@@ -16,12 +16,19 @@ points at a shallow clone — see `sources.md`.
 
 ## 1. i18n
 
-- **The reference bar is low and easy to beat.** Only High Tide ships translations: gettext with
-  `po/{de,es,fr,it,nl,pl,pt_BR,zh_TW}.po`, a `high-tide.pot`, `po/LINGUAS`, `po/POTFILES` and a
-  documented regeneration command
-  `xgettext --files-from=po/POTFILES --output=po/high-tide.pot --from-code=UTF-8 --add-comments
-  --keyword=_ --keyword=C_:1c,2` (ref:high-tide/CONTRIBUTING.md, ref:high-tide/po/). sone,
-  tidal-hifi and tidalt are English-only. Strawberry uses Crowdin (`crowdin.yml`).
+- **The reference bar is low and easy to beat, and there are two working precedents, not one — an
+  earlier draft said "only High Tide ships translations", contradicting its own next sentence about
+  Strawberry's Crowdin setup; corrected here.** High Tide ships gettext: `po/{de,es,fr,it,nl,pl,
+  pt_BR,zh_TW}.po`, a `high-tide.pot`, `po/LINGUAS`, `po/POTFILES` and a documented regeneration
+  command `xgettext --files-from=po/POTFILES --output=po/high-tide.pot --from-code=UTF-8
+  --add-comments --keyword=_ --keyword=C_:1c,2` (ref:high-tide/CONTRIBUTING.md, ref:high-tide/po/).
+  Strawberry ships 31 Qt `.ts` catalogues (`ca_ES` through `zh_*`) synced through Crowdin
+  (ref:strawberry/src/translations/, ref:strawberry/crowdin.yml) — a second, larger-scale precedent
+  with a translation-platform workflow already in the reference set. Sone, tidal-hifi and tidalt
+  are English-only. Use the High Tide/gettext pair and the Strawberry/Crowdin pair together to
+  frame the Weblate-vs-Crowdin-vs-plain-PRs decision (SKILL.md's Open decisions) — whichever
+  mechanism the chosen stack uses, both the extraction tooling and the platform-sync workflow
+  already have a working example here.
 - **Flathub requires a complete English localisation** for UI, desktop file, metainfo and docs, and
   forbids "low quality, automated or machine-generated or mixed translations". So: English first,
   human translations only, and a note in the metainfo if the app is ever non-English-primary.
@@ -38,7 +45,7 @@ points at a shallow clone — see `sources.md`.
   `countryCode` and `deviceType` — e.g. `?countryCode=NZ&locale=en_US&deviceType=DESKTOP`
   (ref:TidaLuna/plugins/lib/src/classes/TidalApi/index.ts:76,30). python-tidal hardcodes
   `self.locale = "en_US"` with the comment `# TODO Get locale from system configuration`
-  (ref:python-tidal/tidalapi/session.py:404, 671), and sone passes `("locale", "en_US")` at **21**
+  (ref:python-tidal/tidalapi/session.py:404, 671), and Sone passes `("locale", "en_US")` at **21**
   call sites in `tidal_api.rs` (lines 1808, 2307, 3074, 3258, 3336, 3381, 3429, 3489, 3528, 3576,
   3874, 3957, 4173, 4240, 5048, 5185, 5211, 5235, 5273, 5458, 5858 — corrected from an earlier
   "~10" estimate in this document). **streamboat should pass the user's actual locale** — that
@@ -49,10 +56,16 @@ points at a shallow clone — see `sources.md`.
   `GET /v1/sessions` and is a separate axis from `locale`.
 - **i18n mechanics beyond picking a library**: three mechanical things break in practice that the
   library choice above does not cover. (1) The `.desktop` file and the AppStream metainfo are
-  user-facing and separately translated — `msgfmt --desktop` merges translations into the desktop
-  entry, and metainfo needs its own translated `<name>`/`<summary>`/`<description>`; High Tide's
-  `po/POTFILES` + `xgettext` pattern (above) does not itself cover these files, so add them to
-  `POTFILES` explicitly. (2) Add a pseudo-localization locale (wrap every translated string in
+  user-facing and separately translated. **Correction — High Tide is a complete working template
+  here, not a gap that needs extending**: `ref:high-tide/po/POTFILES` lines 21-23 already list
+  `data/io.github.nokse22.high-tide.desktop.in`, `data/io.github.nokse22.high-tide.appdata.xml.in`
+  and `data/io.github.nokse22.high-tide.gschema.xml`, and `ref:high-tide/data/meson.build` merges
+  translations back into the shipped files via `i18n.merge_file(input: '...desktop.in', type:
+  'desktop', po_dir: '../po')` and the equivalent for the appdata XML. Copy this shape directly —
+  list the `.desktop.in`/`.appdata.xml.in` sources in the translation catalog and merge with
+  `i18n.merge_file` (or the gettext/`msgfmt --desktop` equivalent) rather than treating
+  desktop/metainfo strings as a separate surface that's easy to forget. (2) Add a pseudo-localization
+  locale (wrap every translated string in
   markers, pad it ~40%) and do a manual pass on it — the only cheap way to find strings that were
   never externalized and layouts that break on German. (3) Define a string freeze before each
   release so translators have a stable target, which matters given the roughly weekly cadence
@@ -64,10 +77,22 @@ points at a shallow clone — see `sources.md`.
 
 - **Keyboard navigation is the highest-value, stack-independent commitment**: every action
   reachable without a mouse, a visible focus ring, a shortcuts dialog (High Tide ships
-  `data/shortcuts-dialog.blp`), Escape closing overlays (sone has a dedicated test,
-  `NowPlayingDrawer.escape.test.tsx`), user-remappable shortcuts (sone lists "Customizable in-app
+  `data/shortcuts-dialog.blp`), Escape closing overlays (Sone has a dedicated test,
+  `NowPlayingDrawer.escape.test.tsx`), user-remappable shortcuts (Sone lists "Customizable in-app
   keyboard shortcuts" as a feature and tests `useShortcuts`), and media keys via MPRIS / SMTC /
-  MediaPlayerRemoteCommandCenter.
+  MediaPlayerRemoteCommandCenter. **Gap — on Wayland "media keys via MPRIS" understates it: MPRIS
+  is not one option among several, it's the mechanism.** The compositor owns the hardware key;
+  play/pause translates into a D-Bus call to whichever MPRIS2 service is registered, so there is no
+  toolkit-level global-hotkey grab to fall back to. tidalt documents this directly: `playerctl`
+  against `org.mpris.MediaPlayer2.tidalt` is "the recommended way to control tidalt from keyboard
+  shortcuts on Wayland" (ref:tidalt/docs/media-keys.md). Anything *beyond* the standard media
+  keys — a user-defined global hotkey — needs `org.freedesktop.portal.GlobalShortcuts`, not a
+  toolkit-level grab, which is also what keeps a Flatpak build inside Flathub's mandatory-portal
+  rule (`packaging-and-distribution.md` §1). Add acceptance criteria to the manual matrix below:
+  media keys work unfocused on GNOME/Wayland, KDE/Wayland and X11 (Linux) via MPRIS, on Windows via
+  SMTC (needs the AppUserModelID matched on the Start Menu shortcut,
+  `packaging-and-distribution.md` §5), and on macOS via
+  MPNowPlayingInfoCenter/MPRemoteCommandCenter.
 - **Screen readers [STACK]**, with the concrete state of each option:
   - GTK4 dropped ATK and talks to AT-SPI directly; widgets are accessible by default and the
     remaining work is labelling. High Tide's CONTRIBUTING already requires tooltips on symbolic
@@ -165,7 +190,7 @@ produces a single zip containing:
    misread as "anonymised".
 
 Print the output path and state plainly that the bundle has been redacted but should still be
-reviewed before posting publicly. This turns the sone playback-issue template's manual checklist
+reviewed before posting publicly. This turns the Sone playback-issue template's manual checklist
 into one command.
 
 ## 6. Metrics
@@ -182,7 +207,7 @@ not define them twice.
 The headless control-surface design (MPRIS vs HTTP/JSON) is left to the owner (see SKILL.md's Open
 decisions), but whichever way that lands, a local listening socket has an established safe
 default, and the reference set already has a working precedent to copy rather than designing from
-the abstract. sone ships an opt-in local HTTP control surface (an MCP server) whose design is the
+the abstract. Sone ships an opt-in local HTTP control surface (an MCP server) whose design is the
 baseline: disabled by default (`if !settings.mcp_enabled { return }`); bound explicitly to loopback
 (`let addr: SocketAddr = ([127,0,0,1], port).into()`), never `0.0.0.0`; authenticated by a random
 UUIDv4 bearer token generated on first enable and persisted in the (encrypted) settings, carried in

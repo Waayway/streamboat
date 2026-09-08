@@ -39,7 +39,13 @@ solves).
   own crate boundaries when deciding where core ends (`headless-daemon-precedents.md` §9: `core`,
   `audio`, `playback`, `metadata`, `protocol`, `oauth`, `discovery`, `connect` as separate crates —
   note OAuth and zeroconf discovery are their own crates, and Connect-receiver logic lives in its
-  own crate rather than inside the player). Before writing the TIDAL client from scratch, evaluate
+  own crate rather than inside the player). The core/UI split is unanimous outside Rust/Go too:
+  Mopidy→{mopidy-mpd, mopidy-mpris, Iris}, tidalt→{TUI, daemon}, and **TidalSwift**→{`TidalSwiftLib`
+  (session, catalogue, playback), a thin `TidalSwift` SwiftUI app} all follow the same shape — the
+  only Swift-side precedent in this project's source set, and directly relevant to the future iOS
+  build, where Swift/SwiftUI (not Rust/Tauri) is the realistic toolkit. [`ref:tidalswift` — see
+  `TidalSwiftLib/` vs. `TidalSwift/` as separate targets in the checkout]. Before writing the TIDAL
+  client from scratch, evaluate
   `ref:tidalrs` (crates.io `tidalrs`, phayes/tidalrs) — "a comprehensive Rust client library for the
   Tidal … API" with async/await on Tokio, device-code OAuth2, automatic token refresh, DASH/MPEG
   streaming and typed catalogue models, targeting the same unofficial v1 API this project uses (a
@@ -60,18 +66,24 @@ solves).
 
 **"One binary with subcommands" describes the command surface, not the build — the sibling
 tech-stack research specifies the opposite at build time, and reconciling the two matters or a
-headless install drags in a webview.** `docs/research/tech-stack.md:505-508`: "Add
-`crates/streamboat-daemon` with a `[[bin]]` that does not depend on `tauri` at all. `cargo build -p
-streamboat-daemon` on a server with no GTK/WebKit installed works as long as the daemon crate does
-not pull the desktop crate. Enforce with a workspace dependency graph and a CI job that builds the
-daemon in a minimal container." `tech-stack.md:122` likewise plans a `daemon` binary, a `cli`
-client, and a Tauri desktop shell as three separate artifacts. tidalt (the one-binary precedent
-above) is a Go TUI with no webview, so its shape does not transfer directly. **The reconciliation**:
-one user-facing command surface (`streamboat` / `streamboat daemon` / `streamboat play`) compiled as
-**two Cargo build artifacts** from one workspace — a GUI binary linking the webview, and a
-`streamboatd` that must not, verified by a CI job that builds the daemon crate alone in a
-GTK/WebKit-free container. On a Pi, the installed package is the daemon binary alone.
-[verified-source `docs/research/tech-stack.md:122,505-508`]
+headless install drags in a webview.** `docs/research/tech-stack.md:816-819` (quoting an earlier
+draft; the crate is now named `streamboat-server`, not `streamboat-daemon` — see
+`tech-stack-evaluation/references/architecture-shapes.md` §1, the reconciled and canonical naming):
+"Add `crates/streamboat-daemon` with a `[[bin]]` that does not depend on `tauri` at all. `cargo
+build -p streamboat-daemon` on a server with no GTK/WebKit installed works as long as the daemon
+crate does not pull the desktop crate. Enforce with a workspace dependency graph and a CI job that
+builds the daemon in a minimal container." `tech-stack.md:134` likewise plans a `daemon` binary, a
+`cli` client, and a Tauri desktop shell as three separate artifacts (also pre-reconciliation
+naming). tidalt (the one-binary precedent above) is a Go TUI with no webview, so its shape does not
+transfer directly. **The reconciliation**: one user-facing command surface (`streamboat` /
+`streamboat daemon` / `streamboat play`) compiled as **two Cargo build artifacts** from one
+workspace — a GUI binary linking the webview, and a `streamboat-server` crate whose binary is
+`streamboatd`, which must not, verified by a CI job that builds the `streamboat-server` crate alone
+in a GTK/WebKit-free container. On a Pi, the installed package is `streamboatd` alone. Use
+`streamboat-server`/`streamboatd` in any new text; the `streamboat-daemon` name above is quoted
+verbatim from the pre-reconciliation report and should not be copied forward.
+[verified-source `docs/research/tech-stack.md:134,816-819` — line numbers drift as the file is
+edited; re-locate by the quoted phrases above if they no longer match]
 
 **Does the desktop GUI itself expose the control API, so a phone can control the desktop app
 directly and not only a headless daemon?** tidal-hifi — the precedent this skill's URL vocabulary is
@@ -138,6 +150,36 @@ failure. For `systemd --user` (desktop, or headless-with-linger), the socket ins
 unit template, `graphical-session.target` only); systemd.exec(5)
 `RuntimeDirectory`/`StateDirectory`/`ConfigurationDirectory` — general systemd documentation]
 
+**Graceful shutdown and restart-during-playback are unspecified here, even though this section
+recommends systemd, package updates and a state file — all three routinely stop the daemon while
+music is playing.** `systemctl restart streamboat` and an unattended distro upgrade both happen
+mid-track. Without an explicit answer the daemon either gets SIGKILLed at `TimeoutStopSec` with a
+truncated ALSA buffer (an audible click, and a lost queue write), or hangs shutdown. Specify,
+alongside the `RuntimeDirectory`/`StateDirectory` guidance above: on `SIGTERM`, stop feeding the PCM
+and issue `snd_pcm_drop` — **not** `snd_pcm_drain`, which plays out up to a full buffer of stale
+audio and delays exit — or a short fade; release the `ReserveDevice1` reservation; flush the
+queue/state file synchronously; close the Pushkin socket cleanly so TIDAL is not left holding a stale
+privileged session; then exit. Set `TimeoutStopSec=` above the worst-case state-flush time. Two
+related, still-unstated decisions: `KillMode=` (the systemd default, `control-group`, will kill a
+`process://`-spawned Snapcast helper or a `streamboat snapcast-plugin` child alongside the daemon —
+is that wanted?); and whether `Restart=on-failure` should resume playback on the restart it triggers
+(this must agree with the queue-restart decision in `raspberry-pi-deployment.md` §6, or a crash loop
+silently becomes a music loop). `ref:tidalt`'s daemon has no shutdown handling to copy here — this is
+a genuine specification gap, not a lookup. [absence in `ref:tidalt/cmd/tidalt/daemon.go` (a five-line
+unit, no `TimeoutStopSec`/`KillMode`); systemd.kill(5)/systemd.service(5)
+`KillMode`/`TimeoutStopSec` semantics — general systemd documentation]
+
+**No effort or sequencing estimate is attached to the staged path in `SKILL.md`, though the design-
+options comparison rates individual options XS–L, and stage 1.2 in particular bundles three items
+this skill elsewhere rates M–L each.** The raw material is already scattered across this skill, just
+never aggregated: the MPD subset is "a hand-written parser plus a state machine, on the order of a
+few thousand lines" (`mpd-and-multiroom.md` §1) with no drop-in server library in Rust or Go — the
+single largest item in the whole staged path, larger than the entire control API; the pipe output is
+"tens of lines" (`mpd-and-multiroom.md` §2); MPRIS is "~a day of work" (`SKILL.md`'s staged-path
+list). Split the discovery+pairing / MPD-subset / diagnostics work into three independently
+shippable stages, and treat the MPD subset as the one stage that can be deferred indefinitely without
+blocking anything else, since nothing else in this architecture depends on it.
+
 **macOS 15+ and iOS's Local Network permission, and the first-run Windows firewall prompt, apply to
 any streamboat code that does mDNS or LAN control.** macOS 15 (Sequoia) extended iOS's Local Network
 privacy to the Mac: an app using Bonjour/mDNS or making LAN connections must ship
@@ -176,6 +218,20 @@ has no `$HOME` worth speaking of. Precedents: `~/.config/sone/settings.json` + `
 `journalctl --user -u streamboat -f`); offer `--log-file` for Windows/macOS where there is no
 journal. tidalt writes a dedicated `play.log` for the deep-link path because that code runs with no
 terminal — a good idea worth copying for any path invoked by the OS.
+
+**Nothing here addresses token/credential redaction, and every precedent in this skill logs at
+level 3+ by default.** journald entries are readable by any user in the `systemd-journal` group on a
+shared box, and §3 recommends logging the reachable control-API URL. Bearer tokens, the pairing
+token, the Pushkin WebSocket URL (token-bound per §6), signed CDN URLs, and the device-code
+`user_code` are all things this daemon handles — any one of them printed once is a durable credential
+leak on a shared machine. **Rule**: never log the control-API token, the pairing token,
+`Authorization` headers, refresh/access tokens, the `rt/connect` WebSocket URL, or signed CDN URLs at
+any level — log a stable prefix or hash instead when a correlation id is needed. Named traps: the
+Sone-derived wildcard-bind-URL display (§3) must never carry the URL-path token form Sone itself
+uses; tidalt's `play.log` is 0600 in a 0700 directory — copy the permissions, not just the file's
+existence; `streamboat doctor`'s output and any debug bundle are the other place credentials escape —
+redact there by construction, not by review. [`ref:tidalt/cmd/tidalt/play.go` (`play.log` at 0600 in
+a 0700 dir); `ref:sone/src-tauri/src/overlay/server.rs` (wildcard-bind URL display)]
 
 **Updates**: a daemon that auto-updates itself and restarts mid-track is hostile. Prefer OS
 packaging (systemd + distro/Flatpak/AUR/Homebrew), and if an in-app updater exists, make it
@@ -219,10 +275,35 @@ https://raw.githubusercontent.com/hrkfdn/ncspot/main/doc/users.md lines 191-235,
 https://raw.githubusercontent.com/hrkfdn/ncspot/main/src/ipc.rs]
 
 **Rich IPC (HTTP + WebSocket JSON)** expresses everything, needs auth, needs a client — this is
-where go-librespot, Mopidy, Music Assistant, tidal-hifi and sone all landed
+where go-librespot, Mopidy, Music Assistant, tidal-hifi and Sone all landed
 (`headless-daemon-precedents.md` §3-4, §9). streamboat needs **all three** surfaces: MPRIS (now
 including queue/playlist) for OS integration, a Unix socket for same-host scripting and the CLI, and
 a rich local API for real remotes.
+
+**The command-transport *style* for that rich IPC is never actually decided above, and the default
+here — REST + a separate WebSocket event stream, copied from tidal-hifi and go-librespot — is the
+opposite choice from every *server-shaped* precedent already in this skill's own source set.**
+JSON-RPC 2.0 as the command transport (not just a naming convention) already appears three times as
+precedent: Mopidy exposes "HTTP/WebSocket JSON-RPC" (`headless-daemon-precedents.md` §1); snapserver's
+control port 1705 is TCP JSON-RPC and its 1780 port is HTTP + WebSocket JSON-RPC
+(`mpd-and-multiroom.md` §2); the Snapcast stream-plugin protocol is newline-delimited JSON-RPC 2.0
+over stdin/stdout (`mpd-and-multiroom.md` §2). tidal-hifi's REST surface — the one this skill copies
+its URL vocabulary from — is a GUI remote-control endpoint with **no event stream at all**, so it is
+precedent for *URL naming* only, never for the transport architecture; go-librespot's REST+`/events`
+split is the one real precedent for the two-transport shape recommended above, and the only
+server-shaped precedent here that does not use JSON-RPC. Two transports means two framings, no
+request/response correlation ids on the WebSocket half, and every client (including the future mobile
+app) needing both an HTTP client and a WS client for full functionality. **Concrete recommendation**:
+pick one framing for commands — JSON-RPC 2.0 request/response with ids, carried over the same
+WebSocket that already carries events (§4) — plus a thin REST facade mapping tidal-hifi's URL
+vocabulary onto the same method names, kept for curl/Stream Deck users who want a one-shot `curl -X
+POST`. **gRPC is rejected**: it needs protobuf codegen in every client, has no usable browser story
+without grpc-web, and buys nothing over JSON for a LAN daemon's command surface — this closes out the
+brief's original "JSON-RPC/WebSocket/gRPC API" comparison request, which this skill otherwise never
+answered. Also decide whether the Unix-socket surface above speaks the same JSON-RPC framing —
+recommended: yes, since ncspot's NDJSON shape and JSON-RPC 2.0 are both newline-delimited JSON and
+can share one codec. [this skill's own `headless-daemon-precedents.md` §1/§9 and `mpd-and-multiroom.md`
+§2 text; `ref:tidal-hifi/src/features/api/swagger.json`]
 
 **MPRIS bus-name convention**: `ref:tidalt` uses the short form `org.mpris.MediaPlayer2.tidalt`;
 `ref:high-tide` uses the reverse-DNS form `org.mpris.MediaPlayer2.io.github.nokse22.high-tide`.
@@ -236,49 +317,60 @@ tidal-hifi's actual defaults, cited as the naming precedent, are exactly the wro
 (49 lines) has **no authentication of any kind** — grepping for `auth`/`token`/`bearer`/`password`
 returns nothing. Copy the URL vocabulary; reject the posture — streamboat's API ships **disabled by
 default, or token-required from first boot**, never open-and-unauthenticated. Other ports already in
-this project's precedent set, for choosing a non-colliding default: sone MCP 5577 / overlay 5578
+this project's precedent set, for choosing a non-colliding default: Sone MCP 5577 / overlay 5578
 (`headless-daemon-precedents.md` §3), go-librespot 3678, Music Assistant 8095, snapserver
-1704/1705/1780/1788 (`mpd-and-multiroom.md` §2), mopidy-tidal login server 8989. Specify: default
-port, loopback default bind, enabled-or-disabled out of the box, and whether to bind port 0 and
-advertise the assigned port via mDNS (below) rather than a fixed-port fallback ladder.
-[verified-source `ref:tidal-hifi/src/scripts/settingsStore.ts:44-47`,
+1704/1705/1780/1788 (`mpd-and-multiroom.md` §2), mopidy-tidal login server 8989, MPD itself 6600
+(Nuclear's fallback ladder 6601-6609, `mpd-and-multiroom.md` §1). **Recommendation, not yet an owner
+decision — override freely**: default control-API port **4747** (collides with none of the above),
+bound `127.0.0.1`, **disabled until a token is generated** (first-run `streamboat service install`
+or `streamboat token create` mints one) rather than merely "token-required" with an open default —
+matching trap #18's "never open-and-unauthenticated" rule at the enable-state level too. Whether to
+instead bind port 0 and advertise the assigned port via mDNS (below), as a fixed-port alternative,
+is still open. [verified-source `ref:tidal-hifi/src/scripts/settingsStore.ts:44-47`,
 `ref:tidal-hifi/src/features/api/index.ts` (no auth)]
 
 **`_streamboat._tcp` TXT record keys and instance identity are unspecified.** A controller (desktop
 GUI, future mobile app) must decide from the browse result alone whether a discovered daemon is
-compatible, already paired, and reachable over TLS. Specify at minimum: `v=` protocol version (feeds
-the capability negotiation in §4); `id=` a stable instance UUID persisted in `$XDG_STATE_HOME` (so a
-rename or DHCP change doesn't create a duplicate discovery entry — Sendspin does this with a
-persistent Curve25519 static key as `client_id`/`server_id`, `mpd-and-multiroom.md` §4); `name=`
-display name; `path=` API base path; `tls=0|1`; `auth=required|open`. Precedent for splitting rather
-than overloading one record: snapserver advertises four separate service types for its four ports;
-Sendspin uses two, one per connection direction (`mpd-and-multiroom.md` §2, §4). Keep the
-friendly-name default single-word-safe — the Connect binary's own issue #216 (`tidal-connect.md`
-§2.4) is a directly relevant lesson.
+compatible, already paired, and reachable over TLS. **Recommended set** (every input needed to pick
+these already exists above; treat this as the default, not merely a floor): `v=` protocol version
+(feeds the capability negotiation in §4); `id=` a stable instance UUID persisted in
+`$XDG_STATE_HOME` (so a rename or DHCP change doesn't create a duplicate discovery entry — Sendspin
+does this with a persistent Curve25519 static key as `client_id`/`server_id`, `mpd-and-multiroom.md`
+§4); `name=` display name; `path=` API base path; `tls=0|1`; `auth=required|open`. Precedent for
+splitting rather than overloading one record: snapserver advertises four separate service types for
+its four ports; Sendspin uses two, one per connection direction (`mpd-and-multiroom.md` §2, §4).
+Keep the friendly-name default single-word-safe — the Connect binary's own issue #216
+(`tidal-connect.md` §2.4) is a directly relevant lesson.
 
 **`streamboat play <url>` needs OS-level URL-scheme registration to be reachable from anything but a
 terminal — deep-link *forwarding* code (§1's tidalt precedent) is not the same as *registration*.**
-`ref:tidalt/cmd/tidalt/setup.go:16,38,45` does it during `tidalt setup`: embeds
-`cmd/tidalt/tidalt.desktop:8` (`MimeType=x-scheme-handler/tidal;`), writes it to
+tidalt's own mechanics are the right recipe to copy, but **register `streamboat://`, not
+`tidal://`** — see `tidal-api/references/auth.md` §13, the canonical owner of this decision:
+`tidal://` is claimed by the official TIDAL desktop app itself plus Strawberry, Sone, and High
+Tide, and OS handler registration is last-writer-wins, so claiming it steals it from whichever app
+the user installed most recently. `ref:tidalt/cmd/tidalt/setup.go:16,38,45` shows the mechanics to
+adapt (swap the scheme name): embeds `cmd/tidalt/tidalt.desktop:8`
+(`MimeType=x-scheme-handler/tidal;` → `x-scheme-handler/streamboat;` for streamboat), writes it to
 `~/.local/share/applications/` with the binary's absolute path in `Exec=`, then runs `xdg-mime
-default tidalt.desktop x-scheme-handler/tidal` and `update-desktop-database`
+default streamboat.desktop x-scheme-handler/streamboat` and `update-desktop-database`
 (`ref:tidalt/docs/browser-url-handler.md:92-113` gives the verification command and a KDE
-`mimeapps.list` gotcha). Windows: `HKCU\Software\Classes\tidal` with a `URL Protocol` value and a
-`shell\open\command` key. macOS: `CFBundleURLTypes` in `Info.plist`. Decide explicitly whether
-streamboat claims `tidal://` only or also `https://tidal.com/...` — claiming the `https` scheme
-steals ordinary web links from the user's default browser and should be opt-in, never a silent
-default.
+`mimeapps.list` gotcha). Windows: `HKCU\Software\Classes\streamboat` with a `URL Protocol` value and
+a `shell\open\command` key. macOS: `CFBundleURLTypes` in `Info.plist`. Separately, streamboat should
+still **parse** (not register) `tidal://` content links so pasted links from other apps work — make
+**claiming** `tidal://` an explicit opt-in setting, off by default, the same treatment as claiming
+`https://tidal.com/...`, which also steals ordinary web links from the user's default browser and
+should be opt-in, never a silent default.
 
 ---
 
 ## 3. Security model: tokens, binds, and the URL-path-vs-cookie decision
 
-Adopt sone's shape, not its exact carrier (`headless-daemon-precedents.md` §3): loopback by
+Adopt Sone's shape, not its exact carrier (`headless-daemon-precedents.md` §3): loopback by
 default, opt-in LAN bind, a random token generated on first enable and persisted in settings, an
 explicit connection cap on the event stream, and the reachable URL logged with `127.0.0.1` even
 when bound to the wildcard.
 
-**But sone's specific choice of a URL-path token is for machine clients, not browsers.** A token in
+**But Sone's specific choice of a URL-path token is for machine clients, not browsers.** A token in
 the URL lands in browser history, a shared-phone address bar, any `Referer` a third-party asset
 sends, and reverse-proxy logs. Use `Authorization: Bearer <token>` for API/script clients, and for
 the browser-facing web remote, exchange the token once for an `HttpOnly`, `SameSite` cookie scoped
@@ -306,6 +398,26 @@ allowlisting — accept only `Host: localhost`, `127.0.0.1`, `[::1]`, or the exp
 bind address, reject anything else with 421/403 before routing — plus `Origin` checking on the
 WebSocket upgrade specifically (a WS upgrade is not subject to the same-origin policy the way
 `fetch` is). "Bind loopback" alone is widely and wrongly assumed to be sufficient.
+
+**The control API has exactly one all-or-nothing token throughout this skill, with no permission
+tiers, no per-client scopes and no revocation story — and the MPD listener this skill puts on the
+same box already ships a four-level access model (`mpd-and-multiroom.md` §1), so streamboat risks two
+incompatible authorization designs on one daemon.** A household web remote left open on a shared
+tablet, a Home Assistant integration, and the owner's own phone want three different trust levels.
+MPD's own `default_permissions` is "a comma-separated list of permissions" drawn from `read, add,
+player, control, admin`, and `local_permissions`/`host_permissions`/`password` each carry their own
+permission set — i.e. the reference design in this niche is capability tiers, not one bearer token.
+Decide and document explicitly: (a) whether streamboat tokens carry a scope (at minimum `read` vs.
+`control`, and whether `admin` — settings, logout, LAN-enable, token management — is separable from
+`control`); (b) how a token is revoked while a WebSocket using it is already open (close the socket
+immediately, or let it run to natural disconnect); (c) whether the MPD listener's permission set
+derives from the same policy object as the HTTP token, or is configured independently — if
+independently, say so loudly, because "I revoked the phone's token but MALP still controls playback"
+is the failure mode that results. Also decide whether MPD's own `commands`/`notcommands` on a
+streamboat connection should reflect that connection's permission tier, matching MPD's own
+per-connection-aware semantics. [documented-web:
+https://raw.githubusercontent.com/MusicPlayerDaemon/MPD/master/doc/user.rst
+(`default_permissions`/`local_permissions`/`host_permissions`/`password`)]
 
 **Remote control from outside the LAN is unaddressed, though every control surface here is LAN- or
 loopback-scoped.** "Control my Pi from work" is the first feature request a headless product gets,
@@ -403,7 +515,33 @@ app controls the daemon" is unresolved. No single precedent solves this end to e
   wildcard bind (`headless-daemon-precedents.md` §1, §10).
 - **Sendspin's pairing design is the most complete answer available** (`mpd-and-multiroom.md` §4):
   Noise `KKpsk2` with persistent Curve25519 identity keys, a long-term PSK from pairing, a Sentinel
-  PSK for unpaired sessions, in-band rehandshake, and a fully specified QR pairing-token format.
+  PSK for unpaired sessions, in-band rehandshake, and a fully specified QR pairing-token format —
+  currently gated on an unresolved spec-licence question (`mpd-and-multiroom.md` §4).
+- **A fifth shape, missing above until now: librespot's zeroconf pairing protocol — the closest
+  working open-source answer to "how does an already-logged-in phone hand credentials to a screenless
+  daemon with zero typing", and MIT-licensed and shipped for a decade, unlike Sendspin.** librespot's
+  `discovery` crate (reused by spotifyd and go-librespot) advertises mDNS `_spotify-connect._tcp`
+  with TXT records `VERSION=1.0` and `CPath=/`, on a port that **defaults to 0** — bind an ephemeral
+  port and advertise the assigned value, the shipped answer to this skill's own still-open "port 0 vs.
+  a fixed-port fallback ladder" question for `_streamboat._tcp` (§2). It serves two plain HTTP
+  actions on that port: `GET /?action=getInfo` returns `status`, `statusString`, `spotifyError`,
+  `version`, `deviceID`, `deviceType`, `remoteName`, `publicKey` (base64), `brandDisplayName`,
+  `modelDisplayName`, `libraryVersion`, `groupStatus` (`GROUP|NONE`), `tokenType`, `clientID`,
+  `scope`, `activeUser`, `aliases[]{name,id,isGroup}` — note `activeUser`, which lets a controller
+  show "already claimed by X" in its picker before connecting, something this skill's own
+  `_streamboat._tcp` TXT-key list (§2) has no equivalent for; and `POST /?action=addUser` accepts
+  `userName`, `blob` (base64 encrypted credentials) and `clientKey` (base64 client public key). The
+  crypto: Diffie-Hellman between the daemon's advertised `publicKey` and the controller's `clientKey`
+  yields a shared secret; SHA1-HMAC derives an encryption key and a checksum key; the credential blob
+  is a 16-byte IV + AES-128-CTR ciphertext + 20-byte HMAC-SHA1, MAC-checked before decryption.
+  Zeroconf backends are selectable (`with-avahi`, `with-dns-sd`, `with-libmdns`), the same shape as
+  go-librespot's `zeroconf_backend` key already cited in `headless-daemon-precedents.md` §9. Lessons
+  to fold in: `CPath` is a working precedent for a `path=` TXT key and `VERSION` for a `v=` key (§2);
+  port-0-and-advertise-the-assigned-port is a shipped answer, not a fallback ladder to invent; and the
+  `getInfo`/`addUser` split is the shape of a pairing handshake that needs no shared secret
+  pre-installed on the daemon — a genuine alternative or complement to Sendspin's Noise-based design.
+  [documented-web: https://raw.githubusercontent.com/librespot-org/librespot/dev/discovery/src/server.rs,
+  `/dev/discovery/src/lib.rs`]
 
 **Decisions the owner still needs to make, not facts to look up**: (1) daemon-initiated pairing
 (`streamboat pair` over SSH prints a short-lived code/QR) vs. client-initiated (a client asks, the

@@ -449,7 +449,10 @@ handler for the whole scheme, so an OAuth redirect delivered to the official TID
 streamboat — or a content link swallowed by streamboat's login handler — is a real, hard-to-debug
 failure mode. **Register a distinct scheme for streamboat (e.g. `streamboat://`) for both the OAuth
 redirect and content deep links; do not use `tidal://login/auth` as streamboat's redirect URI.**
-Additionally *accept but never register* the web forms users will paste, since python-tidal's own
+streamboat should still **parse** `tidal://` content links (the grammar above) so pasted links from
+other apps work, but **claiming** the `tidal://` OS handler is a separate, explicit opt-in setting,
+off by default — the same treatment given to the web forms below.
+Additionally *accept but never register by default* the web forms users will paste, since python-tidal's own
 outbound URL-building code shows what they look like:
 `https://listen.tidal.com/{track,album,artist,playlist,video}/{id}`,
 `https://listen.tidal.com/album/{albumId}/track/{trackId}`, `https://tidal.com/browse/{type}/{id}`,
@@ -1459,17 +1462,22 @@ for v1 and requesting stereo tiers is defensible. [inferred]
 
 #### 8.8 Replay gain
 
-TIDAL ships four numbers per track. Sone's normalisation formula, which it calls "Tidal-correct":
+TIDAL ships four numbers per track. **Correction: Sone's normalisation formula is not "Tidal-correct"
+despite its own code comment calling it that** — TIDAL's own SDKs (e.g. the Android SDK's
+`LoudnessNormalizer.kt`) compute `min(10^((replay_gain+pre_amp)/20), 1/peak)` with `pre_amp=4.0`
+and no extra factor; Sone's shipped formula multiplies that by an additional `0.8`:
 
 ```
 norm_gain = 0.8 * min( 10^((replay_gain + 4) / 20), 1 / peak_amplitude )
 ```
-with `pre_amp = 4.0` and `peak` defaulting to 1.0 when absent —
-`ref:sone/src-tauri/src/commands/playback.rs:10-21`. Context selection: album context prefers
+`ref:sone/src-tauri/src/commands/playback.rs:10-21`. The `0.8` is Sone's own ~1.9 dB extra
+attenuation, not part of TIDAL's formula — do not copy it into streamboat unless deliberately
+choosing quieter-than-TIDAL output. Context selection: album context prefers
 `albumReplayGain`/`albumPeakAmplitude`, mixed queues prefer the track values, each falling back to
 the other. High Tide instead configures GStreamer's `rgvolume` with
 `pre-amp=4.0 fallback-gain=-10 headroom=6.0` and injects tags. Same intent, different mechanism.
-[verified]
+[verified for Sone's own code; the "Tidal-correct" framing is Sone's comment, not corroborated by
+TIDAL's own SDK]
 
 #### 8.9 Seeking, buffering, and manifest/URL lifetime — the first questions after "I have a URL"
 

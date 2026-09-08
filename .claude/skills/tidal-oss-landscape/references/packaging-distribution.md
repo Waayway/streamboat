@@ -12,8 +12,9 @@ and the decisions those facts force that the original research pass had not surf
 3. The update-mechanism decision, per channel
 4. The GStreamer-bundling licensing decision — now with a concrete Windows plugin list
 5. The i18n decision
-6. Licensing table
+6. Licensing table (incl. the licence-vs-audio-module sequencing decision)
 7. Code signing and notarization — a hard prerequisite with no precedent to copy
+8. macOS: the full five-item work list
 
 ## 1. Reusable packaging scripts and configs (with paths)
 
@@ -51,7 +52,7 @@ and the decisions those facts force that the original research pass had not surf
   `build-mac`) — a useful checklist of packaging targets and desktop-entry fields, and backed by
   real CI (`ref:tidal-hifi/.github/workflows/{build,release}.yml`) unlike Sone's.
 
-## 2. Sone's actual Flathub manifest — the Flatpak/bit-perfect conflict is real, not hypothetical
+## 2. Sone's actual Flathub manifest — `--socket=pulseaudio` already grants raw ALSA
 
 The main report originally listed "Sone's actual Flathub manifest" as an open question, because
 it lives in a separate `flathub/io.github.lullabyX.sone` repo, not in the `ref:sone` checkout.
@@ -65,17 +66,21 @@ It builds against `org.gnome.Platform` **50** with the Rust and Node 24 SDK exte
 `--share=ipc`, `--share=network`, `--talk-name=org.kde.StatusNotifierWatcher`,
 `--env=WEBKIT_DISABLE_COMPOSITING_MODE=1`.
 
-**There is no `--device=all` and no raw ALSA filesystem grant.** Sone's own exclusive/bit-perfect
-ALSA writer — the single most sophisticated artifact in this whole landscape
-(`audio-engineering.md` §1) — **cannot function in the build Flathub actually ships.** High
-Tide's manifest is the same shape: PulseAudio socket + read-only PipeWire, no raw device access.
+**Correction (this file previously claimed the opposite — verify against
+`streamboat-engineering-baseline/references/packaging-and-distribution.md` §1, which owns this
+fact): `--socket=pulseaudio` already grants `/dev/snd`, so raw ALSA `hw:` works in this manifest
+as shipped.** Flatpak's own `common/flatpak-run-pulseaudio.c` (`flatpak/flatpak` upstream, `main`)
+binds `/dev/snd` into the sandbox whenever `--socket=pulseaudio` is requested and `/dev/snd`
+exists on the host — the function's own comment says "since the practical permission of ALSA and
+PulseAudio are essentially the same... we reinterpret pulseaudio to also mean ALSA." There is no
+separate `--device=all` requirement for exclusive/bit-perfect ALSA output, and Sone's manifest
+does not need one. High Tide's manifest is the same shape (PulseAudio socket + read-only
+PipeWire) and is equally able to open `hw:` devices.
 
-**The concrete conclusion for streamboat, not a hypothetical one**: Flathub is a convenience tier
-(shared audio server only — PulseAudio/PipeWire, no exclusive output). Exclusive/bit-perfect
-output is a `.deb`/`.rpm`/AUR/Nix/Snap-only feature. The Snap route needs the same explicit
-`snap connect streamboat:alsa` step Sone documents for its own Snap. **Plan the confinement story
-alongside the bit-perfect feature, not after it** — if streamboat's Flathub listing advertises
-bit-perfect output without this caveat, that's a support-ticket generator, not a marketing win.
+What genuinely is absent from this manifest is `--device=all`, so *non-audio* device access
+(e.g. `/dev/dri` beyond the explicit `--device=dri` grant, or arbitrary `/dev/*` nodes) is not
+available — but that was never what bit-perfect ALSA needed. Don't reintroduce the "Flathub
+can't do exclusive ALSA" framing; it does not match the sandbox source.
 
 ## 3. The update-mechanism decision, per channel
 
@@ -119,7 +124,7 @@ this choice), bundling it carries a licensing decision the original research pas
   NSIS/WiX Windows installer payload, or `appimage.bundleMediaFramework: true` on Linux — puts
   LGPL relinking/notice obligations on streamboat directly.
 
-**Partially resolved: sone-windows already ships a real answer, with a concrete codec-coverage
+**Partially resolved: Sone-windows already ships a real answer, with a concrete codec-coverage
 cost.** `ref:sone-windows/src-tauri/tauri.conf.json` `bundle.windows.wix.componentRefs` lists 47
 components, 16 of them GStreamer plugins: `gstadaptivedemux2`, `gstasio`, `gstaudioconvert`,
 `gstaudioparsers`, `gstaudioresample`, `gstcoreelements`, `gstdash`, `gstdecklink`, `gstflac`,
@@ -157,7 +162,7 @@ not:
 
 | Licence | Projects | Obligation if code is copied |
 | --- | --- | --- |
-| GPL-3.0(-only) | Sone, sone-windows, High Tide, Strawberry | Copyleft over the whole work |
+| GPL-3.0(-only) | Sone, Sone-windows, High Tide, Strawberry | Copyleft over the whole work |
 | Apache-2.0 | mopidy-tidal, official SDKs (web/Android/iOS), tidalt | Permissive |
 | MIT | tidalrs, tidal-hifi, tidal-cli, tidal-connect (wrapper only), libopenTIDAL, dotnet-tidal-usdk (+ an explicit anti-piracy clause) | Permissive |
 | LGPL-3.0-or-later | python-tidal | Fine to use as a separate library/process; restrictive to statically port |
@@ -167,6 +172,22 @@ not:
 **If streamboat is GPL-3.0 itself, this mostly evaporates** for the GPL-licensed reference
 projects — a reason to seriously consider GPL-3.0 as streamboat's own licence, independent of any
 other factor.
+
+**Sequence this decision before writing the audio module, not at release time — added by the
+third fact-check pass.** Of this skill's own "borrow with pointers" lists, nearly everything with
+real specialist value is GPL-3.0: Sone's ALSA negotiation (`audio-engineering.md` §1 — the single
+largest chunk of specialist effort this skill recommends porting), its `subStatus` taxonomy,
+quality cascade, `norm_gain` formula, cache tiers, crypto container, `concat` executor, the queue
+model, ETag mutation pattern, rate-limit contract and scrobble threshold added in the third pass;
+High Tide's PKCE dialog and keyring-unlock workaround; Strawberry's encryption refusal and
+collection schema. Only tidalrs (MIT), tidal-hifi (MIT), tidal-cli (MIT), mopidy-tidal
+(Apache-2.0), tidalt (Apache-2.0) and the official SDKs (Apache-2.0) are permissive — and **none
+of those carries a bit-perfect output path**. Concretely: **GPL-3.0 streamboat can port Sone's
+ALSA module directly**, saving real weeks; **MIT/Apache-2.0 streamboat must reimplement it from
+this skill's own documented behaviour** (the format-naming inversion, the probe order, the
+promotion table, the `sw_params` fix — all described in prose here, which is a clean-room spec,
+not copied expression) — price that as real weeks of work, decided on purpose, not discovered
+after the fact.
 
 ## 7. Code signing and notarization — a hard prerequisite with no precedent to copy
 
@@ -187,3 +208,35 @@ a `notarytool` CI step for the macOS DMG, and a Windows code-signing certificate
 Signing) for the MSI/NSIS installer, before the first Windows/macOS build ships. This is the same
 decision surface as §3's updater question — Tauri's own updater needs its own signing keypair,
 separate again from OS-level code signing.
+
+## 8. macOS: the full five-item work list (added by the third fact-check pass — no prior pass
+assembled this, and the comparison table previously implied Sone-windows covered macOS, which it
+does not)
+
+The owner requires macOS now. Assembled from the checkouts, the work splits five ways, and four
+of the five have **zero precedent anywhere in this reference set**:
+
+1. **Audio output** — hand-written CoreAudio backend (hog mode via
+   `kAudioDevicePropertyHogMode`, format switching via `kAudioStreamPropertyPhysicalFormat`).
+   GStreamer's `osxaudiosink` has no exclusive property and `cpal` gives shared mode only
+   (`audio-engineering.md` §5-§6), so this is hand-written work under either audio stack.
+   CamillaDSP and MPD's `OSXOutputPlugin.cxx` are the external reference implementations
+   (`audio-engineering.md` §6).
+2. **OS media integration** — MPRIS is Linux-only, SMTC is Windows-only; macOS needs
+   `MPNowPlayingInfoCenter`/`MPRemoteCommandCenter`. `souvlaki 0.8.3` (used for SMTC in
+   Sone-windows) *does* cover macOS upstream, but Sone-windows declares it only under
+   `[target.'cfg(target_os = "windows")'.dependencies]` — verified,
+   `grep -rn macos ref:sone-windows/src-tauri/Cargo.toml` returns nothing — so there is no macOS
+   media-controls code anywhere in this set to copy, only a library that could be pointed at
+   macOS if someone wrote the arm.
+3. **Packaging/signing** — DMG plus Apple Developer Program membership and `notarytool` (§7
+   above); no precedent in the set — nobody signs anything, on any platform.
+4. **GStreamer bundling on macOS** — the framework must be bundled or Homebrew-depended.
+   `ref:sone-windows/scripts/prepare-gstreamer.js` solves the equivalent Windows problem (§1
+   above); there is no macOS analogue anywhere in the set.
+5. **Keyring** — the one item with a direct precedent: the `keyring` crate covers Keychain, and
+   `ref:tidal-sdk-ios/Package.swift:47-53` shows the official iOS SDK itself uses KeychainAccess.
+
+**Budget accordingly**: "Tauri is cross-platform" is not evidence that a `#[cfg]`-split GStreamer
+sink, an SMTC-only media-controls crate, or a Windows-only bundling script are — none of the four
+from-scratch items above is a side effect of picking a cross-platform UI framework.

@@ -79,6 +79,23 @@ uridecodebin(track B) -> queue(B) -+
   the exclusive-mode path — the same class of bug as `output-backends.md` §8's write-vs-audible
   position error.
 
+**Trap in the `concat` design: a single post-`concat` gain element cannot change gain at a
+sample-accurate boundary.** §4's "apply ReplayGain before `play_url`" advice is correct only for a
+cold start. On the gapless path, Sone applies the *next* track's gain from
+`concat.connect_notify("active-pad")` onto the single shared `norm_vol` element shown in the pipeline
+diagram above — which sits **downstream** of `concat` (`ref:sone/src-tauri/src/audio.rs:2656-2668`,
+comment "concat is upstream of norm_vol, so the gain applies to the now-active branch"). `active-pad`
+fires once the last buffer of track A has passed `concat`, not once it has been heard — whatever is
+still queued in `audioconvert`/`audioresample`/the sink's own buffer at that instant is track A's
+tail, and it gets track B's gain applied to it: an audible level jump on the wrong side of the
+boundary whenever the two tracks' ReplayGain values differ. The same class of bug exists in High
+Tide's `taginject`/`rgvolume`-swapped-on-`about-to-finish` design. **Fix: put a per-branch `volume`
+element *inside* each decode branch, upstream of `concat`** — gain then travels with its own buffers
+and switches exactly when `concat` switches — rather than one shared gain element downstream of the
+mixing point. (A `GstControlBinding` timed to the boundary's running time is an alternative, but the
+per-branch element matches the existing two-branch topology and is simpler.) **[uncertain — read
+directly from source; not exercised against a real ReplayGain-differing track pair]**
+
 **(c) Dual media elements / dual Shaka instances — TIDAL's own web SDK.**
 `#GAPLESS_CROSSFADE_MS = 250`, `#GAPLESS_START_BEFORE_END_S = 0.25`
 (`ref:tidal-sdk-web/packages/player/src/player/shakaPlayer.ts:100-120`) — a 250 ms micro-crossfade
@@ -203,6 +220,31 @@ hardware-mixer-volume escape hatch this motivates.
 **Volume taper:** Sone uses a cubic curve (`amplitude = slider^3`, ~50 dB range); High Tide offers
 an optional quadratic mapping (`volume^2`, read back as `volume^(1/2)`).
 
+**Edge cases beyond the formula — decide these explicitly, they are not settled by the formula
+alone:**
+
+- **Missing-value sentinel.** High Tide treats a gain of exactly `1.0` as "missing metadata" and
+  skips applying it — a workaround for `python-tidal` issue #332
+  (https://github.com/EbbLabs/python-tidal/issues/332); Sone instead returns unity gain when
+  `replay_gain` is `None`. TIDAL's own web SDK is a third answer, and it agrees with Sone's
+  *outcome*, not High Tide's: missing `trackReplayGain`/`peakAmplitude` default to `0` via `?? 0`
+  (`ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts:395-403`),
+  i.e. unity gain — strengthening "pick one sentinel, and unity-gain-on-missing has two of three
+  reference implementations behind it" as the decision to make. These produce **different loudness
+  for the same missing-metadata track** — pick one, streamboat currently has no stated answer.
+- **`peak > 1` and gain/peak pairing.** `1/peak` correctly attenuates below unity even at zero gain,
+  but this means two tracks on the same album can receive different *applied* gain under `ALBUM`
+  mode depending on whether album gain pairs with album peak or track peak — the Android SDK pairs
+  album gain with album peak; Sone's `use_track_gain` context-sensitively picks track-with-album-
+  fallback or album-with-track-fallback. State which pairing streamboat uses.
+- **Is `preAmp` user-exposed?** TIDAL fixes it at 4 (0 on TV); Sone silently multiplies by an extra
+  0.8 with no user control. Whether the user gets a trim/preAmp control at all is currently
+  undecided — settle it alongside the bit-perfect-default-state owner decision (SKILL.md).
+- **Interaction with bit-perfect mode.** If bit-perfect disables ReplayGain entirely (above), the
+  album-to-album loudness jumps normalization exists to remove come back specifically for the users
+  most likely to notice them — an audiophile bit-perfect user. Weigh this trade in the same decision
+  as bit-perfect's default state, not as a hidden side effect of the mode toggle.
+
 ## 5. Buffering strategy
 
 **This is three separate pipeline stages, not one number — do not average them or read "2 minutes"
@@ -256,17 +298,10 @@ even the compressed-24/192-FLAC equivalent is only ~70-90 MB for 2 minutes).
   Insertion is only *finalised* when the whole resource arrives (unfinalised data dropped at next
   startup); stores a `TidalID -> Path` mapping so a cached track resolves fully offline. `Range`
   requests supported for seeking — the model for §10's mid-track resume too.
-- **Sone** caches only *metadata* (not audio), encrypted at rest (AES-GCM), with tiered TTLs, a 2 GB
-  cap and LRU eviction to 1.8 GB:
-
-  | Tier | Contents | TTL | SWR grace |
-  |---|---|---|---|
-  | `UserContent` | playlists, favourites | 15 min | 1 h |
-  | `Dynamic` | artist bios, charts, home | 4 h | 24 h |
-  | `StaticMeta` | album tracklists, credits | 7 d | 30 d |
-  | `Image` | album art, avatars | 30 d | 90 d |
-
-  Sone never persists a manifest — stream manifests are in-memory only per session.
+- **Sone** caches only *metadata* (not audio), encrypted at rest (AES-GCM), tiered by TTL — table,
+  cap, and eviction policy owned by
+  `streamboat-engineering-baseline/references/config-cache-logs-telemetry.md` §2. Sone never
+  persists a manifest — stream manifests are in-memory only per session.
 
 **Legal framing:** caching for a logged-in subscriber during a session is a player concern; building
 a persistent, quality-tagged, indefinitely-retained library of decrypted files is a ripper.
@@ -281,40 +316,29 @@ purged on logout.
 
 - **Manifest expiry: exactly 1 hour** (`MANIFEST_EXPIRATION_MS = 3600000`). CDN URLs inside a BTS
   manifest carry their own, likely shorter-lived, expiring token — see §10.
+- **Resume-after-long-pause is a distinct path from §10's mid-track 403** — the manifest can go
+  stale while nothing is being fetched at all. §12 makes long pauses (holding the device, doing
+  nothing) an explicitly supported state, so a track paused for close to an hour is a live case, not
+  a corner one. **Stamp each manifest with its fetch time; on resume, if `now - fetched_at` is within
+  a margin of the 3600 s TTL (or already past it), re-fetch the manifest before writing another
+  byte.** Do not resume on a manifest that is merely still-loaded-in-memory and wait for the CDN to
+  return the 403 that a proactive re-fetch would have avoided (SKILL.md pitfall #29).
 - **401 handling:** refresh + retry, **unless** the 401 carries a playbackinfo `subStatus`, in which
   case do not refresh — see `tidal-manifest-api.md` §7.
 - **429 handling:** global cooldown gate — see `tidal-manifest-api.md` §7.
-- **Streaming privileges (one active stream per account).** `POST {legacyApiUrl}/rt/connect` with a
-  bearer token returns `{url}`; connect and handle
-  `{type: 'PRIVILEGED_SESSION_NOTIFICATION', payload: {clientDisplayName, sessionId, endsAt,
-  updatedAt}}` and `{type: 'RECONNECT'}`; the client claims the privilege by sending
-  `{type: 'USER_ACTION', payload: {startedAt}}`
-  (`ref:tidal-sdk-web/packages/player/src/internal/services/pushkin.ts`). Public event:
-  `streaming-privileges-revoked`. `subStatus 4006` is the HTTP-side manifestation of the same thing
-  and is explicitly non-terminal. **Reconnect policy — three rules, previously unstated:**
-  `USER_ACTION` is sent only on an explicit user-initiated play, never on autoplay or a gapless track
-  advance; on `RECONNECT`, re-fetch the WebSocket URL from a fresh `POST /v1/rt/connect` rather than
-  reusing the old one (issued per-connect, not guaranteed stable); a dropped socket must never, by
-  itself, stop playback — it degrades to "cannot confirm we still hold the privilege," not "stop."
-  Full protocol depth is the `headless-and-tidal-connect` skill's territory.
-- **Play reporting — full shape, from Sone.** `POST https://ec.tidal.com/api/event-batch`, batched
-  at `MAX_BATCH = 10` ("Max events per SQS SendMessageBatch"), one `playback_session` event per
-  qualifying play (`ref:sone/src-tauri/src/tidal_report/event.rs:6-51`). **Threshold: a flat 30
-  seconds regardless of track length** — "TIDAL's own rule: a play over 30 seconds counts as a
-  stream," unit-tested (30 s of a 200 s track counts; 25 s of a 25 s track does not). **Attribution:**
-  `SourceType::{Album, Playlist, Artist, Mix}` from the container the play started in; unmapped
-  sources (favourites, search, home) report sourceless. **Identity:** decoded from the access token's
-  JWT middle segment (`uid`/`cid`/`sid`), no signature verification. **The constraint that shapes the
-  auth layer:** "Events ride on that client's token, so they must describe that client — not
-  streamboat" — Sone pins `TIDAL_APP_VERSION = "2.205.0"`, `OS_NAME = "Android"`, `OS_VERSION = "35"`,
-  `DEVICE_MODEL = "Pixel 7"`, `DEVICE_VENDOR = "Google"` to match the client ID it authenticates with,
-  noting the pin drifts as TIDAL ships weekly updates
-  (`ref:sone/src-tauri/src/tidal_report/mod.rs:1-6,114-116,260-262,567-573`). Ships on by default with
-  a settings toggle; the endpoint is "private, undocumented — best-effort, may not surface." **This
-  device-impersonation requirement is a real maintenance tax and an ethical/ToS consideration the
-  owner should weigh explicitly, not a one-time implementation detail** (SKILL.md Open decisions).
-  Also suppress reporting for a `PREVIEW`-presentation play (`tidal-manifest-api.md` §13) — it must
-  never cross the 30-second threshold as if it were the real track.
+- **Streaming privileges (one active stream per account).** Wire format, reconnect policy, and the
+  desktop-vs-headless priority question are owned by
+  `headless-and-tidal-connect/references/daemon-architecture.md` §6 — cite it rather than
+  restating. Audio-pipeline-specific consequence: `subStatus 4006` is the HTTP-side manifestation
+  of a revocation and is explicitly non-terminal (`tidal-manifest-api.md` §7); a dropped
+  privileges socket must never, by itself, stop playback — it degrades to "cannot confirm we still
+  hold the privilege," not "stop."
+- **Play reporting.** Wire format (`ec.tidal.com/api/event-batch`, SQS batching, headers, pinned
+  device identity, the 30-second threshold, JWT attribution, offline outbox) is owned by
+  `tidal-api/references/play-logging-and-privileges.md` §1-4 — cite it rather than restating.
+  Audio-pipeline-specific consequence: suppress reporting for a `PREVIEW`-presentation play
+  (`tidal-manifest-api.md` §13) — it must never cross the 30-second threshold as if it were the
+  real track, since the report would misrepresent a preview as a real stream.
 
 ## 8. Seeking within DASH
 
@@ -326,8 +350,24 @@ because in exclusive mode position derives from frames written to ALSA, not a GS
 where gapless preroll is easiest to break — see §1(b)'s flush-seek note.
 
 Server-side, DASH seeking is just jumping to the right `$Number$` — the whole `SegmentTimeline` is
-in the manifest, so the segment for any timestamp is computable offline. GStreamer 1.28 fixed
-"seeking in dashdemux2 for streams with gaps."
+in the manifest, so the segment for any timestamp is computable offline. GStreamer release reporting
+is cited elsewhere for "1.28 fixed seeking in dashdemux2 for streams with gaps," but this specific
+claim could not be corroborated on re-check — its only two citations, plus
+`gstreamer.freedesktop.org` itself, are all blocked from this research environment. **Treat as
+unverified, not settled.**
+
+**Seek precision and the seek-flag choice are policy decisions this skill leaves open, not solved
+facts — see `tidal-manifest-api.md` §4 for the full segment-timestamp arithmetic** (the
+`SegmentTimeline/S@t`/`@d`/`presentationTimeOffset` mapping, and why the DASH-spec mapping alone only
+gets you to a segment boundary, not sample-accurate position). The reference clients disagree on
+which to accept: Sone/High Tide use `FLUSH | KEY_UNIT` (accept a segment-boundary snap); Strawberry
+uses `FLUSH` alone (accurate,
+`ref:strawberry/src/engine/gstenginepipeline.cpp:2370`) — pick one and record why. After any
+hand-rolled seek, the init segment must be re-fed before the new media segment. **Duration is also
+ambiguous**: the track object's `duration`, the MPD's `mediaPresentationDuration`, and the decoded
+sample count can disagree by up to a second, and the prefetch trigger (§3), MPRIS `mpris:length`
+(`os-integration.md` §7), and §15's 30-second play threshold all need to agree on one authoritative
+source — use the track object's `duration`.
 
 ## 9. Network-stall behaviour in exclusive mode
 
@@ -376,6 +416,18 @@ For a Design-A (own-writer) engine, the equivalent is a configurable settle dela
 silence pre-roll after `snd_pcm_prepare()` at a new rate. This also bears on mixed-rate albums:
 gapless is impossible across a rate change by construction — the UI should say "rate change" rather
 than appear to glitch.
+
+**No reference client in the set actually implements a DAC warm-up/re-lock settle delay** — this is
+a gap, not a documented pattern to copy. A search for sleep/delay calls around device open/reconfigure
+in Sone's and tidalt's writer code finds only unrelated pacing (Sone's 10 ms XRUN-retry pause, its
+50 ms software-pause silence cadence, a 10 ms poll, the 100 ms `DeviceMonitor` poll); the only thing
+labelled "settle" anywhere is tidalt's `releaseSettleDelay = 200ms` (`output-backends.md` §2), which
+is the D-Bus device-reservation hand-off waiting for a previous owner to close its handle — a
+different problem from PLL lock on the DAC itself. Since exclusive-mode gapless (Implication #12,
+`output-backends.md` §6) makes per-track rate switching a routine operation, not an edge case, this
+gap is worth closing on day one: pre-roll a configurable silence period (order of 200-300 ms,
+per-device override) after every device open/reconfigure, before writing real audio, and count it in
+the time-to-first-audio budget (`output-backends.md` §17).
 
 ## 12. Device-hold policy across pause/idle
 
@@ -431,6 +483,7 @@ runtime/plugin set is shipped is therefore load-bearing on every platform — se
 
 ## 15. Play reporting to TIDAL, in full
 
-See §7 above for the complete shape (endpoint, threshold, attribution, device-impersonation
-constraint) — kept there alongside the rest of network resilience since play-reporting shares the
-`streamingSessionId` join key with manifest prefetch (`tidal-manifest-api.md` §8).
+Full wire format (endpoint, threshold, attribution, device-impersonation constraint) is owned by
+`tidal-api/references/play-logging-and-privileges.md` §1-4 — see §7 above for the
+audio-pipeline-specific consequence. Play-reporting shares the `streamingSessionId` join key with
+manifest prefetch (`tidal-manifest-api.md` §8).

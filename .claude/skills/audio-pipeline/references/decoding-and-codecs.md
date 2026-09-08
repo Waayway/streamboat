@@ -55,11 +55,19 @@ GST_RANK_NONE)` (or raise `dashdemux`'s rank above it), or a `decodebin::autoplu
 `output-backends.md` §12 for the full detail and the precedent this mirrors (Strawberry's Windows
 sink-rank demotion).
 
-**GStreamer version, corrected:** the 1.28 series (released 27 January 2026) has shipped through
-**1.28.6** (5 August 2026, the final 1.28 bug-fix release) as of this skill's last update — a prior
-pass of this report said "1.28.2/1.28.3 is current," which is stale. 1.28.6 adds FFmpeg 9.0 support,
-matching the `ffmpeg-next` 9.0.0 crate recommendation in `stacks-comparison.md`. The 1.28.3
-`devicemonitor` fix referenced throughout this skill (`os-integration.md` §3) is unaffected.
+**GStreamer version: the two floors below are the fact that matters, not the current point
+release.** The 1.28 series (released 27 January 2026) is at **1.28.7 or later as of 2026-09** —
+already past the 1.28.6 this skill previously called "the final 1.28 bug-fix release," which shows
+how quickly a pinned point-release number goes stale here. Do not trust any specific 1.28.x number
+written in this skill without re-checking; check instead against the two engineering floors that
+actually gate code: >= 1.26.10 for FLAC-in-DASH (above), >= 1.28 for `wasapi2sink exclusive`
+(`output-backends.md` §4) — both are unaffected by which 1.28.x point release is current. 1.28.6
+added FFmpeg 9.0 support, matching the `ffmpeg-next` 9.0.0 crate recommendation in
+`stacks-comparison.md`; the 1.28.3 `devicemonitor` fix referenced throughout this skill
+(`os-integration.md` §3) is likewise unaffected by later point releases.
+(https://linuxiac.com/gstreamer-1-28-7-released-with-security-and-playback-fixes/,
+https://9to5linux.com/gstreamer-1-28-7-open-source-multimedia-framework-adds-support-for-opencv-5,
+both dated 2026-09-08 — see `references/sources.md`.)
 
 ## 2. Decoder stacks compared, and their licences
 
@@ -112,10 +120,10 @@ below `cpal`** — direct `alsa`/`wasapi`/`coreaudio-rs`, or a different engine 
 
 ## 3. AAC patent status in 2026
 
-- AAC is covered by the Via Licensing Alliance ("Via LA") AAC pool, an active per-unit programme
-  with rates roughly US$0.10–0.98 per unit and volume tiers (Standard Rate Structure: $0.98 for the
-  first 500k units, stepping to $0.42 at 5-10M, per 2026 third-party reporting; via-la.com itself is
-  blocked from this research environment).
+- AAC is covered by the Via Licensing Alliance ("Via LA") AAC pool, an active per-unit programme,
+  tiered by volume: **$0.98 for units 1-500,000, stepping down to $0.78 / $0.68 / $0.45 at higher
+  volume tiers**, 900+ licensees (per 2026 third-party reporting; via-la.com's own programme page is
+  blocked from this research environment — see `references/sources.md`'s web-sources table).
 - Individual AAC/HE-AAC patents expire country-by-country (one HE-AAC v2 patent expired 2023); there
   is no single global expiry date.
 - **No source found in this research pass says the AAC pool has closed or AAC is royalty-free in
@@ -136,7 +144,7 @@ Arch gets `gst-libav` (`ref:sone/README.md:283,306,345,401`). Sone's Snap build 
 `libfaad*` explicitly and recreate `blas`/`lapack` `update-alternatives` symlinks "so `libgstlibav`
 (ffmpeg) can load them" — even the confined build needs deliberate, non-obvious work
 (`ref:sone/snap/snapcraft.yaml:40,127-129,153`). **On Windows the gap is total**: the one documented
-GStreamer-bundling recipe in the reference set (`output-backends.md` §11, sone-windows) ships no AAC
+GStreamer-bundling recipe in the reference set (`output-backends.md` §14, Sone-windows) ships no AAC
 decoder plugin at all — `LOW`/`HIGH` are unplayable on a shipping Windows build assembled that way
 unless an AAC decoder is deliberately added to the bundle. **Add a startup capability probe**
 (`gst::ElementFactory::find("avdec_aac")`, or a decodebin dry-run) that reports which tiers are

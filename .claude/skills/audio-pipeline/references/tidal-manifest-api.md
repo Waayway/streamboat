@@ -36,8 +36,11 @@ Quality.hi_res_lossless  = "HI_RES_LOSSLESS"  -> FLAC up to 24/192
 Quality.default          = "HIGH"
 ```
 
-A legacy fifth value `HI_RES` maps to MQA and is dead content since 24 July 2024 (§1.7 caveat
-below). The 96/320/1411/up-to-24-192 kbps figures are TIDAL marketing numbers repeated by
+A legacy fifth value `HI_RES` (MQA) is gone from python-tidal's `Quality` enum above but is still
+requested by Sone's shipped quality cascade (`ref:sone/src-tauri/src/commands/playback.rs`) and
+carried in the iOS SDK's codec map below — dead content since 24 July 2024 (§1.7 caveat below,
+§7's open decision on whether to keep requesting it). The 96/320/1411/up-to-24-192 kbps figures are
+TIDAL marketing numbers repeated by
 third-party reviews — not confirmed against a first-party TIDAL page in this research pass
 (`support.tidal.com` is blocked from the environment). **Correction: `bitDepth`/`sampleRate` are
 not reliable on v1 either.** A prior version of this note called them "the authoritative per-track
@@ -164,9 +167,10 @@ from a raw v2 response — parse the manifest.**
 **Manifest type is DRM-driven, not a free choice.** The web SDK asks for HLS when
 `shaka.drm.FairPlay.isFairPlaySupported()` is true (Safari/Apple) and MPEG-DASH otherwise
 (`playback-info-resolver.ts:358,373` — both branches confirmed). Android always requests
-`MPEG_DASH` unconditionally (`PlaybackInfoRepositoryDefault.kt:58`, confirmed). iOS is reported to
-request `.hls` but this was **not independently re-confirmed** during fact-check — treat as likely,
-not certain.
+`MPEG_DASH` unconditionally (`PlaybackInfoRepositoryDefault.kt:58`, confirmed). **iOS requests
+`.hls` unconditionally** — verified directly against the checkout:
+`ref:tidal-sdk-ios/Sources/Player/Common/PlaybackInfo/PlaybackInfoFetcher.swift:87` passes
+`manifestType: .hls` to `TrackManifestsAPITidal.trackManifestsIdGet`.
 
 ## 3. Manifest MIME types and parsing (BTS, EMU, DASH, HLS)
 
@@ -198,7 +202,8 @@ Handling: base64 → JSON → take `urls[0]`, feed to the decoder as an ordinary
 `{mimeType, urls}`, no `codecs`/`encryptionType`/`keyId`/`licenseSecurityToken` — parsed by the same
 function. Do not assume EMU carries every BTS field.
 
-**DASH** base64-decodes to an MPD XML document. Three feeding strategies are in the reference set:
+**DASH** base64-decodes to an MPD XML document. **Four feeding strategies are in the reference
+set** — do not describe this as "three," an earlier draft of this material undercounted by one:
 
 1. Wrap back into a data URI, `data:application/dash+xml;base64,<b64>` — Sone
    (`ref:sone/src-tauri/src/commands/playback.rs:118-127`), Strawberry, TIDAL's own web SDK.
@@ -206,7 +211,18 @@ function. Do not assume EMU carries every BTS field.
    falling back to the data URI below that (`ref:high-tide/src/lib/player_object.py:487-513`, reading
    `Gst.version()` directly). Whether this is because newer GStreamer stopped accepting the data-URI
    form is unconfirmed ([unverified] — see the SKILL.md Unverified list).
-3. Parse the MPD yourself and fetch segments — python-tidal (`DashInfo`), tidal-cli.
+3. **Ephemeral local HTTP route**: base64-decode and serve the manifest from a local route kept
+   alive for `track.duration + 300s`. Music Assistant's TIDAL provider
+   (`music_assistant/providers/tidal/streaming.py`, fetched 2026-09-08), chosen explicitly because
+   ffmpeg cannot re-fetch a `data:` URI mid-playback (`tidal-oss-landscape/references/project-profiles.md`
+   §5a). The strategy to use if the media layer may re-open or range-request the manifest source
+   (seeking, a restart, an external decoder like ffmpeg) and a filesystem write isn't wanted.
+4. Parse the MPD yourself and fetch segments — python-tidal (`DashInfo`), tidal-cli.
+
+**Selection rule**: if the media layer may re-open or range-request the manifest source (seeking, a
+restart, an external decoder like ffmpeg), strategy 1 is unsafe — use 2 or 3. Strategy 4 is needed
+only with no DASH-capable demuxer at all. **Default recommendation for streamboat: strategy 1, with
+2 as the fallback.**
 
 **HLS** base64-decodes to a master playlist whose variant lines are themselves base64 data URLs; the
 web SDK decodes the first line again before scanning for `X-COM-TIDAL-SAMPLE-DEPTH`/`-RATE`.
@@ -245,6 +261,19 @@ Fields:
 
 Neither reads `SegmentTemplate@startNumber` (DASH default 1). That's bug #1 (start index).
 
+**Bug #0, more serious than the numbering disagreement: python-tidal's `urls` list likely never
+contains a usable init segment.** `DashInfo` parses `SegmentTemplate@initialization` into
+`DashInfo.first_url` (`media.py:786-796`), but `get_urls()` never emits it — it substitutes
+`$Number$` only into the **media** template, for `range(segments_count)` (`media.py:833-875`). A
+stream assembled purely from `get_urls()`'s return value therefore has no `moov`/`dfLa` box and is
+undecodable, unless TIDAL's media template at `$Number$=0` happens to be byte-identical to the
+separately-parsed `initialization` URL — unproven either way, since no captured TIDAL fixture exists
+(§16). Combined with the `1 + 1` prefix in `segments_count`, this also over-generates one URL past
+the end of a single-run timeline (correct count for one `<S d="…" r="N"/>` run is `N+1`; the `1+1`
+prefix makes it `N+2`) — a trailing 404 on a well-formed timeline. **Do not copy python-tidal's
+segment-URL generation as reference behaviour for anything.** **[uncertain — read from source, not
+exercised against a real manifest]**
+
 **Bug #2, easy to miss: python-tidal also mis-accumulates `@r` itself.** Per the DASH spec,
 `SegmentTimeline/S@r` is the number of *additional* repeats — one `<S>` element with a given `@r`
 contributes **`r + 1`** segments to the timeline, and `@r` defaults to 0. python-tidal's loop does
@@ -256,6 +285,40 @@ pattern to copy.
 
 **The spec rule to implement, ignoring both references: total segments in one `<S d="…" r="N"/>` run
 = `N + 1`; `@r` defaults to 0; `SegmentTemplate@startNumber` defaults to 1.**
+
+**Neither reference client implements the full `SegmentTemplate` identifier set — implement it from
+ISO/IEC 23009-1 §5.3.9.4.4, not from either client.** URL templates may use `$$` (literal `$`),
+`$RepresentationID$`, `$Number$`, `$Bandwidth$`, and `$Time$` — each optionally with a printf-style
+width tag (`$Number%05d$`, `$Time%011d$`). `$Time$` replaces `$Number$` when driven by a
+`SegmentTimeline`: its value is the segment's `S@t` (start time in timescale units), a different
+substitution rule, not a formatting variant. A grep for `RepresentationID|\$Bandwidth\$|\$Time\$|%0[0-9]d`
+across the whole reference set finds zero hits — every client does a bare
+`.replace('$Number$', str(i))`. Also unhandled anywhere: `SegmentTemplate` inherited from `Period`/
+`AdaptationSet` level rather than declared on the `Representation` itself (python-tidal only ever
+reads `representations[0].segment_templates[0]`, so it would silently produce nothing if TIDAL ever
+puts the template one level up). **Use a real XML parser (`dash-mpd` for Rust) with full identifier,
+format-tag and inheritance handling — never a regex or a single hardcoded substitution — and validate
+it against the §16 fixture set before trusting it live.** **[verified for the reference-client
+absence and the ISO identifier list; whether TIDAL's MPDs ever actually use `$Time$`/`$Bandwidth$` is
+unknown]**
+
+**Seek arithmetic, stated explicitly (the report only names this as a policy, not as maths):** for
+segment index `k`, start time `t_k` = the previous segment's end (or
+`SegmentTemplate@presentationTimeOffset`, default 0, for `k=0`); `$Number$` = `startNumber + k`;
+segment `k` covers `[t_k, t_k + d)`. This gets a seek to a **segment boundary** — sample-accurate
+seeking additionally requires decoding and discarding from the segment start, and the report does not
+say this is required, so a naive Design-C seek would silently be coarse to a segment length (often
+several seconds), not sample-accurate. Reference clients disagree on which to accept: Sone/High Tide
+seek with `FLUSH | KEY_UNIT` (segment-boundary snap: `ref:sone/src-tauri/src/audio.rs:2330,2353`,
+`ref:high-tide/src/lib/player_object.py:815-816`); Strawberry uses `FLUSH` alone (accurate:
+`ref:strawberry/src/engine/gstenginepipeline.cpp:2370`). Pick one for streamboat and record the
+reason. After any hand-rolled seek, **the init segment must be re-fed before the new media segment** —
+state this as a hard requirement, not an aside. **Duration is ambiguous too**, and at least three
+consumers need it to agree: the track object's integer `duration` (seconds), `MPD@mediaPresentationDuration`,
+and the decoded sample count can disagree by up to a second; prefetch-trigger arithmetic, MPRIS
+`mpris:length`, and the 30-second play-report threshold (`references/playback-behavior.md` §15) all
+depend on one authoritative source. Use the track object's `duration`; treat MPD duration disagreement
+as a signal the manifest is suspect, not as a tiebreaker.
 
 python-tidal also synthesises an HLS playlist from the parsed MPD (`DashInfo.get_hls`), emitting
 `#EXTINF` values of `S.d / timescale` — a useful trick for handing a TIDAL DASH track to any
@@ -275,11 +338,18 @@ fallback: after failing to find `initialization=`/`media=`/`<S d=…>`, it tries
 fallback MPD shape or a hand-rolled assembler will throw "unable to parse manifest" on whatever
 fraction of the catalogue comes back this way.**
 
-**Byte ranges.** No reference client uses DASH `SegmentBase`/`indexRange` — that form is likely
-absent from TIDAL MPDs. HTTP `Range` on **direct** (BTS/BaseURL) URLs is real, though, and is how
-seeking works on those: mopidy-tidal's cache proxy implements full `Range`/`Content-Range` handling
-for exactly this reason (`ref:mopidy-tidal/mopidy_tidal/gstreamer_proxy/types.py:12-40`,
-`proxy.py:219`). Support `Range` on direct URLs so a seek does not re-download from byte 0.
+**Byte ranges.** No reference client uses DASH `SegmentBase`/`indexRange` — but that absence is
+**weaker evidence than it looks**: neither reference parser is a real XML parser (tidal-cli matches
+the MPD with plain regexes; python-tidal blindly indexes `[0]` at every level and raises
+`ManifestDecodeError` otherwise), so an MPD that used `SegmentBase`, or even an ordinary
+`<S t="0" d="…" r="…"/>` with a `t` attribute, would produce zero segments from tidal-cli and a hard
+failure from python-tidal. **Their silence is evidence about their parsers' narrowness, not about
+what TIDAL sends — do not read "no reference client uses it" as "TIDAL doesn't send it."** Only a
+captured fixture (§16) actually settles this. HTTP `Range` on **direct** (BTS/BaseURL) URLs is real
+regardless, and is how seeking works on those: mopidy-tidal's cache proxy implements full
+`Range`/`Content-Range` handling for exactly this reason
+(`ref:mopidy-tidal/mopidy_tidal/gstreamer_proxy/types.py:12-40`, `proxy.py:219`). Support `Range` on
+direct URLs so a seek does not re-download from byte 0.
 
 ## 5. Encryption — the refusal rule
 
@@ -319,13 +389,10 @@ music tracks use"* (`ref:sone/README.md:501`). Video is an open owner decision �
 
 ## 7. Error handling, sub-statuses, and the quality cascade
 
-A playbackinfo failure is HTTP 401 with `status`/`subStatus`. Sone's classification
-(`ref:sone/src-tauri/src/tidal_api.rs:14-45`):
-
-```rust
-const TERMINAL_SUB_STATUSES: &[u64] = &[4005, 4010, 4030, 4031, 4032, 4034, 4035];
-// 4006 (streaming privileges lost) and 4033 (subscription up-sell) recover.
-```
+A playbackinfo failure is HTTP 401 with `status`/`subStatus`. The canonical terminal/recoverable
+sub-status table is owned by `tidal-api/references/transport.md` §6 — do not restate it here;
+`4006` (streaming privileges lost) and `4033` (subscription up-sell) recover, the rest of the
+4xxx range is terminal for that request.
 
 A 401 in the playbackinfo sub-status range must **not** trigger a token refresh + retry — the token
 is fine, the content is not (`ref:sone/src-tauri/src/tidal_api.rs:1522-1531`).
@@ -346,11 +413,19 @@ immediately; rate-limited/terminal-unplayable propagate immediately; other error
 the cascade continues. **The stated reason — "over-requesting quality returns 200 with a downgraded
 `audioQuality`, never an error" — is `[unverified]`**: it's Sone's own code comment with no second
 source, and it's in tension with tidalt's own descending ladder
-(`HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW`, `ref:tidalt/docs/architecture.md:41`), which only makes
+(`HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW`, `ref:tidalt/docs/architecture.md:17`), which only makes
 sense if over-requesting sometimes *does* fail. Do not assume the downgrade-not-error behaviour
 without observing it directly. TIDAL's own SDKs do **not** cascade — they send the whole `formats`
 array once and read back what they got. Prefer that when using v2 (subject to the v2-reachability
 question in §11).
+
+**Open decision, not yet settled: should streamboat's ladder include the legacy `HI_RES` tier at
+all?** Sone's shipped `ORDER` array still requests `[HI_RES_LOSSLESS, HI_RES, LOSSLESS, HIGH]`, even
+though `HI_RES` (MQA) content was retired 24 July 2024 (§1, §atmos-and-immersive). No reference code
+comment says what a live `audioquality=HI_RES` request returns today post-retirement — downgraded
+FLAC, an error, or the same answer as `LOSSLESS`. Including it costs a wasted request per track if it
+silently downgrades; dropping it costs nothing, since `HI_RES_LOSSLESS`/`LOSSLESS` already bracket it.
+Settle with one live request per tier, the same fixture-capture task as §16.
 
 **Rate limiting.** Sone's global cooldown gate: on 429, parse `Retry-After` (delta-seconds form
 only — the HTTP-date form is rejected, not mis-parsed), clamp to `[1, 120]` s, default 5 s, store an
@@ -375,7 +450,10 @@ or omitting it will produce broken reporting.
 
 ## 9. `mediaMetadataTags` / `audioModes` vocabulary
 
-python-tidal has the exhaustive vocabulary:
+See `tidal-oss-landscape/references/api-auth-streaming.md` §7 for the canonical
+`HI_RES_LOSSLESS`(enum)-vs-`HIRES_LOSSLESS`(tag) naming-mismatch warning and mopidy-tidal's
+pre-flight check pattern — cite it rather than restating that warning. python-tidal has the
+exhaustive vocabulary:
 
 ```python
 class MediaMetadataTags(str, Enum):
@@ -469,16 +547,11 @@ from "our `countryCode` is wrong" before treating 4032/4035 as unconditionally t
 
 ## 15. Streaming-privileges WebSocket reconnect policy
 
-§8 gives the message vocabulary (`POST /v1/rt/connect` → WebSocket URL,
-`PRIVILEGED_SESSION_NOTIFICATION`, `RECONNECT`, `USER_ACTION`) but not a reconnect policy — and
-getting this wrong is maximally user-visible: either streamboat silently loses the stream to another
-device with no message, or it fights another device for the privilege in a loop. Full detail lives in
-the `headless-and-tidal-connect` skill (the Pushkin protocol is core to that skill's territory); the
-three rules to know here: `USER_ACTION` is sent only on an explicit user-initiated play, never on
-autoplay or a gapless track advance; on `RECONNECT`, re-fetch the WebSocket URL from a fresh
-`POST /v1/rt/connect` rather than reusing the old one (the URL is issued per-connect, not guaranteed
-stable); and a dropped socket must never, by itself, stop playback — it degrades to "cannot confirm
-we still hold the privilege," not "stop."
+Getting this wrong is maximally user-visible: either streamboat silently loses the stream to
+another device with no message, or it fights another device for the privilege in a loop. Full
+protocol (message vocabulary, reconnect/backoff, token-rebinding, and the desktop-vs-headless
+priority question) is owned by
+`headless-and-tidal-connect/references/daemon-architecture.md` §6 — cite it rather than restating.
 
 ## 16. Capture real TIDAL manifest fixtures — do this before writing a parser
 

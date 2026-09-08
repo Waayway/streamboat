@@ -7,7 +7,7 @@ points at a shallow clone — see `sources.md`.
 
 1. What lives where
 2. OS keyrings, per platform
-3. Encrypted file fallback: copy sone's format
+3. Encrypted file fallback: copy Sone's format
 4. Client ID / client secret handling
 5. What never gets committed, and how to enforce it
 6. Testing the secret-store backends in CI
@@ -35,10 +35,11 @@ points at a shallow clone — see `sources.md`.
   startup — `Secret.Service.get_sync()` → `Secret.Collection.for_alias_sync(...,
   Secret.COLLECTION_DEFAULT, ...)` → `service.unlock_sync([collection])` — but only when
   `not Xdp.Portal.running_under_flatpak()`.
-- **Flatpak.** `--talk-name=org.freedesktop.secrets` is the (lowercase — the Flathub linter is
-  reported to have a never-granted rule for the wrong casing, though `docs.flathub.org` could not
-  be fetched directly to confirm the exact rule name — see `packaging-and-distribution.md` §1) way
-  to reach a host keyring. The sandbox-native alternative is the **Secret portal**,
+- **Flatpak.** `--talk-name=org.freedesktop.secrets` is the (lowercase — **now confirmed, not just
+  reported**: direct fetch of `flatpak_builder_lint/checks/finish_args.py` shows the linter emits
+  rule id `finish-args-incorrect-secret-service-talk-name` for the miscased `org.freedesktop.Secrets`,
+  with zero exceptions granted in the live `exceptions.json` — see `packaging-and-distribution.md`
+  §1) way to reach a host keyring. The sandbox-native alternative is the **Secret portal**,
   `org.freedesktop.portal.Secret` (xdg-desktop-portal ≥ 1.5.0, version number corroborated by
   secondary sources), which hands the app a per-app master secret over a pipe FD; the secret is
   stable for the life of the installation and is itself stored in the user's keyring under the app
@@ -51,7 +52,7 @@ points at a shallow clone — see `sources.md`.
   application is supposed to expand it using a KDF algorithm."
   (https://raw.githubusercontent.com/flatpak/xdg-desktop-portal/main/data/org.freedesktop.portal.Secret.xml,
   read directly). Feed it through HKDF-SHA256 with a fixed `info` string before using it as an
-  AES-256-GCM key — do not assume it is already 32 bytes of good entropy the way sone's
+  AES-256-GCM key — do not assume it is already 32 bytes of good entropy the way Sone's
   keyring-held key is. `RetrieveSecret` also takes an opaque `token` option from the previous call;
   persist and pass it back rather than re-deriving from scratch each launch.
 - **Windows — Credential Manager.** `CRED_MAX_CREDENTIAL_BLOB_SIZE` is `5*512` = 2560 bytes on
@@ -73,7 +74,7 @@ points at a shallow clone — see `sources.md`.
   mis-cited the mingw-w64 header as the *verification source* for the 2560-byte figure — wrong;
   mingw-w64's header actually disagrees with it. This is now corrected.)
   **Sidestep the whole question**: make the keyring hold a fixed-size *key*, not the token payload
-  — exactly what sone already does on Linux (`keyring::Entry::new("sone", "master-key")` holds 32
+  — exactly what Sone already does on Linux (`keyring::Entry::new("sone", "master-key")` holds 32
   bytes; the tokens live in the AES-256-GCM file, ref:sone/src-tauri/src/crypto.rs). A 32-byte key
   can never approach 2560 bytes — or even 512 — on any OS or toolchain, which makes one design work
   uniformly regardless of compiler. Where no credential store is usable at all on Windows, DPAPI
@@ -90,9 +91,12 @@ points at a shallow clone — see `sources.md`.
   mode 0600 only when the user opts in with `--insecure-token-store`, logged loudly at startup.
   tidalt does the equivalent: `docker/secrets-engine` keychain first, `posixage` (age-encrypted,
   passphrase-callback) fallback at `~/.config/tidalt/secrets`, directory created 0700
-  (ref:tidalt/internal/store/store.go:64-120).
+  (ref:tidalt/internal/store/store.go:64-120). **Flathub-specific**: compile the `--insecure-token-store`
+  code path out of, or hard-disable it in, the Flatpak build entirely — Flathub's named "insecure
+  design" rejection criterion (`packaging-and-distribution.md` §1) covers "shipping overly
+  permissive configurations," and a sandboxed build should have no plaintext-credential path at all.
 
-## 3. Encrypted file fallback: copy sone's format
+## 3. Encrypted file fallback: copy Sone's format
 
 `ref:sone/src-tauri/src/crypto.rs` is a good, small design worth reproducing in any language:
 
@@ -106,9 +110,18 @@ points at a shallow clone — see `sources.md`.
   generate from `OsRng`. The comment "keyring may be unreachable on next launch (e.g. AppImage
   with different D-Bus session)" sits inside the *new-key-generation* branch only — it is not a
   claim that the file is rewritten on every launch. (An earlier draft of this document claimed
-  sone "always writes the file backup even when the keyring succeeds" — refuted; corrected here.)
+  Sone "always writes the file backup even when the keyring succeeds" — refuted; corrected here.)
+  **One behavioural step the summary above elides**: on a successful file read (step 2, not step
+  3's new-key path), `load_or_generate_key` also attempts `store_key_in_keyring(&key)` and logs but
+  ignores a failure (`if let Err(e) = store_key_in_keyring(&key) { log::debug!(...) }`,
+  ref:sone/src-tauri/src/crypto.rs:88-91). This silently promotes a file-only install to
+  keyring-backed storage the moment the keyring becomes reachable — e.g. a user who first ran an
+  AppImage with no D-Bus session, later launched from a session where the keyring is reachable.
+  Decide explicitly whether streamboat's implementation does the same (a security-posture change
+  the user is never told about) or deliberately does not (keyring resolution stays a one-time,
+  first-run choice).
 - The in-memory key buffer is zeroized (line 28) after the cipher is constructed.
-- sone reuses this exact envelope for cache-entry encryption too, not only settings/tokens — see
+- Sone reuses this exact envelope for cache-entry encryption too, not only settings/tokens — see
   `config-cache-logs-telemetry.md` §2.
 
 For streamboat, change two things: bump the version byte on any format change and refuse to
@@ -117,14 +130,14 @@ behaviour a documented, user-visible setting, because it means the encryption is
 the file permissions on that path.
 
 **Write it atomically, or a crash mid-write turns the magic-header passthrough into a silent
-re-login.** sone's `decrypt()` treats a missing/bad magic header as "plaintext, pass through
+re-login.** Sone's `decrypt()` treats a missing/bad magic header as "plaintext, pass through
 unchanged" — right for an *intentional* legacy file, but a file *torn* by a crash/`SIGKILL`
 mid-write is then silently misread as plaintext or fails opaquely, logging the user out with no
-diagnostic. sone itself only writes one file class atomically — the *theme* file, not
+diagnostic. Sone itself only writes one file class atomically — the *theme* file, not
 settings/tokens: `write_theme_file` does temp-file → fsync → rename, mode `0644`, with the comment
 "So a crash can never leave a torn file" (ref:sone/src-tauri/src/theme_config.rs:142-175), while
 the settings/token path is a plain `fs::write(&self.settings_path, encrypted)` with no temp file
-(ref:sone/src-tauri/src/lib.rs:474-477). sone's own scrobble/play-report queues *do* use the safer
+(ref:sone/src-tauri/src/lib.rs:474-477). Sone's own scrobble/play-report queues *do* use the safer
 `.bin.tmp` pattern (ref:sone/src-tauri/src/scrobble/queue.rs:69,
 ref:sone/src-tauri/src/tidal_report/queue.rs:56). **Copy the theme-file pattern for every persisted
 secret/settings/state file, not the settings-file pattern**: temp file in the same dir → write →
@@ -139,12 +152,20 @@ State of the art in the references, all of which is obfuscation and none of whic
 
 - **python-tidal** base64-decodes its client credentials at `tidalapi/session.py` lines ~155-162
   (per the prior survey) — reversible by anyone.
-- **sone** XOR-encodes each value with a random pad and stores *the pad in the same file*
+- **Sone** XOR-encodes each value with a random pad and stores *the pad in the same file*
   (`STREAM_SALT_A` next to `CODEC_HINT_A`), regenerated by `scripts/gen_embedded.py`, with the
   variables deliberately misnamed ("stream salt", "codec hint") to avoid grepability
   (ref:sone/scripts/gen_embedded.py, ref:sone/src-tauri/src/embedded_config.rs). It ships four
   pairs (A/B = device-code id/secret, C/D = PKCE id/secret) and a `has_stream_keys()` predicate
-  that treats a `PLACEHOLDER`-prefixed value as absent.
+  that treats a `PLACEHOLDER`-prefixed value as absent. **Gap in the generator, worth knowing
+  before copying the pattern**: both `ref:sone/scripts/gen_embedded.py` and
+  `ref:sone/scripts/gen_credentials.py` emit only the A/B pair (plus `stream_key_a()`/
+  `stream_key_b()`/`has_stream_keys()`); the shipped `embedded_config.rs` additionally defines the
+  C/D (PKCE) constants, `stream_key_c()`/`stream_key_d()` and `has_pkce_keys()`, which no committed
+  script generates. Regenerating credentials with the shipped scripts would silently drop the PKCE
+  half. Design streamboat's own generator to emit every credential slot the binary actually
+  consumes, and add a CI check that the generator's output set matches the constants the code
+  reads.
 - **strawberry** encrypts build-time credentials with AES-256-CBC at CMake configure time, storing
   them as `ENC:<iv_hex>:<base64>` with the key being `SHA256(passphrase)`; CI supplies
   `-DAPI_CREDENTIALS_ENCRYPTION_KEY="$(openssl rand -hex 32)"`, i.e. a fresh key per build that is
@@ -212,7 +233,7 @@ tidalt solves both problems with a single-server model: the first process claims
 commands over D-Bus, and only the server process ever opens the ALSA `hw:` device — its own docs
 state "ALSA `hw:` devices cannot be shared between processes. If two programs both try to open
 `hw:1,0` the second one fails" (ref:tidalt/docs/client-server.md). `tidalt daemon` is the same
-engine with no TUI (ref:tidalt/cmd/tidalt/daemon.go:44). sone takes the desktop-only version of
+engine with no TUI (ref:tidalt/cmd/tidalt/daemon.go:44). Sone takes the desktop-only version of
 this with `tauri_plugin_single_instance` to focus the existing window instead of opening a second
 one (ref:sone/src-tauri/src/lib.rs:546-548).
 
@@ -226,7 +247,7 @@ Add a test for this to `testing-strategy.md` §3's list.
 against it; the settings file and any future local library/queue database are the same shape of
 shared, mutable, on-disk state. Two processes doing LRU eviction against the same cache directory
 with no coordination will double-evict, race on the same `.meta` sidecar, and disagree about usage.
-sone's cache is single-process by construction — no file locking at all, safe only because
+Sone's cache is single-process by construction — no file locking at all, safe only because
 `tauri_plugin_single_instance` guarantees a single process
 (ref:sone/src-tauri/src/cache.rs:188-189,608-645; ref:sone/src-tauri/src/lib.rs:546-548).
 mopidy-tidal's audio cache instead gets multi-process safety close to free via SQLite + WAL
@@ -246,7 +267,7 @@ listening data, "log out" and "delete everything about me" are correctness/priva
 getting the ordering wrong produces concrete bugs: account A's cached playlists served to account
 B, or the track playing at logout getting scrobbled to TIDAL after the user has signed out.
 
-sone's `logout` command gives a copyable ordering, with its own comments explaining *why*
+Sone's `logout` command gives a copyable ordering, with its own comments explaining *why*
 (ref:sone/src-tauri/src/commands/auth.rs:413-462):
 
 1. Disconnect scrobbling/play-reporting **first** — "before stopping playback so the interrupted
@@ -261,12 +282,12 @@ sone's `logout` command gives a copyable ordering, with its own comments explain
    delete the settings file outright if it fails to load).
 8. Clear the entire disk cache.
 
-What sone does **not** do, and streamboat should decide explicitly: it never deletes the
+What Sone does **not** do, and streamboat should decide explicitly: it never deletes the
 OS-keyring entry or the `0600` key file, so the AES master key outlives the logged-out session.
 High Tide's equivalent is one call, `Secret.password_clear_sync(self.schema, {}, None)`
 (ref:high-tide/src/lib/secret_storage.py:85-94, ref:high-tide/src/window.py:267-277).
 
-For streamboat: implement `logout` in the sone ordering above, and separately ship a
+For streamboat: implement `logout` in the Sone ordering above, and separately ship a
 `streamboat purge` / "Delete all local data" action that removes config, cache, state/logs, the
 keyring entry, and the key file — strictly stronger than logout. Document what a distro package
 uninstall does and does not remove (never the user's config/cache/data directories, in this

@@ -7,6 +7,8 @@ Full narrative: `docs/research/audio-pipeline.md` §7-§9, plus fact-check gap-f
 1. What each reference project actually does — file pointers
 2. Candidate audio stacks compared (including stacks the first pass missed)
 3. Recommended pipeline designs (A, B, C) and the recommendation
+   - CRITICAL: engine-choice conflict with `tech-stack.md`
+   - libmpv's own distribution story, and the GPL/App-Store consequence for mobile
 
 ---
 
@@ -15,7 +17,7 @@ Full narrative: `docs/research/audio-pipeline.md` §7-§9, plus fact-check gap-f
 | Project | Language | Decode | Output | Gapless | Bit-perfect | Key files |
 |---|---|---|---|---|---|---|
 | **Sone** | Rust + Tauri 2 | GStreamer 0.23, `uridecodebin` | Normal: `autoaudiosink`. Exclusive: `appsink` -> own `libasound` writer thread | `concat` + prerolled branch, normal mode only | yes, full | `ref:sone/src-tauri/src/audio.rs` (~3300 lines), `signal_path.rs`, `pipeline_probe.rs`, `commands/playback.rs`, `cache.rs`, `mpris.rs`, `idle_inhibit/` |
-| **sone-windows** | Rust + Tauri 2 | same | `wasapi2sink exclusive=… low-latency=true device=…` | inherited (concat path) | yes, WASAPI exclusive | `ref:sone-windows/src-tauri/src/audio.rs:1236-1246,1580-1602` |
+| **Sone-windows** | Rust + Tauri 2 | same | `wasapi2sink exclusive=… low-latency=true device=…` | inherited (concat path) | yes, WASAPI exclusive | `ref:sone-windows/src-tauri/src/audio.rs:1236-1246,1580-1602` |
 | **High Tide** | Python + GTK4/libadwaita | GStreamer `playbin3` (fallback `playbin`) | Selectable: `autoaudiosink`, `pulsesink`, `alsasink device=…`, `jackaudiosink`, `osssink`, `pipewiresink` | `about-to-finish`, disabled on `pipewiresink` | partial — ALSA sink only, no rate/format control, no Flatpak `/dev/snd` | `ref:high-tide/src/lib/player_object.py`, `mpris.py`, Flatpak manifest |
 | **Strawberry** | C++17 + Qt6 | GStreamer, four TIDAL endpoint variants | `alsasink`/`pulsesink`/`pipewiresink`/`osxaudiosink`/`directsoundsink` (Win default)/`wasapi(2)sink`/`asiosink` | `about-to-finish` + `SetNextUrl` | derived: `hw:`/`plughw:` -> exclusive; sets `exclusive` on any sink that has it | `ref:strawberry/src/engine/gstenginepipeline.cpp`, `gstengine.cpp`, `gststartup.cpp`, `tidal/tidalstreamurlrequest.cpp`, `engine/*devicefinder.cpp` |
 | **tidalt** | Go + CGO | FFmpeg direct, AVIO callback streaming | direct `libasound` `hw:` with `plughw:` fallback | keeps device open across tracks | yes, plus PipeWire D-Bus reservation | `ref:tidalt/internal/player/alsa.c`, `mpv.go`, `avcodec.go`, `docs/architecture.md`, `docs/client-server.md` |
@@ -37,13 +39,13 @@ Version/licence data from crates.io (queried 2026-09-07) and upstream source rea
 | Stack | Linux | Windows | macOS | Headless/Pi | Bit-perfect Linux | Bit-perfect Win | Bit-perfect macOS | 24/192 | Gapless | DASH | Licence | Maturity | Mobile path |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | **gstreamer-rs 0.25.3** + own ALSA writer (Sone design) | yes | yes | yes | yes | yes (own writer) | yes (`wasapi2sink exclusive`, needs GStreamer >= 1.28) | **no** (needs own CoreAudio writer) | yes | yes (`concat`) | yes | bindings MIT/Apache-2.0; GStreamer LGPL-2.1+ | very high; two shipping TIDAL clients | GStreamer builds for Android/iOS but is heavy; would likely swap the sink |
-| **libmpv (`libmpv2` 6.0.0)** | yes | yes | yes | yes | yes — via `--audio-device=alsa/hw:X,Y`, **not** `--audio-exclusive` (silently ignored on `alsa`) | yes (`--ao=wasapi --audio-exclusive=yes`) | **yes** (`coreaudio_exclusive`) | yes | yes (`--gapless-audio=weak`) | yes (FFmpeg) | crate LGPL-2.1; mpv GPLv2+ (LGPL via Meson `-Dgpl=false`) | very high | mpv builds for Android; iOS is awkward |
+| **libmpv (`libmpv2` 6.0.0)** | yes | yes | yes | yes | yes — via `--audio-device=alsa/hw:X,Y`, **not** `--audio-exclusive` (silently ignored on `alsa`) | yes (`--ao=wasapi --audio-exclusive=yes`) | **yes** (`coreaudio_exclusive`) | yes | yes (`--gapless-audio=weak`) | yes (FFmpeg) | crate LGPL-2.1; mpv GPLv2+ (LGPL via Meson `-Dgpl=false`) | very high (but distribution itself is unproven — see below) | mpv builds for Android; **iOS is not "awkward", it is blocked** — GPLv2+ (the default build) conflicts with App Store terms; see the licence note below |
 | **Symphonia 0.6.1 + cpal 0.18.2 / rodio 0.22.2** | yes | yes | yes | yes | **no** via cpal (needs direct `alsa` 0.12.1) | **no** (cpal has no exclusive mode, verified against its source) | **no** | yes (decode side) | needs hand-rolling | **no** — needs `dash-mpd` 0.20.4 + own fetcher | MPL-2.0/Apache-2.0/MIT | Symphonia high, assembled stack unproven | best story: pure Rust, Android via `oboe` 0.6.1, iOS via AVAudioEngine FFI |
 | **Symphonia + direct backends** (`alsa`/`wasapi`/`coreaudio-rs`) | yes | yes | yes | yes | **yes** | **yes** | **yes** | yes | hand-rolled | **no** | all permissive | you write and maintain three backends | best |
 | **FFmpeg (`ffmpeg-next` 9.0.0) + direct backends** (tidalt design) | yes | yes | yes | yes | yes | yes | yes | yes | hand-rolled (keep device open) | yes | crate WTFPL; FFmpeg LGPL-2.1+ | tidalt ships it on Linux; Win/macOS unproven | fine |
 | **GStreamer from C++/Qt** (Strawberry design) | yes | yes | yes | yes | yes | yes | **no** | yes | yes | yes | LGPL/GPL | very high | poor |
 | **GStreamer from Python** (High Tide design) | yes | awkward | awkward | yes | partial | untested | no | yes | yes | yes | LGPL/GPL | high on Linux only | poor |
-| **Native core (Rust/C++) + webview UI** (Sone/sone-windows design — missing from the first pass) | yes | yes | yes | n/a (no webview needed headless) | yes | yes | no (same macOS gap as GStreamer) | yes | yes | yes | depends on core | very high — proves a beautiful UI does not cost bit-perfect audio (see caveat below) | webview doesn't port to mobile as-is, but the native core can |
+| **Native core (Rust/C++) + webview UI** (Sone/Sone-windows design — missing from the first pass) | yes | yes | yes | n/a (no webview needed headless) | yes | yes | no (same macOS gap as GStreamer) | yes | yes | yes | depends on core | very high — proves a beautiful UI does not cost bit-perfect audio (see caveat below) | webview doesn't port to mobile as-is, but the native core can |
 | **Electron/MSE/Web Audio** (tidal-hifi design) | yes | yes | yes | no | **no** | **no** | **no** | resampled (uncertain, see caveat) | yes-ish | yes (Shaka) | Apache-2.0 + castlabs Electron | very high | good (it's a browser) |
 | **miniaudio** (single-header C, public-domain/MIT-0) `[uncertain, see caveat]` | yes | yes (WASAPI exclusive claimed) | yes (CoreAudio) | yes | plausible | plausible | plausible | yes (device side) | hand-rolled | **no** | permissive | replaces the `alsa`/`wasapi`/`coreaudio-rs` trio only, not Symphonia | unproven |
 | **python-mpv** (ctypes binding to libmpv) | yes | awkward | awkward | yes | same as libmpv | same as libmpv | same as libmpv | yes | yes | yes | same as libmpv + Python packaging | High Tide proves Python+GStreamer viable on Linux; same argument applies here | poor |
@@ -71,7 +73,7 @@ Version/licence data from crates.io (queried 2026-09-07) and upstream source rea
   inside it (though `/proc/asound/*/hw_params` and libmpv's own `audio-out-params`/`current-ao`
   properties both still work — see `output-backends.md` §10).
 - **A webview UI does not preclude bit-perfect audio — only rendering audio in the browser engine
-  does.** Sone and sone-windows render their entire UI in a Tauri webview and are the strongest
+  does.** Sone and Sone-windows render their entire UI in a Tauri webview and are the strongest
   bit-perfect references in the set, because audio never touches the web layer — GStreamer decodes
   into an `appsink`, a Rust thread writes to `libasound`/WASAPI directly. The one place Sone *does*
   route audio through its webview is video, and it says so: *"Video audio is streamed and does not
@@ -143,15 +145,17 @@ The Sone design generalised to three platforms.
   `dashdemux` for DASH (`decoding-and-codecs.md` §1) — **and note this needs an explicit
   `dashdemux2`-rank-demotion startup step even below that floor, since plain `uridecodebin` does not
   autoplug the legacy demuxer on its own** (`output-backends.md` §12); GStreamer >= 1.28 before
-  relying on `wasapi2sink exclusive` (`output-backends.md` §4). Current GStreamer is **1.28.6**, not
-  1.28.2/1.28.3 (`decoding-and-codecs.md` §1).
+  relying on `wasapi2sink exclusive` (`output-backends.md` §4). Both floors matter regardless of
+  which 1.28.x point release is current (it moves — 1.28.7 or later as of 2026-09,
+  `decoding-and-codecs.md` §1); do not gate on a specific point release, only on `>= 1.26.10`/
+  `>= 1.28`.
 - **Mobile later:** replace the writer with `oboe`/`AAudio` (Android) or `AVAudioEngine` (iOS);
   either keep GStreamer (builds for both) or swap the decode half for the platform decoder.
 
 **Cost:** three output backends to write and maintain (though see `output-backends.md` §13 — plain
 `alsasink device=hw:` covers most of Linux and a custom writer is only strictly needed for a smaller
 set of reasons than "bit-perfect at all"), plus GStreamer as a shipped runtime dependency on Windows
-and macOS. **Windows has one fully documented bundling recipe** (sone-windows, ~20 MB, NSIS+WiX
+and macOS. **Windows has one fully documented bundling recipe** (Sone-windows, ~20 MB, NSIS+WiX
 hooks) **but it ships no AAC decoder** — `LOW`/`HIGH` need one added deliberately — **and macOS has
 no reference recipe at all**, cost that as unproven, not solved (`output-backends.md` §14). Whether
 to bundle GStreamer on Linux too, rather than link the system one, is itself an open decision with
@@ -171,9 +175,14 @@ control thread (tokio) --property/command--> libmpv instance --> ao=alsa|wasapi|
 --ao=coreaudio          (macOS)   --audio-exclusive=yes        --coreaudio-change-physical-format=yes
 --gapless-audio=weak    (never `yes` — locks the rate to the first track)
 --audio-channels=auto-safe
+--audio-format=         --audio-samplerate=       (leave BOTH unset for bit-perfect — either one forces a fixed output format/rate and defeats per-track passthrough)
+--alsa-buffer-time=<us> --alsa-periods=<n>        (Linux ALSA AO tuning — same buffer/period-depth decision as `output-backends.md` §1, mpv-flag form)
 --prefetch-playlist=yes (default no — without it, prefetch never actually happens)
 --volume-gain=<db>      apply TIDAL's ReplayGain formula as dB, on top of user volume
+ao-volume / ao-mute     runtime properties, not CLI flags — `ao-mute` is the mute-only companion to
+                        `ao-volume` (§ below) for the hardware/system-mixer bit-perfect volume answer
 --demuxer-lavf-o=protocol_whitelist=file,crypto,data,http,https,tcp,tls   (needed for a DASH MPD referencing http(s) segment URLs)
+--stream-lavf-o=protocol_whitelist=file,crypto,data,http,https,tcp,tls   (companion option for mpv's own stream layer — set both, they cover different code paths)
 --cache=yes --demuxer-max-bytes=… --demuxer-readahead-secs=…
 ```
 
@@ -228,9 +237,70 @@ manifest -> MPD parse (dash-mpd) -> segment fetcher (sequential per track, reqwe
 
 ### Recommendation
 
-Start with **Design B (libmpv)** for a correct, gapless, bit-perfect player on all three desktops
-and headless with a small amount of code. Structure the codebase so the engine sits behind a narrow
-trait — `load(uri, hints)`, `preload(uri, hints)`, `play/pause/seek/stop`, `set_gain(linear)`,
-`position()`, `signal_path()`, plus an event stream. If and when the signal path or macOS behaviour
-proves inadequate, add **Design A** as a second engine implementation behind the same trait. Do not
-build Design C unless the owner decides streamboat is lossless-only.
+**This recommendation is conditional on accepting that libmpv's default GPLv2+ build makes
+streamboat a GPL work — read that constraint below before taking the recommendation, not after.**
+The App Store is already closed to streamboat regardless (App Store Guideline 5.2.2), but whether
+the GPL licence is *additionally* incompatible with App Store distribution is `[unverified]`, not
+confirmed — treat it as a real, unresolved risk to a future first-party iOS app, not a settled
+blocker. The project context says mobile "must not be precluded" by the architecture; if the owner
+has not weighed this tradeoff, do not scaffold Design B yet — surface it first.
+
+With that accepted: start with **Design B (libmpv)** for a correct, gapless, bit-perfect player on
+all three desktops and headless with a small amount of code. Structure the codebase so the engine
+sits behind a narrow trait — `load(uri, hints)`, `preload(uri, hints)`, `play/pause/seek/stop`,
+`set_gain(linear)`, `position()`, `signal_path()`, plus an event stream. If and when the signal
+path or macOS behaviour proves inadequate, add **Design A** as a second engine implementation
+behind the same trait. Do not build Design C unless the owner decides streamboat is lossless-only.
+
+**STOP — before implementing this recommendation, also read the next two sections.** They surface a
+conflict this skill previously did not flag (tech-stack-evaluation recommends the reverse engine
+order) in addition to the iOS/GPL constraint just stated.
+
+### CRITICAL: this skill and `docs/research/tech-stack.md` recommend opposite primary engines
+
+`docs/research/tech-stack.md` recommends the **reverse** of the recommendation just above:
+`| Audio engine | gstreamer 0.25 + gstreamer-app, behind an AudioEngine trait; libmpv as backend #2 |`
+(`tech-stack.md:1383`) — GStreamer first, libmpv second. **The mpv gapless-flag disagreement this
+section used to flag is now resolved**: `--gapless-audio=weak` is correct (§3/Design B config,
+confirmed against mpv's documented semantics — `no` would close the device between every track,
+forfeiting exclusive-mode gapless for no bit-perfection benefit `weak` doesn't already provide) and
+`tech-stack-evaluation/references/audio-engine-comparison.md` §3 has been corrected to match, so
+this is no longer a live contradiction between the two documents. **The engine-order conflict is
+still real and unresolved. An agent reading only one of the two documents will build the wrong
+day-one architecture. Do not pick either recommendation silently — surface this conflict to the
+owner (thijs) before writing engine code**, using the facts already assembled: GStreamer-on-macOS is
+unproven in the reference set (§2 above, "no reference client ships GStreamer on macOS"); libmpv's
+own Windows/macOS distribution is *equally* unproven (next section) and additionally forecloses iOS.
+Neither document is authoritative over the other on engine choice — this is a genuine open owner
+decision, not something to resolve unilaterally in either skill.
+
+### libmpv's own distribution story was never examined — and it makes streamboat a GPL work
+
+§2's cost table treats "ship GStreamer on Windows/macOS" as a known, bounded cost (Sone-windows has a
+complete, documented recipe: `output-backends.md` §14) but never asks the same question for libmpv,
+the recommended engine. **No project in the entire reference set links libmpv at all** — a search for
+`libmpv|mpv_` across every checkout, excluding vendored code, returns nothing; the file named
+`ref:tidalt/internal/player/mpv.go` is misleadingly named — its actual content is `#cgo LDFLAGS:
+-lasound` plus tidalt's ALSA/D-Bus-reservation code, not any mpv usage. **Design B's runtime is, in
+this reference set, exactly as unproven as Design A's macOS packaging.** Unanswered: the libmpv
+version floor implied by the options Design B already depends on (`--volume-gain`,
+`--prefetch-playlist`, `coreaudio_exclusive`, `--wasapi-exclusive-buffer`) against what Debian
+13/Raspberry Pi OS ship as `libmpv2`; how `libmpv-2.dll` is obtained on Windows (mpv publishes no
+official libmpv binary — the ecosystem in practice uses third-party build artefacts such as
+shinchiro's mpv-winbuild) and `libmpv.dylib` on macOS (Homebrew's mpv, or an owned build); and that
+an LGPL libmpv (`-Dgpl=false`, `decoding-and-codecs.md` §2) also needs an **LGPL-built FFmpeg
+underneath it** — a distro's default libmpv is very likely linked against a GPL FFmpeg, so it cannot
+be relied on for the LGPL escape hatch.
+
+**Licence consequence not stated anywhere else in this skill: linking libmpv (GPLv2+) makes
+streamboat a GPL work.** The load-bearing reason the App Store is closed to streamboat is App Store
+Guideline 5.2.2 (third-party-service authorization) — canonical analysis in
+`tech-stack-evaluation/references/packaging-and-policy.md` §4 — which closes it independent of
+licence. **Whether GPL is *additionally* incompatible with Apple's App Store terms is
+`[unverified]`**, not settled fact — neither this skill nor `tech-stack-evaluation` has
+primary-sourced the FSF/Apple positions on this specific question; treat it as a secondary,
+uncertain reason. The owner's constraint is that mobile must not be architecturally precluded
+(SKILL.md, "Owner decisions already made"); a GPLv2+ libmpv link is still worth weighing explicitly
+before locking in Design B as primary — it forecloses iOS as a *first-party App Store app* under
+the flagged-uncertain GPL reading, on top of the unconditional 5.2.2 closure — but state the
+confidence level honestly rather than as an unqualified "licence/store-policy conflict."

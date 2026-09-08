@@ -10,6 +10,7 @@ getting the wording wrong has consequences beyond a bug report.
 2. What TIDAL's own documents say (with confidence levels)
 3. Enforcement history
 4. How the ecosystem frames itself — the wording to copy
+   - 4a. What streamboat never ships (copy into CONTRIBUTING)
 5. Packaging implications per channel
 6. TIDAL Connect — confirmed permanently out of reach
 
@@ -22,7 +23,7 @@ getting the wording wrong has consequences beyond a bug report.
 | python-tidal 0.8.11 | v1 + v2 + some openapi v2 | device code, PKCE | `playbackinfopostpaywall`, `urlpostpaywall` | records, does not decrypt | the de-facto reference; LGPL-3.0-or-later |
 | High Tide | via python-tidal | **PKCE only** | via python-tidal | n/a | GTK4/libadwaita, Flathub, libsecret; GPL-3.0 |
 | Sone | v1 + v2 + openapi v2 | device code **and** PKCE, user-supplied creds supported | `playbackinfopostpaywall` + DASH data-URI | skips Hi-Res without a secret | Tauri 2/Rust, play reporting to `ec.tidal.com`, rate gate; GPL-3.0-only |
-| sone-windows | same | same | same | same | WASAPI backend, souvlaki media controls |
+| Sone-windows | same | same | same | same | WASAPI backend, souvlaki media controls |
 | Strawberry | v1 (`api.tidalhifi.com`) | PKCE, custom scheme `tidal://login/auth` | four selectable methods | **refuses, with a user-facing message** | Qt6, GPL-3.0 |
 | mopidy-tidal | via python-tidal | device code or PKCE (local server on 8989) | MPD→`file://`, BTS→direct URL, optional caching proxy | n/a | headless/server model; Apache-2.0 |
 | tidal-hifi | none (wraps the web player) | browser session | Chromium + Widevine (castlabs Electron 43) | handled by CDM | proves the "wrap the web player" path; MIT |
@@ -41,11 +42,11 @@ direct fetch in the research environment that produced this skill; the quotation
 search-result excerpts, not a direct read. Re-verify before using any of this wording in a
 public-facing document. **Confidence differs per bullet — see the marker on each.**
 
-- **Developer Guidelines** — *higher confidence: this exact sentence was independently re-confirmed
-  via a targeted search excerpt in a fact-check pass, though the page itself remains unfetchable*:
-  "playbacks will only be available through our SDKs, namely, an official, unmodified version of the
-  TIDAL Player module, and TIDAL will reject any quota extension requests for any Offering that
-  attempts to circumvent this." Also: certain app categories (alarm/ringtone, games/quizzes, voice
+- **Developer Guidelines** — "Player module is the only allowed playback path" quote, its
+  corroborating evidence, and the second-hand-sourcing caveat: owned canonically by
+  `tidal-oss-landscape/references/api-auth-streaming.md` §1 (pinned to a directly-fetched GitHub
+  discussion quoting the guidelines verbatim, not a search excerpt) — cite it rather than
+  restating. Also relevant here: certain app categories (alarm/ringtone, games/quizzes, voice
   control, non-interactive webcasting, mixing TIDAL content with other services' streams) are
   prohibited without express written approval.
 - **Developer Terms** — *lower confidence: a fact-check pass could not re-obtain verbatim wording,
@@ -101,18 +102,33 @@ stronger-corroborated evidence that these credentials get rotated periodically; 
 
 ## 4. How the ecosystem frames itself — the wording to copy
 
-**Sone's disclaimer is the best-worded in the ecosystem — copy it nearly verbatim**: "SONE is an
-independent, community-driven project. It is **not affiliated with, endorsed by, or connected to
-TIDAL** in any way. All content is streamed directly from TIDAL's service and requires a valid paid
-subscription. SONE is a streaming client only — it does not support offline downloads, and does not
-redistribute or circumvent protection of any content. As with any third-party client, please be
-aware of TIDAL's terms of use." Plus: "All trademarks belong to their respective owners." (Sone's
-README badge, separately: "Requires an active TIDAL subscription. Not affiliated with TIDAL.")
+The disclaimer wording to copy (Sone's, the best-worded in the ecosystem, plus High Tide's shorter
+callout, plus the two things neither project's disclaimer says) is owned by
+`tidal-oss-landscape/references/legal-posture.md` — cite it rather than restating. Put streamboat's
+version of this in the README **and** in the app's About dialog.
 
-High Tide's top-of-README callout is shorter but hits the same note: "Not affiliated in any way with
-TIDAL, this is a third-party unofficial client."
+### 4a. What streamboat never ships (copy into CONTRIBUTING)
 
-Put streamboat's version of this in the README **and** in the app's About dialog.
+This is permanent policy, not a v1-vs-later scoping call — put this list (or its substance) directly
+into `CONTRIBUTING.md` so it stays visible to every future contributor:
+
+- **No track export or download-to-file.** Nothing that writes decoded audio to a file the user can
+  copy out, share, or re-upload.
+- **No DRM decryption of any kind.** Not `OLD_AES`, not Widevine, not FairPlay — see
+  `references/playback.md` §3.
+- **No credential sharing or multi-account pooling.** One TIDAL login authenticates one streamboat
+  identity; never build a mode where one subscription serves multiple unrelated users.
+- **Nothing that plays without a logged-in subscriber.** Every playback path requires the user's own
+  valid, paid TIDAL session — no anonymous, shared, or scraped-token playback.
+- **No `playbackmode=OFFLINE` / `usage=DOWNLOAD` requests.** These ask TIDAL for a licensed,
+  DRM-bound asset — see `references/playback.md` §11.
+
+**Carved out as a different, narrower thing**: a transparent HTTP byte cache of an already-cleartext
+stream, for the logged-in subscriber only — off by default, bounded in size, opaque or encrypted on
+disk (never exposed as files the user can copy out), and invalidated on logout. mopidy-tidal already
+does this. See `references/playback.md` §9 (why the *manifest* itself must never be cached this way)
+and §11 (why this is a materially different thing from `OFFLINE`/`DOWNLOAD`). This is a cache, not a
+downloader — don't let it grow into one.
 
 ## 5. Packaging implications
 
@@ -128,25 +144,37 @@ Put streamboat's version of this in the README **and** in the app's About dialog
 
 Target Flathub + AUR + winget + a notarized macOS build. Do not plan on any app store.
 
-## 6. TIDAL Connect — confirmed permanently out of reach
+## 6. TIDAL Connect — target confirmed permanently out of reach, controller out of scope
 
 Given the owner's framing — streamboat "must eventually do everything the native TIDAL client
 does" — Connect (casting to a Connect-capable DAC/streamer, or being a Connect target) reads like an
-obvious future feature. **It is not reachable at all, in either direction, and this is a researched
-conclusion, not an oversight.**
+obvious future feature. **The target role is not reachable at all, and this is a researched
+conclusion, not an oversight. The controller role is out of scope for a different reason — see
+below — not the same "permanently closed" verdict.**
 
-There is no open protocol and no reference implementation to build against. The `tidal-connect`
-reference checkout is a docker-compose wrapper around a **closed-source ARM binary**
+There is no open protocol and no reference implementation to build against, for either role. The
+`tidal-connect` reference checkout is a docker-compose wrapper around a **closed-source ARM binary**
 (`/app/ifi-tidal-release/bin/tidal_connect_application`) that TIDAL distributes only to hardware
 partners under a device-certificate program; its own README states outright "This repository does
 not contain any tidal-connect binary" and requires the user to separately obtain TIDAL's binaries,
-certificate, and libraries. It is device-certificate-gated — no client SDK exists for embedding it,
-and no protocol documentation exists for reimplementing it. (Incidentally, the same README
-corroborates the MQA-removal findings in `references/playback.md` §7 from a different angle:
-"content above 16/44 available as HI_RES quality ... is currently inexistent on Tidal" for the
-Connect binary post-removal.)
+certificate, and libraries. **The target role is device-certificate-gated** — no client SDK exists
+for embedding it, and no protocol documentation exists for reimplementing it; this is what makes it
+a closed door rather than a "later" feature. **The controller role is not certificate-gated** — a
+controller only needs to discover and talk to someone else's target, not present a device identity
+of its own — but no protocol documentation for the controller side exists either, so it is out of
+scope on the weaker basis of "no precedent to build against," not a permanent block. (Incidentally,
+the same README corroborates the MQA-removal findings in `references/playback.md` §7 from a
+different angle: "content above 16/44 available as HI_RES quality ... is currently inexistent on
+Tidal" for the Connect binary post-removal.)
 
-**Recommendation**: state Connect as permanently out of scope in any public roadmap — so it reads as
-a researched decision, not a gap — and offer the substitutes streamboat *can* build instead: MPRIS
-(Linux desktop integration), UPnP/DLNA push, Chromecast, Snapcast, and plain ALSA/PipeWire/WASAPI
-device selection.
+Full verdict, feasibility table, and legal reasoning for both roles: owned by
+`headless-and-tidal-connect/references/tidal-connect.md` §5 — cite it rather than restating.
+
+**Recommendation**: state the target role as permanently out of scope in any public roadmap — so it
+reads as a researched decision, not a gap — and the controller role as out of scope pending a
+published wire capture. For what streamboat *can* build instead of Connect, see
+`headless-and-tidal-connect/references/mpd-and-multiroom.md` §6: MPRIS (Linux desktop integration),
+a Snapcast pipe/stream-plugin, and native ALSA/PipeWire/WASAPI device selection are recommended;
+Cast/AirPlay senders are deferred pending the re-transmission-question; a UPnP renderer/media server
+is skip (upmpdcli already gateways TIDAL, and renderers can't parse DASH manifests without a
+whitelist). Remote-playback scope belongs to that skill — don't re-enumerate substitutes here.

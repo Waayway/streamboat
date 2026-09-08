@@ -15,6 +15,8 @@ that report and this skill both point at each other rather than duplicating.
 6. macOS exclusive output: two precedents that exist outside this reference set
 7. tidalt's two ALSA refinements Sone lacks
 8. Volume curves
+9. Mid-session stream-URL/manifest expiry — unsolved anywhere in the reference set
+10. macOS: audio output is one of five from-scratch subsystems, not a standalone gap
 
 ## 1. Sone's bit-perfect ALSA negotiation
 
@@ -31,9 +33,9 @@ try to do better than Sone (see §2 below).
 `[S32LE, S24LE, S243LE, FloatLE, S16LE]`.
 
 **The ALSA↔GStreamer 24-bit naming is inverted — getting this backwards is a silent corruption
-bug**: ALSA `S24LE` is 24-in-32 (= GStreamer `S24_32LE`, 4 bytes); ALSA `S243LE` is packed 24-bit
-(= GStreamer `S24LE`, 3 bytes). Encoded in `gst_format_to_alsa`/`alsa_format_to_gst`
-(`audio.rs:189-215`).
+bug.** Canonical treatment (with the unit-test recommendation) is owned by
+`audio-pipeline/references/output-backends.md` §1 — cite it rather than restating the mapping;
+Sone's own encode/decode of it is `gst_format_to_alsa`/`alsa_format_to_gst` (`audio.rs:189-215`).
 
 **Rate probing** (`audio.rs:542-563`): `test_rate` over `44100, 48000, 88200, 96000, 176400,
 192000, 352800, 384000, 705600, 768000`, with a safe fallback of `vec![44100, 48000]` if probing
@@ -114,11 +116,18 @@ generic "Internal data stream error" instead of the actionable message from §1'
 Getting this ordering backwards silently degrades the actionable-error UX that is otherwise the
 whole point of doing bit-perfect negotiation carefully.
 
-## 4. Normalization: three formulas, one incompatibility to know about
+## 4. Normalization: three implementations, one incompatibility to know about
+
+Canonical TIDAL gain formula (`min(10^((replay_gain+pre_amp)/20), 1/peak)`, `pre_amp=4.0`, no
+extra attenuation factor) is owned by `audio-pipeline/references/playback-behavior.md` §4 — this
+table is about implementation *mechanism*, not the formula itself. Note Sone's own `norm_gain`
+adds an extra `0.8` factor that is **not** part of TIDAL's formula (its "Tidal-correct" code
+comment is misleading — TIDAL's own Android/web SDKs have no `0.8`); don't read this table as
+attesting a `0.8 * ...` TIDAL formula.
 
 | Project | Formula | Notes |
 | --- | --- | --- |
-| Sone | `norm_gain = 0.8 * min(10^((replay_gain + 4)/20), 1/peak_amplitude)` | Applied as a separate `volume` GStreamer element in `Normal` mode, or as a scalar in the ALSA writer (absent entirely in bit-perfect mode). Album-vs-track gain selected by playback context (`use_track_gain`), each falling back to the other if its own value is missing. Source: `ref:sone/src-tauri/src/commands/playback.rs:9-21,127-146`. |
+| Sone | `norm_gain = 0.8 * min(10^((replay_gain + 4)/20), 1/peak_amplitude)` — the `0.8` is Sone's own addition, not TIDAL's | Applied as a separate `volume` GStreamer element in `Normal` mode, or as a scalar in the ALSA writer (absent entirely in bit-perfect mode). Album-vs-track gain selected by playback context (`use_track_gain`), each falling back to the other if its own value is missing. Source: `ref:sone/src-tauri/src/commands/playback.rs:9-21,127-146`. |
 | High Tide | GStreamer-native chain: `taginject name=rgtags <tags> ! rgvolume pre-amp=4.0 fallback-gain=-10 headroom=6.0 ! rglimiter ! audioconvert`. Tags injected per-track from `stream.track_replay_gain`/`album_replay_gain`, **skipped entirely when the value is exactly `1.0`** (i.e. no ReplayGain data). Source: `ref:high-tide/src/lib/player_object.py:196-206,578-600`. |
 | Strawberry | **Two independent stages, not one**: ReplayGain (`rgvolume`+`rglimiter`+converter) *or* **EBU R128 loudness normalization** as a separate `volume_ebur128_` stage. **Enabling R128 force-links the downstream chain through `audio/x-raw, format = {F32LE, F64LE}`** (`gstenginepipeline.cpp:953-961`) — this is the one incompatibility to carry forward: **a float-domain normalizer is mutually exclusive with bit-perfect integer output**, not merely "should be bypassed" in bit-perfect mode. Any normalization stage streamboat builds must be structurally bypassable, not just defaulted off, for exactly this reason. |
 
@@ -185,23 +194,18 @@ open research question.
 ## 7. tidalt's two ALSA refinements Sone lacks
 
 Source: `ref:tidalt/internal/player/{mpv.go,alsa_fallback_test.go}`. Sone does not do either of
-these; both are worth adding on top of Sone's negotiation logic (§1) if streamboat ports it:
-
-1. **PipeWire device reservation**: acquire `org.freedesktop.ReserveDevice1.Audio<N>` over D-Bus
-   before opening `hw:` exclusively, and **release it on pause, not only on stop**
-   (`ref:tidalt/README.md:12`: "holds exclusive access to the audio device only while a track is
-   actually playing — releasing it on pause so other applications can use it freely" — an earlier
-   draft of this file said "release on stop," which is the less cooperative, incorrect version).
-   Without this, streamboat and any PipeWire-routed application fight over the same device with no
-   coordination, and "release on stop only" makes exclusive mode annoying to run on a
-   general-purpose desktop where pausing to let something else make a sound is routine.
-2. **Distinguish two ALSA failure modes, and memoize the verdict per device**: a
-   format-negotiation refusal (fall back to `plughw:`, and honestly report the session as *not*
-   bit-perfect) is a fundamentally different failure from a device-busy error (keep retrying
-   `hw:` — the device may free up). Conflating the two is why naive implementations silently and
-   permanently drop to `plughw:` on a transient busy error. tidalt's format preference is also
-   source-dependent: for 16-bit sources, prefer `S32_LE > S16_LE > S24_3LE > S24_LE` (S32 first
-   because of a specific Hidizs USB DAC issue); for 24-bit sources, `S24_3LE > S24_LE > S32_LE`.
+these; both are worth adding on top of Sone's negotiation logic (§1) if streamboat ports it. Full
+recipe — the two format-preference orders, period-before-buffer ordering with the 87-frame
+`period_size_min` anecdote, `org.freedesktop.ReserveDevice1` reservation with release-on-pause, and
+format-refusal-vs-EBUSY with memoised `plughw:` fallback — is owned by
+`audio-pipeline/references/output-backends.md` §1-2 (which also has the reservation timing budget
+and the vacuous-success failure mode); cite it rather than restating. The headline shape: acquire
+PipeWire device reservation over D-Bus and **release it on pause, not only on stop**
+(`ref:tidalt/README.md:12` — an earlier draft of this file said "release on stop," the less
+cooperative, incorrect version); and distinguish a format-negotiation refusal (fall back to
+`plughw:`, honestly report as *not* bit-perfect) from a device-busy error (keep retrying `hw:`) —
+conflating the two is why naive implementations silently and permanently drop to `plughw:` on a
+transient busy error.
 
 **Combine with device hot-plug/busy/lost handling from the other two GUI clients — no single
 project has the complete policy.** Sone has a device-busy retry loop on the exclusive path (its
@@ -220,3 +224,43 @@ tidalt's release-on-pause into one policy before shipping exclusive mode.
   philosophy).
 - **High Tide**: `playbin.volume = value**2` when "quadratic volume" mode is on in settings, else
   linear (a per-user GSettings toggle, not automatic).
+
+## 9. Mid-session stream-URL/manifest expiry — unsolved anywhere in the reference set (added by
+the third fact-check pass)
+
+Implication 19 (`oss-landscape.md`) says never cache manifests or stream URLs across *restarts*
+(they expire in minutes to an hour). What it doesn't address, and what this section exists to flag
+explicitly, is expiry **within** a session — and two of this skill's own recommendations create
+the exposure: gapless arming resolves the next track's URI as soon as it's predicted (§2 above),
+and a user can pause for an hour or close a laptop lid before that slot is consumed. On resume,
+the armed URI may already be dead.
+
+**Nobody in the reference set solves this.** A grep for expiry handling in the two most complete
+playback paths returns nothing: `ref:sone/src-tauri/src/commands/playback.rs` has no expiry/TTL
+logic at all, and `ref:high-tide/src/lib/player_object.py` has no `expire` handling either. The
+closest mitigation anywhere is Music Assistant's ephemeral local DASH route, kept alive for
+`track.duration + 300s` (`project-profiles.md` §5a) — which bounds the manifest *route's* own
+lifetime, not the CDN URLs inside it.
+
+**Design decisions streamboat must make explicitly, none of which this reference set answers**:
+(a) does the armed next-track slot get re-resolved after a pause exceeding some threshold, or
+unconditionally on resume; (b) is a mid-track 403/410 from the CDN transient (halt) or
+"re-resolve and seek back to position" — note `sone-deep-dive.md` §3c's own `isUnplayableError`
+classifier would treat a 403 as transient (halt) and a 410 as terminal (skip), and *neither* is
+correct for an expired-but-otherwise-valid URL; (c) on the bit-perfect path, position is derived
+from frames written to the PCM device (§1 above, seeking), so a re-resolve-and-seek recovery must
+re-base `frames_written` exactly as the seek path already does. Prototype this explicitly; it is
+new engineering, not a "copy from X" item.
+
+## 10. macOS: audio output is one of five from-scratch subsystems, not a standalone gap (added by
+the third fact-check pass)
+
+§6 above already establishes there is no macOS bit-perfect/exclusive-output precedent in this
+reference set — but that is only the audio slice of a larger picture. `sone-windows`
+(`sone-deep-dive.md` §9) is the case in point: its `souvlaki` SMTC dependency is declared only
+under `[target.'cfg(target_os = "windows")'.dependencies]`, and every audio sink/enumeration
+branch is `#[cfg(target_os = "linux")]`/`#[cfg(target_os = "windows")]` only — **there is no macOS
+arm anywhere in the fork**, so the entire reference set contains zero Tauri/Rust macOS TIDAL
+precedent, for output or otherwise. `packaging-distribution.md` §8 assembles the full five-item
+macOS work list (output, OS media integration, code signing/notarization, GStreamer bundling,
+Keychain storage) — read it before scoping macOS as "Tauri handles that platform for us."

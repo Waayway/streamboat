@@ -3,7 +3,7 @@
 Table of contents:
 1. mopidy-tidal — the full server precedent (and its caching-proxy legal-posture caveat)
 2. tidalt — the "one binary, two modes" precedent
-3. sone — local HTTP control done carefully (and its token-security caveat)
+3. Sone — local HTTP control done carefully (and its token-security caveat)
 4. tidal-hifi — a documented HTTP control API
 5. upmpdcli — TIDAL over UPnP, and the renderer-whitelist mechanism
 6. Lyrion (LMS) + Squeezelite
@@ -55,22 +55,25 @@ playback_cache_buffer_bytes = 16777216
 project's own three: `BLOCK` (block startup until login), `AUTO` (start unauthenticated, log in
 lazily), `HACK` (the login hack, below).
 
-**The login hack, in detail.** While logged out, every library/search provider returns a dummy
+**The login hack, in brief.** While logged out, every library/search provider returns a dummy
 Track/Album/Artist whose *title* is the login instruction and whose *cover art URL* is a QR of the
-login URL. Any MPD client renders it — no protocol extension, no companion app.
-`ref:mopidy-tidal/mopidy_tidal/login_hack.py` builds these objects by introspecting the provider's
-return-type annotations (`ObjectBuilder`, `width = height = 150`). **One detail worth copying
-carefully, not verbatim**: the QR is not generated locally. `_image_url()` returns
-`"https://api.qrserver.com/v1/create-qr-code/?" + urlencode(...)` — the cover art is a hotlinked
-image from a third-party remote service, which fails on an offline or firewalled box, exactly the
-deployment this feature exists for. `ref:tidalt`'s `qrterminal/v3` approach (§2, §10) generates the
+login URL. Any MPD client renders it — no protocol extension, no companion app. Full mechanics and
+both undisclosed third-party calls this pattern makes (`api.qrserver.com` for the QR, plus a
+`api.voicerss.org` TTS call with a hardcoded key) are owned by
+`tidal-oss-landscape/references/project-profiles.md` §5 — cite it rather than restating. Copy the
+pattern, not the implementation: `ref:tidalt`'s `qrterminal/v3` approach (§2, §10) generates the
 QR locally and has neither problem; streamboat should render its own QR locally, in-band or in a
 terminal, rather than reuse this hotlink pattern.
 
 A tiny HTTP server on `login_server_port` (default 8989) serves a page with the login link and, for
 PKCE, a form: "Paste the response URL here". It binds `("", port)` — **all interfaces, no
 authentication** (`ref:mopidy-tidal/mopidy_tidal/web_auth_server.py`). Copy the idea, not the bind
-address.
+address. **Undocumented detail worth knowing when picking streamboat's own default**: the config
+schema constrains `login_server_port` to `config.Integer(optional=True, choices=range(8000, 9000))`
+— any value outside 8000-8999 is rejected at config-load time, not just a convention
+(`ref:mopidy-tidal/mopidy_tidal/__init__.py:38-40`). streamboat's own login-server port (if this
+shape is copied at all) is not bound by that range, but a value inside it collides with an existing
+mopidy-tidal install on the same host.
 
 **Stream resolution** (`ref:mopidy-tidal/mopidy_tidal/playback.py`):
 
@@ -99,6 +102,31 @@ playable audio reads closer to the latter than the former.
 **Recommendation: adopt go-librespot's posture, not mopidy-tidal's** — cache for jitter/seek in
 memory or a short-lived buffer, and if a persistent cache is ever added, keep it opaque (encrypted
 or otherwise useless without a live, authenticated session).
+
+**A second, separate cache layer exists in mopidy-tidal for *catalogue metadata* — this skill
+otherwise only ever discusses the audio cache, leaving browsing and rate-limiting unaddressed even
+though the recommended MPD subset (`mpd-and-multiroom.md` §1) explicitly adds browsing.** An MPD
+client or web remote renders one screen by requesting dozens of items at once; without a metadata
+cache, `lsinfo`/`listplaylistinfo`/`albumart` on a streaming backend become one upstream API call per
+item, and an ordinary browsing session hits TIDAL's rate limiter. mopidy-tidal's answer:
+`mopidy_tidal/lru_cache.py` — an `LruCache(OrderedDict)`, `max_size=1024` in memory, `persist=True`
+to disk, sharded as `<cache_dir>/<obj_type>/<id[:2]>/<key>.cache` (pickled) — instantiated per entity
+type as `_artist_cache`/`_album_cache`/`_track_cache`, plus a `PlaylistMetadataCache` and a separate
+`LruCache(directory="image")` for cover art (also the answer to the `albumart`-sourcing trap in
+`mpd-and-multiroom.md` §1). Rate limiting is handled explicitly, not left to fail loudly: `from
+tidalapi.exceptions import ObjectNotFound, TooManyRequests`, caught at `library.py:133` (an image
+fetch — log and return empty rather than fail the whole browse) and `library.py:508`
+(`logger.warning("TooManyRequests when fetching album tracks: %s", album_id)`) — i.e. degrade to a
+partial result, never propagate a hard error. Concurrency is explicitly bounded:
+`ThreadPoolExecutor(4, thread_name_prefix="mopidy-tidal-images-")`, and the same cap for search
+(`search.py:161`) — four workers, not unbounded fan-out. `playlist_cache_refresh_secs = 0`
+(`ext.conf`) is the freshness knob. streamboat needs the equivalent three decisions stated
+explicitly: a persistent metadata cache with a size cap and disk layout; a bounded concurrency limit
+on catalogue fan-out; and a documented degrade-on-429 policy (partial result plus a
+`quality_downgraded`-shaped event from `daemon-architecture.md` §4's vocabulary, never a bare
+`ACK`/error). [verified-source `ref:mopidy-tidal/mopidy_tidal/lru_cache.py:18-60`,
+`ref:mopidy-tidal/mopidy_tidal/library.py:11,133,147-150,366,508-509`,
+`ref:mopidy-tidal/mopidy_tidal/search.py:161`, `ref:mopidy-tidal/mopidy_tidal/ext.conf`]
 
 **Pros**: enormous ecosystem leverage; battle-tested; Apache-2.0 so the ideas are freely copyable.
 **Cons**: Python/GStreamer/Mopidy stack streamboat is unlikely to adopt wholesale; coupling to
@@ -160,21 +188,16 @@ calls, using MPRIS only for transport control, because it implements only Root+P
 real boundary in tidalt specifically, but not proof MPRIS "cannot express" more.
 
 **ALSA output detail** (`ref:tidalt/internal/player/alsa.c`): opens `hw:` devices and negotiates
-formats with `snd_pcm_hw_params`, preferring `S32_LE > S16_LE > S24_3LE > S24_LE` for 16-bit sources
-and `S24_3LE > S24_LE > S32_LE` for 24-bit. The S32_LE-first ordering for 16-bit sources is **not**
-about a "Hidizs USB issue" (a mislabeling to avoid repeating) — the code comment says "many USB DACs
-(e.g. CS43198-based devices) have a buggy or non-functional S16_LE USB endpoint but work correctly
-via their native 32-bit endpoint"; the Hidizs device (an S9 Pro Plus) appears in a *different*
-comment about anomalous period-size values (87 frames). It falls back to `plughw:` **only** when
-format negotiation is refused, retries on device-busy against `hw:`, and recovers xruns with
-`snd_pcm_recover`. It also reserves the device over D-Bus
-(`org.freedesktop.ReserveDevice1.Audio<N>`, in `ref:tidalt/internal/player/mpv.go:328-359`) so
-PipeWire yields it, releasing on stop — paired with the daemon's "no device opened until playback
-starts" policy. **This is the most complete small-device output recipe in the reference set.**
+formats with `snd_pcm_hw_params`. Full recipe (format-preference orders, period-before-buffer
+ordering, `ReserveDevice1` reservation with release-on-pause, format-refusal-vs-EBUSY handling) is
+owned by `audio-pipeline/references/output-backends.md` §1-2 — cite it rather than restating (this
+is the same recipe pointed at from `raspberry-pi-deployment.md` §1 of this skill). One thing worth
+keeping here specifically: device reservation is paired with the daemon's "no device opened until
+playback starts" policy.
 
 ---
 
-## 3. sone — local HTTP control done carefully
+## 3. Sone — local HTTP control done carefully
 
 `ref:sone` (Tauri 2 + Rust) is a GUI app, but it ships two local servers worth copying:
 
@@ -191,7 +214,7 @@ starts" policy. **This is the most complete small-device output recipe in the re
 
 **This is most of the security model streamboat should adopt for its control API — with one
 qualification.** Loopback by default, opt-in LAN bind, a generated token, an explicit connection
-cap: adopt all of that. But sone's specific choice of carrying the token *in the URL path* is sound
+cap: adopt all of that. But Sone's specific choice of carrying the token *in the URL path* is sound
 for a machine-to-machine client (an MCP client, a script) and weak for a human-facing surface — a
 URL-path token opened in a phone browser lands in browser history, a shared-phone address bar, any
 `Referer` a third-party asset sends, and reverse-proxy logs. **Recommendation**: use
@@ -202,10 +225,10 @@ origin — never a token that persists in the address bar. Also add `allow_origi
 `server.{address,port,allow_origin,cert_file,key_file}` is the model — there is no `server.tls` key;
 TLS is configured by supplying `cert_file`+`key_file`, §9).
 
-MPRIS in sone is `mpris-server = "0.9"` over `zbus = "5"`
-(`ref:sone/src-tauri/Cargo.toml:53,66`); sone-windows adds `souvlaki = "0.8.3"` alongside
+MPRIS in Sone is `mpris-server = "0.9"` over `zbus = "5"`
+(`ref:sone/src-tauri/Cargo.toml:53,66`); Sone-windows adds `souvlaki = "0.8.3"` alongside
 `mpris-server` for Windows SMTC (`ref:sone-windows/src-tauri/Cargo.toml:58,64`) — Linux MPRIS in
-sone itself is `mpris-server`+`zbus`, not `souvlaki`.
+Sone itself is `mpris-server`+`zbus`, not `souvlaki`.
 
 ---
 
@@ -353,6 +376,23 @@ quality. Model streamboat's own quality→format mapping as an explicit per-tier
 constant array, if this endpoint is ever used as a reference. [refuted-and-corrected, verified-source
 `ref:tidal-cli/src/playback.ts:12-15,44-58`]
 
+**The CLI is specified only as a same-host client throughout this skill — there is no
+`--host`/remote-daemon story, and no answer for scripting a daemon on a different box.** The recommended
+staged path (`SKILL.md`) sells "the desktop GUI grows a play-on… picker listing local daemons", but
+the CLI — the thing an SSH user actually has on a Pi's *other* machine — is only ever described as
+"try the running local instance, else spawn one" (tidalt's model, §2). An operator managing three Pis
+has no documented way to point the CLI at one of them. Fold in a concrete surface: `streamboat
+--daemon <host[:port]|unix:<path>|auto>` (default `auto` = local Unix socket, then local loopback
+HTTP, then fail with the discovery list); `streamboat daemons` to print the mDNS browse result (name,
+address, port, `v=`, `auth=`, paired-or-not, from the TXT-key design in `daemon-architecture.md` §2);
+and `streamboat pair <name>` to run the pairing exchange from the terminal. Precedent for the pieces:
+ncspot's `ncspot info` prints its socket location so scripts can find it (§9, cited there for the
+socket itself, not for this); go-librespot's `GET /auth/code` (§10) is the pattern for surfacing an
+in-progress auth state to any frontend, including a remote CLI; and the `--json`/exit-code
+conventions already adopted below should extend to these new subcommands too. Also decide whether a
+remote daemon's token is stored per-host in the CLI's own config — the first thing a multi-Pi user
+hits.
+
 **A time-sync tell worth knowing about independent of the CLI itself**: `ref:tidal-cli/src/index.ts`
 opens by monkey-patching `console.warn` solely to "Suppress 'TrueTime is not yet synchronized'
 warnings from `@tidal-music/auth`" — the *official* auth package ships a TrueTime service and
@@ -409,15 +449,17 @@ The device-code (RFC 8628) flow is the natural headless login and every preceden
    token generated on a desktop can be dropped into a headless box.
 
 **Secret storage on a headless box is the hard part.** A Linux server has no unlocked keyring.
-tidalt's answer: system keychain via `docker/secrets-engine` with an **age-encrypted file fallback**
-at `~/.config/tidalt/secrets`. sone's answer: settings JSON encrypted with a master key in the OS
-keyring, file fallback at `~/.config/sone/sone.key`. mopidy-tidal's answer: a plain JSON token file
-at `/var/lib/mopidy/tidal/tidal-<session_type>.json`. streamboat needs the keyring-with-file-
-fallback design, and the file must be 0600 in a 0700 directory.
+Per-OS mechanism table and the keyring-with-encrypted-file-fallback recommendation are owned by
+`streamboat-engineering-baseline/references/secrets-and-tokens.md` §2-3 — cite it rather than
+restating; the headless-specific consequence is that a headless box always falls through to the
+encrypted-file path (no keyring available at all), so that fallback is not optional there, it is
+the primary mechanism.
 
 **Pairing a phone/GUI to a headless daemon with no screen at all** is a related but separate problem
 — see `daemon-architecture.md` §5 for the full assembly (go-librespot's `GET /auth/code`, Sendspin's
-pairing-token design, and the owner decisions this still needs).
+pairing-token/pairing-code design, **librespot's own zeroconf pairing protocol** — a fifth,
+MIT-licensed and already-shipped shape this table's librespot row above does not otherwise mention —
+and the owner decisions this still needs).
 
 ---
 

@@ -19,6 +19,18 @@ spec source directly, not search summaries.
 
 - Default TCP port **6600** ("If no port is specified, the default port is 6600" — `doc/user.rst`);
   Unix-socket listening is also supported.
+- **MPD advertises itself over mDNS by default — and this skill's own "MALP works day one" claim
+  depends on that fact without stating it.** MPD publishes DNS-SD service type `_mpd._tcp` (constant
+  `SERVICE_TYPE` in `src/zeroconf/Glue.cxx`) with default instance name `"Music Player @ %h"`
+  (`%h` = hostname), gated by `zeroconf_enabled` (documented default: yes) and `zeroconf_name` in
+  `mpd.conf`. streamboat's own MPD listener should advertise `_mpd._tcp` alongside `_streamboat._tcp`
+  whenever it is LAN-bound via `host_permissions` (below) — and must **not** advertise it when
+  loopback/Unix-socket-only, or a phone browsing the LAN discovers an entry it cannot reach. The
+  `"<something> @ %h"` naming convention is also a ready-made answer to the friendly-name-derivation
+  question in `daemon-architecture.md` §2, with the caveat that the Connect binary's own single-word
+  requirement (issue #216, `tidal-connect.md` §2.4) is a bug specific to that binary's Avahi usage,
+  not a rule MPD's own long-standing multi-word default needs to follow. [documented-web:
+  https://raw.githubusercontent.com/MusicPlayerDaemon/MPD/master/src/zeroconf/Glue.cxx]
 - Line-oriented text protocol; server greets with `OK MPD <version>`; a command "returns `OK` on
   completion or `ACK <error>` on failure", full form `ACK [error@command_listNum] {current_command}
   message_text`, e.g. `ACK [2@1] {play} Bad song index`.
@@ -51,7 +63,20 @@ spec source directly, not search summaries.
   the weak link is specifically a *network* password, not MPD's access control in general.
 - Binary responses exist for `albumart`/`readpicture`: a `binary: <n>` header line, then exactly
   `<n>` bytes, then the completion line; a client-settable `binarylimit SIZE` (since MPD 0.22.4)
-  caps chunk size.
+  caps chunk size. **Two traps for an MPD-subset implementer, neither obvious from the command names
+  alone**: (1) reference MPD sources these bytes from the **filesystem** — `albumart` "is currently
+  implemented by searching the directory the file resides in for a file called `cover.png`,
+  `cover.jpg`, `cover.jxl`, or `cover.webp`" and `readpicture` reads embedded ID3v2 APIC-style tags.
+  Neither exists for a TIDAL stream: fetch the TIDAL cover URL server-side and serve the bytes
+  yourself, using the image `LruCache` from the catalogue-metadata-cache note below, plus an explicit
+  answer for what to return while a fetch is in flight (`ACK`, empty binary, or a blocking fetch).
+  (2) The greeting is `OK MPD <version>`, and per the spec this "is the protocol version, not the
+  daemon's real version" — "There is no way to retrieve this real version identifier from the
+  connection." Clients still gate features on the announced number in practice, so pick one specific
+  protocol version streamboat actually satisfies (e.g. only announce 0.23.x if `getvol`,
+  `binarylimit`, `albumart`, `readpicture` and `single`/`consume` `oneshot` are all genuinely
+  implemented) and back it with an accurate `commands` response — announcing a too-new version is the
+  standard way an MPD-subset server collects bug reports for commands it never implemented.
 - **Partitions**: one MPD process can present multiple frontends with separate queue/player/outputs.
 - **Commands real clients call on connect or on every screen, missing from the subset design
   below in an earlier draft — an unimplemented one is an `ACK` a client renders as an error or a
@@ -70,14 +95,21 @@ spec source directly, not search summaries.
   streamboat-specific commands inside the MPD protocol.
 - **Volume semantics when output is bit-perfect (no resampling, no software attenuation) and there
   is no hardware mixer are unspecified elsewhere, and MPRIS/MPD/HTTP all expose a slider that needs
-  the same answer.** MPD's own honest answer: `status` reports `volume: -1` (and `getvol` returns
-  empty) when no mixer exists — clients already handle this. The Connect wrapper's ALSA logic
+  the same answer.** **`volume: -1` is not the answer to copy — MPD's own spec marks it explicitly
+  deprecated**: "MPD may omit lines which have no (known) value. Older MPD versions used to have a
+  'magic' value for 'unknown', e.g. `volume: -1`" (`doc/protocol.rst` lines 556-558). The current,
+  spec-correct behaviour is to **omit the `volume` line from `status` entirely** when no mixer
+  exists, and keep `getvol` returning an empty response; emit `-1` only as a deliberate legacy shim
+  if a specific client is observed to need it, never as the default. The Connect wrapper's ALSA logic
   (`tidal-connect.md` §2.4) is the complementary lesson: create a softvol named `Master` only when no
   hardware `Master` control exists, else `SoftMaster` with an explicit warning that the slider now
   moves shared hardware volume. go-librespot's `external_volume` config key names the third case —
   the daemon does not own volume at all (an amp or DAC's own knob does). **Expose a capability**,
   `volume: hardware | software | none`, in `GET /health`, and make MPRIS's `CanControl`/`Volume`,
-  MPD's `volume: -1`/`getvol`, and the HTTP endpoint all derive from that one value.
+  MPD's `status` (omitting `volume`, vs. `getvol`), and the HTTP endpoint all derive from that one
+  value. [refuted-and-corrected, documented-web:
+  https://raw.githubusercontent.com/MusicPlayerDaemon/MPD/master/doc/protocol.rst lines 527-528,
+  556-558]
 
 **Clients streamboat would inherit for free**: ncmpcpp, mpc, ncmpc (terminal); Cantata (Qt desktop);
 MALP/M.A.L.P. (Android); numerous iOS clients; mpDris2 (bridges MPD → MPRIS).
@@ -96,6 +128,30 @@ MALP/M.A.L.P. (Android); numerous iOS clients; mpDris2 (bridges MPD → MPRIS).
   The repository's own maintenance status is worth carrying alongside the precedent: it currently
   states it is "kept on life support by the Mopidy core developers" with a "Maintainer wanted"
   notice — sound design, uncertain long-term maintenance.
+- **A URI/identifier grammar is the piece browsing needs that nothing in this skill specifies, and
+  it is the single most load-bearing naming decision in an MPD-compatible or protocol-driven daemon.**
+  MPD's queue, `lsinfo`, `add`, `playlistinfo` and every stored playlist are keyed on an opaque
+  `file:` string; streamboat's own native protocol (`daemon-architecture.md` §4) needs the same thing
+  for its `uid`s, for `streamboat play <url>` deep links, for the web remote, and for the cache.
+  Without a written-down grammar, two implementers invent two incompatible ones and stored playlists
+  break on the first schema change. mopidy-tidal has a complete, battle-tested scheme worth adopting
+  close to verbatim: track URIs are **composite and self-resolving** —
+  `"tidal:track:{artistId}:{albumId}:{trackId}"` (`ref:mopidy-tidal/mopidy_tidal/full_models_mappers.py:58-60`)
+  — so a queue item restored from disk needs no extra API call to render its artist/album. Containers
+  are single-id: `tidal:artist:<id>`, `tidal:album:<id>`, `tidal:playlist:<id>`, `tidal:mix:<id>`,
+  `tidal:genre:<path>`, `tidal:mood:<id>`, `tidal:page:<...>`. The real browse root is 12 entries, not
+  4 — `ref:mopidy-tidal/mopidy_tidal/ref_models_mappers.py`'s `create_root`: Home, For You, Explore,
+  HiRes, Genres, Moods, My Mixes, My Artists, My Albums, My Playlists, My Tracks, Mixes & Radio, with
+  `root_directory = Ref.directory(uri="tidal:directory", name="Tidal")`
+  (`ref:mopidy-tidal/mopidy_tidal/library.py:141`). Search results get a synthetic URI
+  (`tidal:search:<hash>`), making a search result set addressable as a container; the login-hack
+  sentinel URIs (`tidal:track:login`, `tidal:album:login`, `tidal:track:0:0:0`,
+  `headless-daemon-precedents.md` §1) are reserved for the logged-out state and worth keeping as a
+  naming convention rather than colliding with a real id. **Adopt the composite-track-URI rule
+  explicitly and write the grammar into streamboat's own protocol document** — it is not recoverable
+  later once users have stored playlists referencing the old scheme. [verified-source
+  `ref:mopidy-tidal/mopidy_tidal/full_models_mappers.py:58-60`,
+  `ref:mopidy-tidal/mopidy_tidal/ref_models_mappers.py`, `ref:mopidy-tidal/mopidy_tidal/library.py:141`]
 - **Nuclear** — a desktop GUI player with a built-in MPD-compatible server that works with `mpc`,
   `ncmpcpp` and `mpDris2`, implementing "the subset of the protocol needed for playback control,
   queue management, and real-time notifications", with library browsing and stored playlists
@@ -115,6 +171,18 @@ DSD support, multi-room audio, and extensible plugin architecture", 244 commits,
 not a drop-in dependency). Go has `fhs/gompd` (client). There is no drop-in "embed an MPD server in
 your app" library for either language — implementing the subset is a hand-written parser plus a
 state machine, on the order of a few thousand lines.
+
+**Maintenance-cadence dates for the Rust crates this project's own recommendations name — missing
+everywhere they're cited, and a crate's last release date is part of the recommendation for a project
+whose own stated risk is long-term maintenance.** As checked 2026-09-08: `mdns-sd` 0.21.3 (released
+2026-09-08 — actively released); `windows-service` 0.8.1 (2026-05-08, `mullvad/windows-service-rs`,
+`daemon-architecture.md` §1); `souvlaki` 0.8.3 (2025-06-24 — **over a year old**, and its crates.io
+metadata surfaces only D-Bus/zbus feature flags, not the Windows/macOS backends `ref:sone-windows`
+actually uses); `mpd_protocol` 1.0.3 (2024-02-28 — **client-only and effectively dormant**, do not
+treat it as movement toward a server crate); `rmpd` above (young, no numbered release cited). Record
+these next to each recommendation so a later reader can tell a stale suggestion from a live one —
+`souvlaki` and `mpd_protocol` in particular need a freshness check before streamboat actually depends
+on them. [documented-web: https://crates.io/api/v1/crates/{mdns-sd,windows-service,souvlaki,mpd_protocol}]
 
 **streamboat's recommended MPD-subset design, pulling the above together**: port 6600 falling back
 through 6601-6609 (Nuclear); `status`, `currentsong`, transport commands, queue commands, `setvol`/
@@ -250,7 +318,17 @@ pairing problem** (`daemon-architecture.md` §5), not just an analogy:
 - **In-band rehandshake**: a session already in transport mode can be promoted to paired without
   dropping the WebSocket.
 - **QR-code pairing tokens**: a version-1 token, a 24-byte code, 39 body characters — a fully
-  specified, screen-free pairing flow for exactly the headless-box scenario.
+  specified pairing flow, but one that needs a *screen* to show the code, which a headless
+  streamboat box lacks.
+- **The actual screen-free answer is a separate mechanism from the QR token: pairing *codes*, run
+  over a CPace PAKE rather than a pre-shared QR payload.** Sendspin defines `static_pairing_code` — a
+  fixed 8-digit decimal, explicitly intended for devices with no output channel (the headless case)
+  — and `dynamic_pairing_code`, emitted as 6 decimal digits (short enough to read over SSH or print
+  to a log line, unlike the 39-character QR token). After pairing, the **server** initiates an
+  in-band re-handshake onto the new long-term PSK without dropping the WebSocket, so a headless
+  daemon never needs a second connection round trip to finish pairing. [documented-web:
+  https://raw.githubusercontent.com/Sendspin/spec/main/README.md — Definitions (Pairing Code),
+  Dynamic Pairing Code Flow, PAKE sections]
 - The **server** is always the Noise initiator, regardless of which side opened the connection —
   worth copying since it removes an asymmetry question from streamboat's own design.
 
@@ -260,6 +338,17 @@ implementing a Sendspin *source* would let streamboat feed a whole ecosystem of 
 it doesn't, its pairing design is worth copying wholesale rather than reinventing streamboat's own.
 Track it; do not bet v1 on it. [unverified: licence, and adoption trajectory outside Music
 Assistant]
+
+**Set an explicit re-check trigger before any stage-2 commitment, rather than treating the
+2026-03-25 Music Assistant 2.8 date as still current** — today is 2026-09-08, six months later.
+Re-check, and record the answer with a date, before implementing against this spec: (a) **whether
+the spec has a licence yet** — treat the missing licence as a genuine implementation **blocker**, not
+a caveat to note in passing, since "copy Sendspin's pairing design wholesale" (above, and
+`daemon-architecture.md` §5) is currently a recommendation to copy an unlicensed spec; (b) whether
+core version is still 1 and still exact-match versioned; (c) whether any implementation exists
+outside Music Assistant. If the licence question has not resolved by the time streamboat would build
+against it, librespot's zeroconf pairing protocol (`daemon-architecture.md` §5) is an MIT-licensed,
+already-shipped fallback for the same screen-free pairing problem.
 
 ---
 
@@ -357,4 +446,5 @@ model: try the running instance first, fall back to starting one.
 | **Sendspin source** | Music Assistant + emerging ESP32/Pi endpoints | L | Noise handshake per spec | full | **watch** |
 | **Chromecast / AirPlay sender** | LAN speakers | L each | n/a | full, but quality-capped below streamboat's own daemon (§5) | **defer; resolve re-transmission question first** |
 | **UPnP renderer / media server** | BubbleUPnP, upplay | M | none meaningful | full | **skip** |
-| **TIDAL Connect target or controller** | TIDAL's own apps | XL + blocked | vendor certificate | full | **never** (`tidal-connect.md`) |
+| **TIDAL Connect target** | TIDAL's own apps | XL + blocked | vendor certificate | full | **never** (`tidal-connect.md` §5) |
+| **TIDAL Connect controller** | TIDAL's own apps | XL, no protocol precedent | none (not certificate-gated, unlike the target) | full | **out of scope** — revisit only on a published wire capture (`tidal-connect.md` §5) |

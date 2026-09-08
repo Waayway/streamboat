@@ -360,7 +360,9 @@ it as current without re-checking. What *is* solid: ReplayGain data arrives with
 as `trackReplayGain`/`albumReplayGain` + `trackPeakAmplitude`/`albumPeakAmplitude`, independently of
 the LUFS target, and that is all streamboat actually needs to implement the three-state toggle.
 Sone's implementation of the gain formula is `0.8 * min(10^((rg+4)/20), 1/peak)` with album/track
-context switching. [verified-source; LUFS target **[uncertain]**]
+context switching — **note the `0.8` is Sone's own addition, not TIDAL's formula**: TIDAL's SDKs
+compute `min(10^((rg+pre_amp)/20), 1/peak)` with no extra factor. [verified-source; LUFS target
+**[uncertain]**]
 
 **Audio spectrum visualiser.** `settings.audioSpectrumEnabled` /
 `settings/SET_AUDIO_SPECTRUM_ENABLED` — a visualiser toggle in the desktop app. [verified-source]
@@ -1310,7 +1312,7 @@ inside the official client — so the API column flags that.
 | Play / pause / next / previous / stop | Player bar | **MVP** | The whole point of the app | Local | ref:.../actionTypes.ts `playbackControls/*` |
 | Seek (absolute, relative ±) | Progress bar | **MVP** | Table stakes for any player | Local | `playbackControls/SEEK`, `SEEK_FORWARDS`, `SEEK_BACKWARDS` |
 | Volume, mute, unmute-to-previous | Player bar | **MVP** | Table stakes | Local | `playbackControls/SET_VOLUME`, `TOGGLE_MUTE`, `volumeUnmute` |
-| Manifest fetch + quality cascade (HI_RES_LOSSLESS→LOSSLESS→HIGH→LOW) | Internal | **MVP** | Nothing plays without this; retrofitting terminal-vs-transient error handling later is painful | `playbackinfopostpaywall`; SO, HT, ST, TT, tidalrs | ref:sone/src-tauri/src/tidal_api.rs; ref:python-tidal/tidalapi/media.py |
+| Manifest fetch + quality cascade | Internal | **MVP** | Nothing plays without this; retrofitting terminal-vs-transient error handling later is painful. **Correction: the exact ladder shown in an earlier draft here, `HI_RES_LOSSLESS→LOSSLESS→HIGH→LOW`, is not Sone's** — Sone's shipped `ORDER` is `[HI_RES_LOSSLESS, HI_RES, LOSSLESS, HIGH]` (`ref:sone/src-tauri/src/commands/playback.rs:33`), no `LOW`; the `→LOW` form matches tidalt's docs instead. Whether to keep the retired `HI_RES` rung and whether `LOW`/`HIGH` are in scope at all are open questions — don't print a single ladder as settled MVP scope. | `playbackinfopostpaywall`; SO, HT, ST, TT, tidalrs | ref:sone/src-tauri/src/commands/playback.rs; ref:python-tidal/tidalapi/media.py |
 | DASH (MPD) and BTS manifest handling | Internal | **MVP** | Both manifest types occur in normal use; missing one means some tracks silently fail | PT, HT, SO, MO, ST | ref:python-tidal/tidalapi/media.py |
 | Detect encrypted manifests and refuse cleanly | Internal | **MVP** | Legal posture, not just a feature — document it so nobody files "add Widevine support" | ST does exactly this | ref:strawberry/src/tidal/tidalstreamurlrequest.cpp |
 | Shuffle (seeded, reversible) | Player bar | **MVP** | Users notice immediately when shuffle is destructive or unseeded | Local | ref:.../store/PlayQueue.ts `lastShuffleSeed` |
@@ -1319,7 +1321,7 @@ inside the official client — so the API column flags that.
 | Queue source attribution ("Playing from …") | Player bar | **v1** | Small, cheap, and expected once the queue exists | Local | `playQueue.sourceName`, `sourceUrl` |
 | Lazy queue filling for huge lists | Internal | **v1** | Without it, playing a 10,000-track collection stalls on load | Local | `playQueue/FETCH_REST_OF_THE_TRACKS_AND_ADD_TO_QUEUE` |
 | Queue persistence across restarts | Implicit | **v1** | Expected baseline behaviour once a queue exists | Local; SO advertises it | ref:sone/README.md |
-| Gapless playback (preload next) | Internal | **MVP** | A native client's core reason to exist — the web player structurally cannot always guarantee this | GStreamer `playbin3` about-to-finish (HT) or `concat` + GStreamer ≥1.24 (SO) | ref:high-tide; ref:sone/README.md |
+| Gapless playback (preload next) | Internal | **MVP** | A native client's core reason to exist — the web player structurally cannot always guarantee this | GStreamer `playbin3` about-to-finish, needs GStreamer ≥1.24 (HT) or `concat`, no version floor (SO) — **correction: the 1.24 floor applies only to the `playbin3`/`about-to-finish` design; Sone's own `gapless_supported()` is just `gst::ElementFactory::find("concat").is_some()`, and `concat` has shipped since long before 1.24 — Sone's README claims a 1.24 floor, contradicted by its own code** | ref:high-tide; ref:sone/src-tauri/src/audio.rs:3302-3309 |
 | Autoplay / continuation when queue ends | Setting + queue | **v1** | Visible UX parity item; depends on catalogue recommendation endpoints, so not MVP | `content/LOAD_SUGGESTIONS`; SO implements | ref:sone/README.md |
 | Loudness normalization NONE/ALBUM/TRACK (ReplayGain from manifest) | Settings | **v1** | A checkbox implementation is a known-wrong shape (three states, not two) | Gain + peak in playbackinfo; SO, HT implement | ref:.../store/index.ts; ref:sone/README.md |
 | Bit-perfect / exclusive output (WASAPI exclusive, ALSA hw:; macOS mechanism **[inferred]**) | Sound output menu | **v1** | The reason a native client exists at all — the web player cannot do this | Local; SO (ALSA + WASAPI), TT (ALSA hw:) implement | ref:.../store/index.ts `PlayerDeviceMode`; ref:sone; ref:tidalt |
@@ -1429,7 +1431,9 @@ inside the official client — so the API column flags that.
    lossy AAC 320. Encode the ladder once, in one table, with the format arrays from
    `audioQualityToFormats`.
 3. **Build the playback core as a quality cascade with terminal-error classification** from day one
-   (Sone's model: try HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW; treat playbackinfo sub-statuses
+   (Sone's actual model: try HI_RES_LOSSLESS → HI_RES → LOSSLESS → HIGH, no `LOW` rung — correction,
+   an earlier draft here printed `HI_RES_LOSSLESS → LOSSLESS → HIGH → LOW`, which is not Sone's
+   shipped `ORDER`; treat playbackinfo sub-statuses
    **4005, 4010, 4030, 4031, 4032, 4034, 4035** — not a contiguous "4030–4035" range, 4033 is
    deliberately absent — as permanently unplayable and skip, retry only transient errors).
    Retrofitting this is painful.
@@ -1685,7 +1689,9 @@ inside the official client — so the API column flags that.
   lyrics, MPRIS, libsecret token storage.
 - `ref:sone/README.md` and `ref:sone-windows/README.md` — the most complete third-party feature set:
   bit-perfect ALSA/WASAPI exclusive, DAC format matching, signal-path transparency, ReplayGain with
-  album/track context, autoplay, gapless (GStreamer ≥1.24), video playback, miniplayer, full-screen
+  album/track context, autoplay, gapless (README claims GStreamer ≥1.24; the code contradicts this
+  — Sone's `concat`-based `gapless_supported()` has no such floor, see the quality-cascade and
+  gapless-playback feature-matrix rows above for the correction), video playback, miniplayer, full-screen
   player, queue persistence, themes, scrobbling, play reporting, proxy, MCP server, OBS overlay,
   `tidal://` deep links, playlist folders, profile editing. **Correction: neither README mentions
   MPRIS/SMTC implementation detail** — that lives in the Cargo manifests, not the READMEs (see

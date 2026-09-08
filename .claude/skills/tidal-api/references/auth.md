@@ -140,10 +140,10 @@ How reference projects ship credentials:
 | tidalrs | no — caller passes one in | n/a (library) |
 | tidal-cli | yes, its own **registered** official-API client `PYVtmSHMTGI9oBUs` | no |
 
-**streamboat's posture: make the client id a first-class, user-replaceable setting, defaulting to
-the ecosystem pair, exactly as Sone and Strawberry do.** This converts "TIDAL revoked the key, the
-app is dead" into "paste a different key," and it is the single highest-leverage decision for
-distro-packaging (a Debian ftpmaster objects far less to a user-supplied-credential mode).
+Recommendation and the fuller credential-handling-pattern analysis (embedded-obfuscated vs
+embedded-plaintext vs none, Sone's generator gap, Strawberry's CMake mechanism) are owned by
+`streamboat-engineering-baseline/references/secrets-and-tokens.md` §4 — cite it rather than
+re-deriving the recommendation here.
 
 Do not attribute a rationale-for-obfuscation comment to python-tidal — its source carries none (the
 double-base64 split is genuinely just obfuscation, and the file's only nearby comments are
@@ -161,6 +161,9 @@ grant_type=refresh_token
 &client_id=<same id family that minted it>
 &client_secret=<if you have one>
 ```
+(Sone also sends `scope=r_usr w_usr w_sub` on this refresh POST; python-tidal does not send `scope`
+at all here — both work, `ref:sone/src-tauri/src/tidal_api.rs:1375-1377`.)
+
 python-tidal switches between the PKCE and non-PKCE pair based on `session.is_pkce`. **The refresh
 response may omit `refresh_token`** — fall back to the existing one (Sone's `RefreshResponse`
 pattern); streamboat should too.
@@ -190,7 +193,7 @@ refresh call itself fails — that's the part missing above.
 GET https://api.tidal.com/v1/sessions
 Authorization: Bearer <access_token>
 ```
-Returns `sessionId`, `countryCode`, `userId`. python-tidal, Sone, sone-windows and tidalt call this
+Returns `sessionId`, `countryCode`, `userId`. python-tidal, Sone, Sone-windows and tidalt call this
 immediately after obtaining a token. **Strawberry does not** — it takes `countryCode` straight from
 the OAuth token response instead (`ref:strawberry/src/tidal/tidalservice.cpp:205-207`). Do not
 assume every client calls this endpoint.
@@ -242,22 +245,12 @@ enough for a real sign-out.)
 
 ## 8. Secure token storage per OS
 
-| Project | Mechanism |
-|---|---|
-| High Tide | freedesktop Secret Service via libsecret; JSON blob with token-type/access/refresh/expiry/is-pkce. Explicitly unlocks the default collection when **not** under Flatpak. |
-| Sone | settings JSON, encrypted at rest; master key in OS keyring with a file fallback. |
-| Strawberry | QSettings with a custom obfuscation layer. |
-| python-tidal / mopidy-tidal | plain JSON file; **drops `expiry_time`** — do not copy this, a reloaded session then has no expiry and relies entirely on reactive refresh. |
-| tidalt | system keychain, age-encrypted file fallback. |
-| tidal-sdk-android / ios | `EncryptedSharedPreferences` / Keychain. |
-
-streamboat: OS keyring first (libsecret / Windows Credential Manager / macOS Keychain, e.g. via a
-`keyring`-style crate), encrypted-file fallback for headless mode and Flatpak edge cases, file mode
-0600. Persist `token_type`, `access_token`, `refresh_token`, `expiry_time`, `is_pkce`, `client_id`,
-**and `client_unique_key`** (see next section) — do not repeat python-tidal's mistake of dropping
-`expiry_time`. Inside a Flatpak sandbox you cannot unlock the keyring yourself — go through the
-Secret portal; a headless/server mode has no keyring at all, so the encrypted-file fallback is not
-optional, it is the primary mechanism there.
+Per-OS mechanism table, the keyring-with-encrypted-file-fallback recommendation, the Windows
+blob-limit toolchain trap, the Secret-portal KDF requirement, and the atomic-write pattern are
+owned by `streamboat-engineering-baseline/references/secrets-and-tokens.md` §2-3 — cite it rather
+than restating. tidal-api-specific field to persist alongside the token: **`client_unique_key`**
+(see next section) — python-tidal's mistake of dropping `expiry_time` is exactly the kind of
+per-field gap that file's schema guidance is meant to prevent.
 
 ## 9. The `client_unique_key` persistence rule
 
@@ -272,7 +265,12 @@ value as device identity, not a nonce.
 
 **Generate this key once at first run, store it next to the refresh token, and send the identical
 value on every authorize/exchange/refresh call.** Getting this wrong burns through TIDAL's
-authorized-device cap and leaves stale phantom devices in the user's account settings.
+authorized-device cap and leaves stale phantom devices in the user's account settings — these are
+real, user-visible rows: TidaLuna's `UserClient` model shows exactly what a device entry carries
+(`{id, name, application, uniqueKey, authorizedForOffline, authorizedForOfflineDate, lastLogin,
+created, numberOfOfflineAlbums, numberOfOfflinePlaylists}`,
+`ref:TidaLuna/plugins/lib/src/redux/types/store/User.ts:3-23`), where `uniqueKey` is exactly this
+value — each regeneration is a new row a user has to notice and revoke by hand.
 
 ## 10. reCAPTCHA and why device code is the safer default
 
@@ -350,7 +348,12 @@ wins the OS handler for the whole scheme — an OAuth redirect delivered to the 
 streamboat, or a content link swallowed by streamboat's login handler, is a real and hard-to-debug
 failure. **Register a distinct scheme for streamboat (e.g. `streamboat://`) for both the OAuth
 redirect and content deep links; never use `tidal://login/auth` as streamboat's own redirect URI.**
-Accept — but do not register — the web forms users will paste:
+streamboat should still **parse** `tidal://` content links (the grammar above) so pasted links from
+other apps work, but **claiming** the `tidal://` OS handler is a separate, explicit opt-in setting,
+off by default — the same treatment given to claiming the `https://tidal.com/...`/`listen.tidal.com`
+web forms below. `headless-and-tidal-connect/references/daemon-architecture.md` §2 and
+`streamboat-engineering-baseline` should match this, not register `tidal://` unconditionally.
+Accept — but do not register by default — the web forms users will paste:
 `https://listen.tidal.com/{track,album,artist,playlist,video}/{id}`,
 `https://listen.tidal.com/album/{albumId}/track/{trackId}`, `https://tidal.com/browse/{type}/{id}`,
 `https://listen.tidal.com/folder/{folderId}` (`ref:python-tidal/tidalapi/media.py:211-214`,

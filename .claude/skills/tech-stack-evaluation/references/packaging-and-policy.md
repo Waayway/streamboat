@@ -20,12 +20,12 @@ channels are viable, and what do they cost the stack decision."
 
 | Target | Path | Notes / gotchas |
 | --- | --- | --- |
-| **Flathub** | `flatpak-builder` manifest, `org.gnome.Platform` (High Tide uses 50) or `org.freedesktop.Platform` | Exclusive ALSA needs a wider sandbox than High Tide's (`--socket=pulseaudio`, `--filesystem=xdg-run/pipewire-0:ro`); plan for `--device=all`, which reviewers question. AI policy applies — see §3. Trademark rule in §5 applies directly to TIDAL's marks. |
-| **Snap** | `snapcraft.yaml`, `base: core24`, `confinement: strict` | SONE's plugs include `audio-playback` and `alsa`; `alsa` is manual-connect, hence its README's `sudo snap connect sone:alsa`. SONE also overrides the gnome extension's WebKit bind path (it targets `gnome-46-2404`, which ships no WebKit → blank window) — a Tauri-on-Snap-specific trap. |
-| **AUR** | PKGBUILD | SONE ships both `sone` (from source) and `sone-bin`. Cheap, expected by Arch users. |
-| **deb / rpm** | `tauri build` emits both; SONE additionally builds them in Docker per-distro and hosts an apt/dnf/zypper repo on Cloudsmith | SONE's deb `depends`: `libwebkit2gtk-4.1-0`, `libgtk-3-0`, `libayatana-appindicator3-1`, `libgstreamer1.0-0`, `gstreamer1.0-plugins-{base,good,bad}`, `gstreamer1.0-libav`, `gstreamer1.0-alsa`, `libsecret-1-0`, `libasound2\|libasound2t64`, `librsvg2-common`, `pulseaudio-utils`. **No updater covers deb/rpm** — see `references/tauri-engineering-facts.md` §4. |
-| **AppImage** | `tauri build` | SONE sets `appimage.bundleMediaFramework: true` to pull GStreamer in. |
-| **Nix** | flake | Both SONE and High Tide ship `flake.nix`; `nix run github:owner/repo` is a zero-install demo path. |
+| **Flathub** | `flatpak-builder` manifest, `org.gnome.Platform` (High Tide uses 50) or `org.freedesktop.Platform` | **Correction, previously stated backwards here**: `--socket=pulseaudio` (as in High Tide's and Sone's shipped manifests) already grants `/dev/snd` — Flatpak's own sandbox helper binds it whenever that socket is requested. Exclusive ALSA `hw:` does **not** need `--device=all`; do not plan for it or expect reviewer pushback on this specific point. Canonical source: `streamboat-engineering-baseline/references/packaging-and-distribution.md` §1. AI policy applies — see §3. Trademark rule in §5 applies directly to TIDAL's marks. |
+| **Snap** | `snapcraft.yaml`, `base: core24`, `confinement: strict` | Sone's plugs include `audio-playback` and `alsa`; `alsa` is manual-connect, hence its README's `sudo snap connect sone:alsa`. Sone also overrides the gnome extension's WebKit bind path (it targets `gnome-46-2404`, which ships no WebKit → blank window) — a Tauri-on-Snap-specific trap. |
+| **AUR** | PKGBUILD | Sone ships both `sone` (from source) and `sone-bin`. Cheap, expected by Arch users. |
+| **deb / rpm** | `tauri build` emits both; Sone additionally builds them in Docker per-distro and hosts an apt/dnf/zypper repo on Cloudsmith | Sone's deb `depends`: `libwebkit2gtk-4.1-0`, `libgtk-3-0`, `libayatana-appindicator3-1`, `libgstreamer1.0-0`, `gstreamer1.0-plugins-{base,good,bad}`, `gstreamer1.0-libav`, `gstreamer1.0-alsa`, `libsecret-1-0`, `libasound2\|libasound2t64`, `librsvg2-common`, `pulseaudio-utils`. **No updater covers deb/rpm** — see `references/tauri-engineering-facts.md` §4. |
+| **AppImage** | `tauri build` | Sone sets `appimage.bundleMediaFramework: true` to pull GStreamer in. |
+| **Nix** | flake | Both Sone and High Tide ship `flake.nix`; `nix run github:owner/repo` is a zero-install demo path. |
 | **Windows** | `msi` (WiX) and `nsis` from `tauri build`; winget manifest on top | If GStreamer is the engine, you must ship it — GStreamer documents packing its MSI and running it silently via `msiexec` with `INSTALLDIR`, or Merge Modules; its docs warn that because plugins load on demand, "if you don't know in advance what files you'll play, you don't know which DLLs you need to deploy" — trimming is risky. MSIX/Store adds a further sandbox that makes WASAPI exclusive harder. See WebView2 install-mode table in `tauri-engineering-facts.md` §5. |
 | **macOS** | `app` + `dmg`; Developer ID Application cert; notarization via App Store Connect API key or Apple ID | Hardened Runtime plus a microphone/audio entitlement review is not needed for playback-only, but CoreAudio hog mode inside an App Sandbox is a known problem — plan for Developer ID + notarized DMG, **not** Mac App Store. Homebrew cask is the practical install path. |
 | **iOS** | Not App Store — see §4. TestFlight (90-day builds, still reviewed), ad-hoc/enterprise, or EU alternative marketplaces. | |
@@ -37,10 +37,10 @@ one CI matrix.
 
 ## §2 Toolkit and reference-project licences
 
-Reference clients are copyleft: SONE and sone-windows GPL-3.0-only; High Tide GPL-3.0; Strawberry
+Reference clients are copyleft: Sone and sone-windows GPL-3.0-only; High Tide GPL-3.0; Strawberry
 GPL-3.0; python-tidal LGPL-3.0-or-later; mopidy-tidal Apache-2.0; tidal-hifi MIT; tidalt Apache-2.0;
 tidalrs, libopenTIDAL, tidal-cli MIT; TidaLuna MS-PL; TIDAL's own SDKs Apache-2.0. If streamboat
-reuses *code* from SONE or High Tide it inherits GPL-3.0; reading them for API knowledge does not,
+reuses *code* from Sone or High Tide it inherits GPL-3.0; reading them for API knowledge does not,
 but the safe and community-consistent choice is GPL-3.0.
 
 Toolkit licences: Tauri MIT/Apache-2.0; React/Tailwind MIT; iced MIT; egui MIT/Apache; gpui
@@ -71,44 +71,23 @@ levels:
   date was not independently visible when fact-checked — "May 2026" is inferred from the press
   timeline, not confirmed from the commit itself.)
 - **The live document, read 2026-09-07, section "### Generative AI policy" at line 241, is a
-  disclosure regime rather than a ban.** Verbatim (all sentences confirmed directly from
-  `https://raw.githubusercontent.com/flathub-infra/documentation/main/docs/02-for-app-authors/02-requirements.md`):
-
-  > "Submitters must disclose any AI-generated code, documentation, packaging, or other material they
-  > know or reasonably believe is included in the application or its Flathub packaging."
-  >
-  > "AI used only for research, discussion, or debugging does not need disclosure when no generated
-  > material is included in the application or its Flathub packaging."
-  >
-  > "Disclosed AI-generated material is evaluated at reviewer discretion."
-  >
-  > **"Disclosure does not create a presumption of acceptance."** *(the sentence immediately
-  > following the one above — easy to omit, and the one that makes "Flathub remains reachable" a
-  > conclusion the evidence actually supports, rather than an optimistic reading of the
-  > reviewer-discretion sentence alone.)*
-  >
-  > "Reviewers may reject a submission, including without further review, based on the extent or
-  > role of generated material or concerns about its review, quality, or maintainability."
-  >
-  > "AI tools or agents must not open or automate Flathub submission pull requests, or generate
-  > their commit messages, descriptions, review comments, or replies."
-  >
-  > "Submitters must not request AI-agent reviews."
-  >
-  > "Undisclosed or materially misrepresented AI-generated material… may result in rejection."
-  >
-  > "Repeated violations may result in a permanent ban from future submissions and activities."
+  disclosure regime rather than a ban.** Full verbatim text is owned by
+  `streamboat-engineering-baseline/references/packaging-and-distribution.md` §1 — cite it rather
+  than re-quoting. **The sentence to never omit when summarizing this policy: "Disclosure does not
+  create a presumption of acceptance."** — it immediately follows the reviewer-discretion sentence,
+  and it's the one that makes "Flathub remains reachable" a conclusion the evidence actually
+  supports, rather than an optimistic reading of reviewer-discretion alone.
 
 **Operational consequence for streamboat**: Flathub remains reachable, but (a) the submission PR must
 be opened, described and discussed by the human owner, never by an agent; (b) AI involvement must be
 disclosed; (c) acceptance is discretionary, explicitly without a presumption in the submitter's
 favour. Do not make Flathub the *only* Linux distribution channel — AUR + deb/rpm repo + AppImage +
-Snap + Nix (all of which SONE ships) are unaffected by this policy. Also relevant: Flathub packaging
+Snap + Nix (all of which Sone ships) are unaffected by this policy. Also relevant: Flathub packaging
 of a Tauri app needs two offline-source generators regenerated every release, and that regeneration
-is itself automated in SONE's release pipeline — see `references/tauri-engineering-facts.md` §7 for
+is itself automated in Sone's release pipeline — see `references/tauri-engineering-facts.md` §7 for
 why that automation needs an explicit human/bot line drawn under this same policy.
 
-**SONE — the closest precedent — is itself published on Flathub, and its release automation sits
+**Sone — the closest precedent — is itself published on Flathub, and its release automation sits
 close to the line this policy draws (gap identified during fact-checking).** `ref:sone/README.md:11-14`
 carries a Flathub badge for `io.github.lullabyX.sone`; the repo's only GitHub Actions workflow,
 `ref:sone/.github/workflows/flathub-update.yml`, is an automated bot that regenerates
@@ -117,7 +96,7 @@ policy prohibits AI tools/agents from "open[ing] or automat[ing] Flathub submiss
 generat[ing] their commit messages, descriptions, review comments, or replies" — it is **unresolved**
 (and not addressed by Flathub's own text) whether that reaches an *automated, non-AI* release bot
 updating an *already-published* app's lockfile sources, as opposed to opening a new submission.
-Decide this explicitly before copying SONE's release-automation pattern: keep the human owner as the
+Decide this explicitly before copying Sone's release-automation pattern: keep the human owner as the
 one who opens and describes any Flathub-facing PR, and ask Flathub directly rather than assuming a
 reading either way.
 
@@ -136,6 +115,19 @@ reading either way.
   JavaScript. You may apply for an entitlement to use an alternative web browser engine in your
   app" — entitlement scoped explicitly to the EU and Japan. This is why a Tauri iOS build is fine
   (WKWebView) but a bundled Chromium is not.
+- **5.2.3** (verbatim, verified 2026-09-08 at `developer.apple.com/app-store/review/guidelines/`):
+  "Apps should not facilitate illegal file sharing or include the ability to save, convert, or
+  download media from third-party sources (e.g. Apple Music, YouTube, SoundCloud, Vimeo, etc.)
+  without explicit authorization from those sources. Streaming of audio/video content may also
+  violate Terms of Use, so be sure to check before your app accesses those services. Authorization
+  must be provided upon request." This is the guideline most directly on point for a streaming
+  client, separate from 5.2.2's general ToS-authorization requirement — it puts *both* streaming and
+  any save/download capability in scope. It bears directly on Open decision #8 (offline caching for a
+  logged-in subscriber): whatever streamboat's own on-disk cache design turns out to be, on iOS it
+  reads as "download media from a third-party source" under this guideline, independent of whether
+  5.2.2's authorization problem is ever solved. It also reinforces streamboat's own posture (see
+  SKILL.md's owner-decisions section): a player for subscribers, not a downloader — nothing here
+  should be read as a reason to build offline caching as a download/export feature.
 - **Unresolved: whether GPL-3.0 itself is independently incompatible with App Store distribution,
   beyond 5.2.2's ToS-authorization problem** (gap identified during fact-checking, not researched in
   this pass). The FSF/VLC's long-standing position is that GPLv2/v3's terms conflict with the App

@@ -29,7 +29,10 @@ type dump.
 
 ## 1. Quality ladder and the naming trap
 
-Source of truth: `ref:TidaLuna/plugins/lib/src/classes/Quality.ts`. Seven ordered rungs (`idx`
+**This table is the canonical wire-enum/metadata-tag/UI-label mapping across every streamboat
+skill** — when writing code-facing prose elsewhere, use the wire enum (`HI_RES_LOSSLESS`, etc.),
+reserve UI labels ("Max", "High", "Low") for quoted user-facing strings, and point back here rather
+than re-deriving the mapping. Source of truth: `ref:TidaLuna/plugins/lib/src/classes/Quality.ts`. Seven ordered rungs (`idx`
 0–6), each with a name and badge colour, and **two separate lookup tables that disagree with each
 other at the bottom two rungs** — this is the trap. Per the provenance note above, `Quality.ts` is
 `classes/` code, so the rung **names** ("HiRes", "Sony630", "Low", "Lowest") and **badge colours**
@@ -68,6 +71,12 @@ LOW                       → [HEAACV1]
 ```
 The inverse (`audioFormatsToQuality`) is at the same file, lines 263-284.
 
+**Independent corroboration of the Codec/format column**: the official Android SDK's own
+`/trackManifests` format parameter is a closed enum listing exactly `HEAACV1, AACLC, FLAC,
+FLAC_HIRES, EAC3_JOC` (`ref:tidal-sdk-android/tidalapi/src/main/kotlin/com/tidal/sdk/tidalapi/generated/models/TrackManifestsAttributes.kt:52-60`)
+— the same five codecs as the table above (`EAC3_JOC` is the Atmos row), from a second,
+independently-generated source rather than the same `tidal-sdk-web` file the table is built from.
+
 MQA and Sony 360 Reality Audio were both removed from TIDAL on **24 July 2024** (announced 17 June
 2024); the legacy enum values still exist in the type system for old catalogue data. Dolby Atmos
 (EAC3-JOC/AC-4) remains, mobile/TV/car only — not on desktop (confidence ~0.85; see the main
@@ -99,7 +108,7 @@ GET https://api.tidal.com/v1/tracks/{id}/playbackinfopostpaywall
     &assetpresentation=FULL
     &countryCode=XX
 ```
-(`ref:python-tidal/tidalapi/media.py:507-516`; also `urlpostpaywall` with `urlusagemode=STREAM` for
+(`ref:python-tidal/tidalapi/media.py:508-517`; also `urlpostpaywall` with `urlusagemode=STREAM` for
 a direct URL, used by `tidalt`/`tidalrs`.) TidaLuna's own client-side API helper calls
 `https://desktop.tidal.com/v1/tracks/{id}/playbackinfo` with the same query shape and headers
 `Authorization: Bearer` + `x-tidal-token` — evidence of the host the official client's requests
@@ -133,46 +142,21 @@ caller has one (`ref:tidal-sdk-web/packages/player/src/internal/helpers/playback
 destructured from `mediaProduct.shareCode`). Manifests expire after **3,600,000 ms (1 hour)**
 (`ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts:79,362-377`).
 
-**Quality cascade**: request the highest tier, degrade on failure. **Terminal sub-statuses — the
-literal list, not a range**: `4005, 4010, 4030, 4031, 4032, 4034, 4035`
-(`ref:sone/src-tauri/src/tidal_api.rs:18`). Treat these as permanently unplayable and skip; retry
-only transient errors.
+**Quality cascade**: request the highest tier, degrade on failure. **Terminal sub-statuses**: see
+`tidal-api/references/transport.md` §6 for the canonical table (the literal list
+`4005, 4010, 4030, 4031, 4032, 4034, 4035`, with `4006`/`4033` deliberately excluded because both
+recover — 4006 is streaming-privileges-lost, 4033 is a user-fixable subscription up-sell). Product
+consequence for this skill: treat the terminal list as permanently unplayable and skip the track;
+surface 4033 as an account/entitlement message, not a "this track is broken" skip; treat 4006 as
+transient (almost certainly the same condition the desktop client surfaces as
+`player/STREAMING_PRIVILEGES_REVOKED`, §10 — **[inferred]**, not stated in either source).
 
-**Playbackinfo sub-statuses occupy 4000–4999; auth failures use a separate namespace** (11002/11003
-token, 6001 session, 1002 pending), so a 4xxx sub-status on a 401 response is never fixed by
-refreshing the token (`ref:sone/src-tauri/src/tidal_api.rs:11-13`,
-`PLAYBACKINFO_SUB_STATUS_RANGE = 4000..=4999`). Scope the classifier to the 4xxx range before
-matching it against the terminal list below.
-
-**Two sub-statuses in the same 4xxx range are deliberately excluded from that terminal list, and
-must NOT evict the track** (`ref:sone/src-tauri/src/tidal_api.rs:15-18`, doc comment on
-`TERMINAL_SUB_STATUSES`):
-- **4006** — streaming privileges lost; recovers (`ref:sone/src-tauri/src/tidal_api.rs:15-18`).
-  Almost certainly the same condition the desktop client surfaces as
-  `player/STREAMING_PRIVILEGES_REVOKED` (§10) — a second device taking over the one-stream slot,
-  with playback resuming once the user reclaims it — but that identification is **[inferred]**, not
-  stated in either source. Treat as transient/recoverable either way, not a dead track.
-- **4033** — subscription up-sell (the account needs a higher tier for this content). This is
-  user-fixable (upgrade), not permanently unplayable — surface it as an account/entitlement message,
-  not a "this track is broken" skip.
-
-An error classifier that only encodes the seven-item terminal list and treats everything else in
-the 4xxx range as "also terminal" will wrongly delete tracks on 4006/4033.
-
-**Encryption**: manifests can be DRM-protected (FairPlay at `fp.fa.tidal.com/license`, Widevine at
-`api.tidal.com/v2/widevine`) — that's the path the official web player and SDKs take. The
-unofficial-API path reaches unencrypted FLAC/AAC manifests for the subscriber's own account.
-**Strawberry explicitly refuses to play anything where `encryptionKey` is non-empty or
-`encryptionType`/`securityType` != `NONE`**, showing a user-facing error instead
-(`ref:strawberry/src/tidal/tidalstreamurlrequest.cpp:244-247,295-298,303-307`). **Whether TIDAL
-delivers an encrypted or unencrypted stream at all is not a fixed property of a track — Strawberry's
-own refusal message states it "depends on the client ID in use"**
-(`ref:strawberry/src/tidal/tidalstreamurlrequest.cpp:246-248,297-299`). This changes how the
-quality cascade and the refuse-cleanly path should be designed: encryption is a per-request
-outcome of which client ID made the call, not a per-track fact you can cache once and reuse — see
-`docs/research/tidal-api.md` for client-ID provenance. Copy Strawberry's posture regardless: detect
-encryption and decline, never circumvent — this is both the correct legal stance and a clean
-failure mode. Document it in the README so nobody files "add Widevine support."
+**Encryption refusal**: see `audio-pipeline/references/tidal-manifest-api.md` §5 for the canonical
+rule (Strawberry's three refusal conditions and the never-decrypt policy). Product framing: the
+unofficial-API path reaches unencrypted FLAC/AAC manifests for the subscriber's own account;
+whether a given request comes back encrypted is a per-request outcome of which client ID made the
+call, not a per-track fact — copy Strawberry's posture, detect and decline, never circumvent, and
+document it in the README so nobody files "add Widevine support."
 
 **Region unavailability / media replacement**: the v2 spec exposes a `replacement` relationship on
 `tracks`/`videos`/`albums` and a `replaceMedia=<relationship paths>` query param, with each
@@ -313,9 +297,12 @@ support Autoplay ([verified-web, unfetched]).
 `settings.audioNormalization: "NONE" | "ALBUM" | "TRACK"`, action `settings/TOGGLE_NORMALIZATION`
 (the *only* normalization action in the dump — no `SET_NORMALIZATION`, so the UI's cycling logic
 isn't shown). ReplayGain data arrives with playbackinfo as `trackReplayGain`/`albumReplayGain` +
-`trackPeakAmplitude`/`albumPeakAmplitude`. Sone's gain formula:
-`0.8 * min(10^((rg+4)/20), 1/peak)` with album/track context switching (album context when playing
-an album, track context otherwise).
+`trackPeakAmplitude`/`albumPeakAmplitude`, with album/track context switching (album context when
+playing an album, track context otherwise). See `audio-pipeline/references/playback-behavior.md`
+§4 for the canonical gain formula — TIDAL's own SDKs use
+`min(10^((replayGain+preAmp)/20), 1/peakAmplitude)` with `preAmp=4`; Sone's shipped code adds an
+extra `0.8` factor on top that is Sone-specific, not TIDAL's formula — do not copy the `0.8`
+without deliberately choosing quieter-than-TIDAL output.
 
 **The commonly repeated "-14 LUFS, on by default on mobile" figure is [uncertain, possibly
 stale]** — sourced only to 2019–2020 rollout coverage, not re-verified for 2026. Build against the
@@ -433,3 +420,28 @@ workaround as of this reading (`ref:tidal-hifi/docs/known-issues.md`, which also
 working on removing/changing DRM"). Relevant if streamboat ever considers embedding a web view for
 playback — one more argument for the manifest/decode path this skill already recommends over
 touching DRM at all (§3).
+
+**Which EME system each browser uses, if you ever do touch the web-player DRM path**: Chrome, Edge,
+and Firefox use Widevine; Safari uses FairPlay (report §8, "Web player" table). This is consistent
+with iOS's FairPlay-only path below — Apple platforms are FairPlay end to end, everything else is
+Widevine — and is one more reason the unofficial-API manifest path (§3), which never touches EME on
+any platform, is the simpler design.
+
+**Mobile playback technology, for corroboration/context when re-verifying this dump against a live
+install** (not buildable now — mobile is future scope, see SKILL.md "Owner decisions already
+made"): **iOS/iPadOS** plays through `AVQueuePlayer` with FairPlay-encrypted HLS, license server
+`https://fp.fa.tidal.com/license` (`ref:tidal-sdk-ios/Sources/Player/PlaybackEngine/Internal/AVQueuePlayer/AVQueuePlayerWrapper.swift`,
+`ref:tidal-sdk-ios/Sources/Player/Common/DRM/FairPlayLicenseFetcher.swift:23-24`). **Android** plays
+through ExoPlayer/media3
+(`ref:tidal-sdk-android/player/playback-engine/src/main/kotlin/com/tidal/sdk/player/playbackengine/ExoPlayerPlaybackEngine.kt`),
+same five-codec format list as the corroboration note in §1 above.
+
+**Two client-modification caveats that matter to "re-verify against a live install" (SKILL.md
+version caveat) specifically**: **TidaLuna explicitly does not support the Windows Store build of
+the desktop app** — "Luna does not support the Windows Store version of Tidal. Please install the
+desktop version if you have the Store version." (`ref:TidaLuna/README.md:19-20`) — so re-verifying
+this skill's desktop claims on a Windows-Store-installed TIDAL is a dead end; install the regular
+desktop build instead. **On macOS, re-signing is required after modifying the installed app** —
+`codesign --force --deep --sign - /Applications/TIDAL.app`
+(`ref:TidaLuna/README.md:39-44`) — or macOS reverts/refuses the modified `app.asar`; budget for this
+step in any macOS-side re-verification, not just a Linux/Windows one.

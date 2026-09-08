@@ -12,15 +12,26 @@ ownership, caching/crypto/settings, packaging, code quality, and what to borrow/
 
 1. Stack
 2. Module map
-3. IPC design — and the state-ownership inversion streamboat must NOT copy
+3. IPC design — and the state-ownership inversion streamboat must NOT copy (incl. the corrected
+   anchor-poll-plus-interpolate position model and its settle-window guard)
 3a. Seeking
 3b. Gapless prefetch/arming policy (the frontend half of gapless)
+3c. Track-availability pre-flight and playback error classification
+3d. The queue data model (five collections, not one list)
+3e. Autoplay and the explicit-content filter
+3f. Navigation and scroll restoration
 4. Caching, settings, secrets
-5. Theming, lyrics, miniplayer, integration surfaces, music videos, play reporting
+4a. `countryCode` provenance and account-endpoint log redaction
+4b. The playlist/favorites-mutation ETag precondition
+4c. The rate-limit contract, with actual numbers
+4d. Scrobble threshold and trigger points
+5. Theming, lyrics, miniplayer, integration surfaces, music videos, play reporting (incl. the
+   Android-client-identity impersonation in the play-reporting wire format)
 6. Packaging and CI — reusable scripts, but no CI at all
 7. Code quality: strong source, weak process (and what "151 tests" does not mean)
 8. Borrow / avoid, consolidated
-9. sone-windows — the Windows fork, and why one codebase could serve both
+9. Sone-windows — the Windows fork, and why one codebase could serve both (corrected: Windows-only,
+   no macOS arm)
 10. Bus factor / contributor counts
 
 ## 1. Stack
@@ -104,7 +115,7 @@ overlay, and miniplayer surfaces work by **mirroring** frontend-pushed state int
 `Arc<RwLock<McpState>>` (`ref:sone/src-tauri/src/mcp/state_mirror.rs`), not by being the source of
 truth.
 
-**This is why sone-windows is a fork rather than a genuinely portable core** (§9), and it is the
+**This is why Sone-windows is a fork rather than a genuinely portable core** (§9), and it is the
 single biggest thing streamboat's architecture must invert: **the core process must own session,
 queue, and transport; every UI — desktop, CLI, MPRIS, HTTP — is a thin subscriber.** A queue that
 lives in a webview cannot serve a CLI or a headless daemon as a first-class citizen; it can only
@@ -124,11 +135,39 @@ device_changed, format_change_failed}` — values of one event, not separate eve
 `pkce-login-success`/`-error`/`-cancelled`, `scrobble-auth-error`, `tray:{toggle-play,next-track,
 prev-track}`, and `mpris:{play,pause,stop,seek,set-position,set-volume,set-shuffle,
 set-loop-status,set-fullscreen,open-uri}` — the `tray:*`/`mpris:*` events flow **up** into the
-webview for it to act on, not down from it (the same inversion as the queue). **Position is
-polled, not pushed**: the frontend runs `setInterval(syncPosition, 500)`
-(`ref:sone/src/hooks/useProgressScrub.ts:38`); the miniplayer, overlay, and signal-path panel each
-poll independently on their own separate intervals. **Make an explicit push-vs-poll decision for
-streamboat's own core↔UI protocol** rather than reproducing N independent ad hoc pollers.
+webview for it to act on, not down from it (the same inversion as the queue).
+
+**Corrected (third fact-check pass, 2026-09-08) — this file's own earlier draft of the position
+model was itself wrong; "position is polled, not pushed, every consumer polls independently" is
+removed.** Sone already implements the anchor-plus-interpolate pattern streamboat should copy:
+`ref:sone/src/lib/playbackPosition.ts` is a module-level singleton that polls the backend **once**
+every 2000 ms (`setInterval(fetchAndAnchor, 2000)`, one `invoke<number>("get_playback_position")`
+call) and caches `{position, timestamp}`. Every consumer, including the 500 ms
+`useProgressScrub.ts:38` timer, calls `getInterpolatedPosition()` — a **pure local computation**
+(`anchor.position + (now - anchor.timestamp)/1000`), never a fresh IPC round-trip. The miniplayer
+and overlay windows are **pushed to**, not polled from: `useMiniplayerEmitter.ts:167`
+(`setInterval(scheduleEmit, 1000)`) and `useOverlayBridge.ts:100` each broadcast the interpolated
+state outward once a second from the main webview. `useSignalPathRefresh.ts:30` polls a
+*different* backend command (signal-path/format info), not position. **Net shape: one 2 s backend
+anchor poll, local interpolation everywhere, 1 s push heartbeats to secondary windows** — not "N
+independent pollers."
+
+The genuinely transferable, non-obvious mechanism (previously undocumented anywhere in this skill)
+is the **settle-window guard**: for `SETTLE_WINDOW_MS = 3000` after a track change, a freshly
+polled position more than `SETTLE_AHEAD_TOLERANCE_SECS = 2` ahead of the interpolated value is
+**discarded**, because at a `concat` gapless boundary GStreamer's `query_position` briefly reports
+the *previous* track's cumulative pipeline runtime before the new per-track segment takes over —
+without this guard the progress bar flashes forward to a stale cumulative value on every gapless
+advance. A `loadingTrack` freeze stops interpolation during a user-initiated load (so the bar
+doesn't visibly climb from 0 before the real position anchors), and a `trackGeneration` counter
+discards any poll response that resolves after a newer track change has already superseded it.
+Seeking anchors immediately via `notifySeek()` and deliberately never touches `trackResetTime`, so
+a forward seek is never itself rejected by the settle-window guard. **Copy the anchor-plus-
+interpolate-plus-settle-window shape for streamboat's own core↔UI protocol** — a naive per-consumer
+poll wastes IPC, and a naive raw position push fights the same gapless-boundary glitch that
+motivated the guard in the first place. Source: `ref:sone/src/lib/playbackPosition.ts` (whole
+file); `ref:sone/src/hooks/{useProgressScrub.ts:38,useMiniplayerEmitter.ts:167,
+useOverlayBridge.ts:100,useSignalPathRefresh.ts:30}`.
 
 ## 3a. Seeking
 
@@ -170,16 +209,104 @@ Backend side: `commands/playback.rs:209` `set_next_track(trackId, qid, useTrackG
 `clear_next_track`. Prediction: `ref:sone/src/lib/gaplessPredict.ts::pickGaplessNext`; post-advance
 bookkeeping: `ref:sone/src/hooks/usePlaybackActions.ts:494-540`.
 
+## 3c. Track-availability pre-flight and playback error classification (added by the third
+fact-check pass)
+
+The first implementer question after "how do I get a stream URL" — and the only complete answer
+to it in the reference set lives in one 79-line file, `ref:sone/src/lib/trackAvailability.ts`.
+
+- **Metadata pre-flight** — `isTrackUnavailable(track)` is true if `streamReady === false`, or
+  `allowStreaming === false`, or `streamStartDate` parses to a future timestamp. Videos are exempt
+  (`itemType === "video"` always returns false — not audio-stream-gated). **Undefined fields count
+  as available**, so a response that omits these flags does not grey out the whole catalogue. All
+  three fields live on both the track and album shapes (`ref:sone/src/types.ts:113-116,183-185`).
+- **Error classification** — `isUnplayableError(err)` is a narrow allowlist: HTTP 404, 410, 451,
+  and 401 *only when* the body carries a terminal `subStatus` (§6 of `api-auth-streaming.md`). **A
+  bare 401 stays transient** — that's ordinary auth expiry, not an unplayable track. Everything
+  else (403, 429, 5xx, network, decode) is transient: halt playback, keep the track in the queue,
+  do not auto-skip. `isRateLimitedError` splits 429 out on its own, reading a `retryAfterSecs`
+  field back out of the error body.
+- **Skip-loop bound**: `MAX_CONSECUTIVE_PLAY_FAILS = 3` (`ref:sone/src/hooks/
+  usePlaybackActions.ts:80`); resets to 0 on any successful play (`:331,537,893`).
+- A maintenance comment worth copying structurally: *"Mirrors TERMINAL_SUB_STATUSES in
+  src-tauri/src/tidal_api.rs — keep in sync"* — Sone duplicates this table across the IPC boundary.
+  Owning the queue in the core (§3 above) removes that duplication by construction.
+
+## 3d. The queue data model (added by the third fact-check pass — Implication 28's highest-ranked
+recommendation had no data model until now)
+
+"streamboat's core must own session/queue/transport" (§3 above) needs a shape, not just an
+ownership rule. Sone's — matching the official client's own shape — is **five separate
+collections**, not one flat list (`ref:sone/src/atoms/playback.ts:56-109`):
+
+| Atom | Holds |
+| --- | --- |
+| `queueAtom` | the live, possibly-shuffled context queue |
+| `originalQueueAtom` | `Track[] \| null` — pre-shuffle order, so unshuffle restores rather than re-sorts |
+| `manualQueueAtom` | user "play next" insertions — consumed **before** the context queue |
+| `historyAtom` | played tracks |
+| `playbackSourceAtom` / `contextSourceAtom` | what's actually playing vs. what the user is browsing — the pair behind a "Playing from …" chip |
+
+`repeatAtom` is an int (0=off/1=all/2=one), `shuffleAtom` a boolean, both persisted. Two policy
+atoms sit alongside: `useTrackGainAtom` — true = track ReplayGain (shuffle/mixed queue), false =
+album ReplayGain (album playing in order) — the concrete rule behind `use_track_gain` in
+`api-auth-streaming.md` §7's normalization discussion; and `userPausedAtom`, a global explicit-
+pause-intent flag "so that gapless advanceToTrack can never resume audio the user paused" — the
+same desired-vs-actual playback-state split the official client uses independently
+(`playbackControls.playbackState` vs. `.desiredPlaybackState`, `ref:TidaLuna/plugins/lib/src/
+classes/PlayState.ts:33-70`).
+
+## 3e. Autoplay and the explicit-content filter (added by the third fact-check pass)
+
+Two shipped features this skill previously never mentioned; both are queue-contract decisions,
+not UI toggles, and cannot be retrofitted after the queue schema is fixed.
+
+- **Autoplay** (`ref:sone/src/hooks/usePlaybackActions.ts:1090-1120`): when the queue drains and
+  `autoplayAtom` is on, read `currentTrack.mixes?.TRACK_MIX` (bail if absent), call
+  `getMixItems(trackMixId)`, filter out anything already in `historyIds` (seeded with the current
+  track), anything explicit if the filter is on, and anything `isTrackUnavailable`; take the head,
+  push the rest into the queue, force `useTrackGain = true` ("radio = mixed context"). Default:
+  **off**.
+- **Explicit filter** (`allowExplicitAtom`, persisted, default **on**): consulted at **ten**
+  separate call sites in the same file (`:668,678,712,741,1038,1101,1467,1555,1599` — play,
+  enqueue, play-album, play-playlist, autoplay, shuffle-all). That call-site count is the evidence
+  it must be a **queue-layer invariant** in streamboat's core, enforced once at the mutation path,
+  not a filter bolted onto each UI screen separately.
+
+## 3f. Navigation and scroll restoration (added by the third fact-check pass — the UI-patterns
+half of this skill previously had almost nothing)
+
+Sone uses **no router library** (no react-router in `package.json`). Navigation is one jotai atom
+holding a discriminated union: `currentViewAtom = atom<AppView>({type: "home"})`, where `AppView`
+is a `ViewTarget` (`home | album | playlist | favorites | search | viewAll | artist | …`,
+`ref:sone/src/types.ts:213-283`) plus `__navId`/`__navSession` bookkeeping. Destination-page atoms
+carry optional `*Info` payloads (title/cover the navigating component already has), so the
+destination renders a filled header instantly and fetches the rest — a cheap perceived-performance
+trick worth copying regardless of framework. `useNavigation.navigate()`
+(`ref:sone/src/hooks/useNavigation.ts:17-28`) dismisses the drawer/maximized player on every
+navigation, stamps the view via `pushView` (scroll-memory + `__navId`), and wraps the write in
+`startTransition` so React shows the destination skeleton without blocking on unmounting the
+previous page. The `popstate` listener lives in `AppInitializer` — browser history is bridged to
+the atom, not owned by a router.
+
+**Scroll restoration** (`ref:sone/src/hooks/useScrollRestoration.ts`) is the hard part and is
+fully worked out: `QUIET_MS = 3000` (list growth restarts the quiet period so a slow first page
+keeps the restore alive), `MAX_RESTORE_MS = 15000` ceiling so an infinitely-growing feed is not
+chased forever, abort on `wheel`/`pointerdown`/`keydown` (`pointerdown` specifically so a
+scrollbar-thumb drag — which emits `scroll` with no `wheel` — wins against an in-flight restore),
+`SMOOTH_RUNWAY = 1.5` viewport jump-then-glide so long restores don't read as a blur,
+`SETTLE_ANIMATION_MS = 1200` during which recording is paused so intermediate positions don't
+overwrite the offset being restored, and a `prefers-reduced-motion` check. Related hooks:
+`useInfiniteScroll`, `useRestoreLoader`, `useViewTab`, `useEscapeDismiss`, `useContextMenu`,
+`useShortcuts` (35 hook files total in `src/hooks/`).
+
 ## 4. Caching, settings, secrets
 
-**Disk cache** (`cache.rs`): four tiers with TTL and stale-while-revalidate grace:
-
-| Tier | Contents | TTL | SWR grace | Subdir |
-| --- | --- | --- | --- | --- |
-| `UserContent` | playlists, likes, favorites | 15 min | 1 h | `user` |
-| `Dynamic` | artist bios, charts, home page | 4 h | 24 h | `dynamic` |
-| `StaticMeta` | album tracklists, credits | 7 d | 30 d | `static` |
-| `Image` | album art, avatars | 30 d | 90 d | `images` |
+**Disk cache** (`cache.rs`): four tiers with TTL and stale-while-revalidate grace — table, the 2 GiB
+cap, LRU eviction, the directory-versioning migration mechanism, and the encrypt-every-entry
+consequence for startup ordering are owned by
+`streamboat-engineering-baseline/references/config-cache-logs-telemetry.md` §2; cite it rather than
+restating the tiers here.
 
 Entries are AES-GCM-encrypted on disk, **keyed by a SHA-256 hex digest**
 (`ref:sone/src-tauri/src/cache.rs:2,654-658` — a prior pass called this "FNV-style"; that hash is
@@ -206,15 +333,34 @@ places, `commands/auth.rs:395,561` — read the expression, not the comment),
 `mcp_enabled`/`mcp_port` (5577)/`mcp_token`, `overlay_enabled`/`overlay_port`
 (5578)/`overlay_host` (127.0.0.1 default — this is a user setting, not hard-coded;
 `overlay/server.rs:31-34` explicitly handles a `0.0.0.0` bind, unlike the MCP server which is
-loopback-only), `report_plays` (default true).
+loopback-only), `report_plays` (default true). **Settings-file location is Linux-only in this
+description** — Sone hardcodes `~/.config/sone/`; streamboat's own settings/cache/log locations
+must be resolved per platform (`~/.config/streamboat`, Windows `%APPDATA%\streamboat`, macOS
+`~/Library/Application Support/streamboat`), not assumed to be a single `dirs`-crate default that
+happens to match Linux.
+
+**Proxy support** (`ProxySettings`, the `proxy` field above): `build_http_client` builds an HTTP or
+SOCKS5 `reqwest::Proxy` from user-supplied host/port/credentials, but only after rejecting a host
+string containing `@`, `/`, `?`, `#`, or whitespace — characters that could otherwise break the
+`scheme://host:port` string it builds and inject into the proxy URL
+(`ref:sone/src-tauri/src/tidal_api.rs:60-86`). A malformed host silently falls back to no proxy
+rather than erroring. Worth copying as-is if streamboat exposes a user-configurable proxy: the
+validation is small, cheap, and the injection risk it closes is real.
 
 **Crypto** (`crypto.rs`): AES-256-GCM. On-disk layout `b"SONE" | version:u8 | nonce:12 |
 ciphertext+tag`; `decrypt` returns non-magic input verbatim so unencrypted legacy files migrate
-transparently. Key resolution: OS keyring (`keyring::Entry::new("sone","master-key")`, must be
-exactly 32 bytes) → file `~/.config/sone/sone.key` → generate. **A file backup is always written
-even when the keyring works**, because "keyring may be unreachable on next launch (e.g. AppImage
-with a different D-Bus session)." File mode `0600` on Unix; the raw key is `zeroize`d after
-constructing the cipher.
+transparently. Key resolution, `load_or_generate_key` (`ref:sone/src-tauri/src/crypto.rs:78-110`),
+is three branches, not one path that "always" writes a file: (1) OS keyring hit
+(`keyring::Entry::new("sone","master-key")`, must be exactly 32 bytes) → return immediately,
+writes nothing; (2) existing file `~/.config/sone/sone.key` → opportunistically push the key into
+the keyring, still writes no file; (3) neither exists → generate a fresh key **and only here**
+write the file backup, with the comment "keyring may be unreachable on next launch (e.g. AppImage
+with a different D-Bus session)" attached to this branch specifically, not to the function as a
+whole. **Correction, previously stated as "always written even when the keyring works" here** —
+that copies Sone's comment without reading which branch it sits in; a keyring-first user on a
+second run never gets a key file at all. File mode `0600` on Unix; the raw key is `zeroize`d after
+constructing the cipher. Canonical, line-by-line source:
+`streamboat-engineering-baseline/references/secrets-and-tokens.md` §3.
 
 **Embedded credentials** (`embedded_config.rs`, generated by `scripts/gen_embedded.py`): four
 credential strings as XOR-masked byte arrays — `stream_key_a/b` (device-code id/secret),
@@ -224,7 +370,72 @@ without them. **This is obfuscation, not security** — trivially reversible, an
 naming (`STREAM_SALT_*`, `CODEC_HINT_*`) is deliberately misleading about what it does. **Avoid
 this exact pattern in streamboat** — if credentials ship at all, say so plainly.
 
-## 5. Theming, lyrics, miniplayer, integration surfaces
+## 4a. `countryCode` provenance and account-endpoint log redaction (added by the third fact-check
+pass)
+
+Nearly every unofficial v1 call takes `countryCode`; Sone bootstraps it from `GET
+https://api.tidal.com/v1/sessions` (no query params), which returns `{userId, countryCode}` — the
+same call is how the client learns its own user id for `/users/{id}/…` endpoints. **The default
+before login is the literal `"US"`** (`ref:sone/src-tauri/src/tidal_api.rs:1290,1307`), so an
+un-bootstrapped client silently serves the US catalogue rather than failing outright — decide that
+trade-off (fail loudly vs. default) deliberately in streamboat rather than inheriting it by
+accident. Also worth copying: the error logger suppresses response bodies for account endpoints —
+`let is_account_endpoint = url.contains("/users/") || url.contains("/sessions"); …
+body=<redacted: account endpoint>` (`:1470-1483`) — a cheap, concrete redaction rule for a client
+whose logs users will paste into bug reports.
+
+## 4b. The playlist/favorites-mutation ETag precondition (added by the third fact-check pass)
+
+The report is otherwise entirely read-path; this is the write-path gap. Every mutation GETs the
+playlist first, reads the `etag` response header (defaulting to `"*"` if absent), and sends it
+back as `If-None-Match` on the write — `add_track_to_playlist`
+(`ref:sone/src-tauri/src/tidal_api.rs:1973-1999`: GET `/playlists/{id}?countryCode=…` → etag →
+`POST /playlists/{id}/items`, form body `trackIds`, `onDupes=FAIL`, `onArtifactNotFound=FAIL`),
+the same pattern at `:2029-2044` (remove/reorder), `:2072-2084` (`DELETE /playlists/{id}`) and
+`:3615-3632`. **python-tidal does the same independently**: it caches `self._etag` from every
+playlist fetch (`ref:python-tidal/tidalapi/playlist.py:69,91,228,273,534`) and sends
+`{"If-None-Match": self._etag}` on each mutation (`:593,626,717,758`). Two things to design in:
+the etag here is a **write precondition**, not a cache validator (nobody in the set sends it on a
+*read* to get a cheap 304 — see `api-auth-streaming.md` §10 for that unexploited affordance), and
+`onDupes`/`onArtifactNotFound` (fail vs. skip on a duplicate or a dead track id) is a real API
+surface worth exposing deliberately. Skip this and every playlist mutation returns an
+inexplicable 412/428.
+
+## 4c. The rate-limit contract, with actual numbers (added by the third fact-check pass —
+`rate_gate.rs` was named four times elsewhere in this skill with no numbers attached)
+
+Whole contract, 62 lines, `ref:sone/src-tauri/src/rate_gate.rs`: `DEFAULT_COOLDOWN_SECS = 5`
+("long enough to break a debounced prefetch loop, short enough not to feel bricked") used when a
+429 carries no usable `Retry-After`; `MAX_COOLDOWN_SECS = 120` clamp, because an unclamped server
+value could brick the client for hours. State is a single `AtomicU64` absolute deadline —
+lock-free, consultable while the client's own mutex is held; **sleeping is always the caller's
+job, with the mutex released**. `trip_at` uses `fetch_max`, so concurrent 429s can only lengthen,
+never shorten, the cooldown. `parse_retry_after_value` accepts **only the delta-seconds form** and
+deliberately rejects the HTTP-date form rather than mis-parsing it — the documented failure mode
+is a *shorter* cooldown than intended, never garbage. Known caveat left in-source: the absolute
+wall-clock deadline means a backwards clock jump can outlast the intended duration, bounded only
+by the 120 s clamp. `cooling_down_at(now)`/`trip_at(now, secs)` take `now` as a parameter purely
+for testability — copy that shape for testable rate-limit code generally.
+
+## 4d. Scrobble threshold and trigger points (added by the third fact-check pass)
+
+`meets_threshold()` first guards on track length — **tracks 30 seconds or shorter never scrobble**
+(`if self.track.duration_secs <= 30 { return false; }`, `ref:sone/src-tauri/src/scrobble/mod.rs:
+146-149`, whose doc comment names it explicitly: "track is longer than 30 seconds") — then applies
+`listened >= duration/2 || listened >= 240.0` seconds (`:143-152`), evaluated at four points —
+track change (`:246`), a periodic peek at the current track (`:314-321`), explicit user stop
+(`:336-342`), and shutdown (which also persists the queue, `:355-361`) — each guarded by a
+`scrobbled` flag so a track is never double-counted. **Copy the 30-second guard, not just the
+percentage/floor rule** — without it, interludes and skits scrobble on first play. **The official
+client uses the identical percentage/floor rule** independently:
+`PlayState.MIN_SCROBBLE_DURATION = 240000` ms, `MIN_SCROBBLE_PERCENTAGE = 0.5`
+(`ref:TidaLuna/plugins/lib/src/classes/PlayState.ts:11-30`), tracking `cumulativePlaytime`
+**separately from wall-clock position** because it "can be longer than track duration" — seeking
+backwards and replaying a section accumulates playtime, so drive the threshold from accumulated
+playback, not a point-in-time position check. Providers implemented: Last.fm, Libre.fm,
+ListenBrainz, MusicBrainz, sharing one offline queue.
+
+## 5. Theming, lyrics, miniplayer, integration surfaces, music videos, play reporting
 
 - **Theming** (`theme_config.rs`): external `<config>/theme.json`, `{version:1, preset,
   custom:{accent, background}}`, 15 named presets kept in sync with `src/lib/theme.ts` (*Violet
@@ -257,16 +468,23 @@ this exact pattern in streamboat** — if credentials ship at all, say so plainl
   handled — do not assume this one is loopback-locked the way MCP is.
 - **Play reporting** (`tidal_report/`): reports plays back to TIDAL so "Recently Played" works,
   capturing the *actually served* `audioQuality`/`audioMode`/`assetPresentation` from the
-  playbackinfo response. User-disableable via `report_plays` (default on). **Wire format**: POSTs
-  to `https://ec.tidal.com/api/event-batch` (`tidal_report/event.rs:6`). `SessionEvent` carries
-  `session_id`, `requested_product_id`, `actual_product_id`, `quality`, `audio_mode`,
-  `presentation`, `source`, `start_ts_ms`, `end_ts_ms`, `end_asset_pos` (`event.rs:89-100`),
-  serialized as a mobile-shaped JSON body with `playbackSessionId`, `isPostPaywall: true`,
-  `productType: "TRACK"` (`event.rs:103-115`) — note requested vs. actual product id/quality are
-  both reported. There is a retry/offline queue (`tidal_report/queue.rs`). **Mint
-  `playbackSessionId` at stream-resolution time, not report time** — it is the same id the
-  official SDK sends as `x-playback-session-id` on its manifest request, so one id must span
-  resolve → play → report.
+  playbackinfo response. User-disableable via `report_plays` (default on). Full wire format (the
+  `ec.tidal.com/api/event-batch` endpoint, the AWS SQS `SendMessageBatch` form encoding, the nine
+  `Headers` keys, the pinned Android device identity, the 30-second threshold, JWT attribution) is
+  owned by `tidal-api/references/play-logging-and-privileges.md` §1-4 — cite it rather than
+  restating. Sone-implementation specifics worth keeping here: **Mint `playbackSessionId` at
+  stream-resolution time, not report time** — it is the same id the official SDK sends as
+  `x-playback-session-id` on its manifest request, so one id must span resolve → play → report.
+  The offline outbox (`tidal_report/queue.rs`) is encrypted with the same `Crypto` container as
+  settings, capped at `MAX_ENTRIES = 500` /
+  `MAX_ATTEMPTS = 10` / `MAX_AGE_SECS` = 14 days, and — worth copying regardless of whether
+  streamboat impersonates anything — stores **only the frozen `MessageBody`**; the bearer-token-
+  carrying `Headers` attribute is rebuilt fresh at send time, so a stolen queue file leaks no live
+  token. Outcome is a four-way enum: `Accepted`; `AuthFailed` → refresh once, retry, else queue;
+  `Retryable` → requeue; `SenderFault` → drop, never requeue. **Decision this forces**: making
+  "Recently Played" work on the unofficial path means maintaining a client-identity pin that must
+  be bumped roughly as often as TIDAL ships — there is no visible middle ground between doing that
+  and not reporting plays at all.
 - **Music videos are not in the Rust/GStreamer/ALSA engine at all.** `GET
   /videos/{id}/playbackinfopostpaywall` (`tidal_api.rs:3816`) and `GET /videos/{id}`
   (`tidal_api.rs:3871`) exist, but playback is `hls.js 1.6.16` inside the webview
@@ -328,7 +546,7 @@ only** — the HTTP layer, the manifest parsers against real payloads, and the w
 **zero** automated coverage. The frontend's Vitest tests use hand-written `invoke` stubs
 (`src/hooks/useGaplessPrefetch.test.ts:36-39`), not a request-mocking library. Contrast:
 `ref:tidalrs/Cargo.toml` ships `mockito` as a dev-dependency, and Music Assistant's TIDAL provider
-has real mocked-API tests (`project-profiles.md` §8a). **The transferable pattern — parser/
+has real mocked-API tests (`project-profiles.md` §5a). **The transferable pattern — parser/
 transport split plus captured request/response fixtures replayed in CI — is not demonstrated by
 any project in this reference set.** It is work streamboat must design, not code to port; see
 `docs/research/engineering-baseline.md`.
@@ -348,15 +566,38 @@ any project in this reference set.** It is work streamboat must design, not code
 - The packaging scripts and the `sync-version.mjs` idea (§6 above; full detail in
   `packaging-distribution.md`).
 - MPRIS-over-a-command-channel: `mpris.rs:8-46` (§5 above).
+- **Signal-path transparency as a cheap differentiator**: `signal_path.rs` (PRISTINE verdict,
+  reads `pactl` + `/proc/asound`) and `pipeline_probe.rs` (pad-caps probes, decoded vs. output) —
+  see §2's module map. Once streamboat has the equivalent pipeline probes for its own audio path
+  (needed anyway for bit-perfect verification, §1 above), showing the user the decoded format,
+  every conversion, and what the device actually received costs little extra and is a real
+  user-facing feature no other project in this set exposes this clearly.
 - The pure decision-functions-with-tests pattern (§7) as a template for what to port with
   confidence vs what needs a hardware test matrix.
+- The anchor-poll-plus-interpolate position model and its gapless-boundary settle-window guard
+  (§3 above) — this is the corrected, positive lesson, not the "N pollers" anti-pattern an earlier
+  draft of this skill described.
+- The track-availability pre-flight + narrow error-classification allowlist (§3c) — the
+  single most immediate thing to design before writing queue/auto-advance logic.
+- The five-collection queue model and the desired-vs-actual pause-state split (§3d).
+- The ETag write-precondition pattern for playlist/favorites mutations (§4b) — get this wrong and
+  every mutation 412s.
+- The rate-limit contract's actual numbers (§4c) and the scrobble threshold's cumulative-playtime
+  rule (§4d) — both are small, concrete, and otherwise easy to get wrong by guessing.
+
+**Design deliberately, do not simply avoid:**
+- Play reporting's Android-client-identity impersonation (§5, play reporting) — decide whether
+  streamboat reports plays at all before discovering that doing so on the unofficial path means
+  maintaining a version pin that drifts roughly as often as TIDAL ships.
 
 **Avoid (with reasons):**
 - The queue-in-the-frontend architecture — see §3. This is the single most important thing to
   invert, not copy.
 - `embedded_config.rs` XOR obfuscation — security theatre with dishonestly-named identifiers.
 - 7,200-line `tidal_api.rs` — split by resource (auth, catalog, playback, library, playlists,
-  pages, search, user) from day one.
+  pages, search, user) from day one, behind one shared request layer that injects
+  `countryCode`/bearer/`x-tidal-client-version` and handles 401/refresh centrally — see
+  `api-auth-streaming.md` §4a; splitting by resource alone does not give you that layer.
 - `csp: null` in `tauri.conf.json` — set a real CSP.
 - Reproducing zero CI — Sone's *scripts* are reusable, its *process* is not.
 - `=`-pinning every Tauri crate — makes security updates a manual chore; pin the toolchain, use a
@@ -367,7 +608,7 @@ any project in this reference set.** It is work streamboat must design, not code
 Binding MCP/overlay servers without an explicit opt-in is avoided *correctly* by Sone (both
 default off) — keep that, do not "helpfully" enable either by default.
 
-## 9. sone-windows — the Windows fork, and why one codebase could serve both
+## 9. Sone-windows — the Windows fork, and why one codebase could serve both
 
 `ref:sone-windows` · https://github.com/lvllaby/sone-windows · GPL-3.0-only · v0.16.0 · last
 commit 2026-05-17.
@@ -422,6 +663,18 @@ platform split behind a trait/`cfg` boundary in the audio module from commit one
 for a platform** — this is a stronger, more concrete version of the same lesson as §3's
 state-ownership inversion: both are about drawing the seam in the right place before the second
 platform/client exists, not after.
+
+**Correction (third fact-check pass): Sone-windows is Windows-only, not "Windows (+Linux/mac via
+Tauri)."** Every sink-construction and device-enumeration branch in `audio.rs` is
+`#[cfg(target_os = "linux")]` or `#[cfg(target_os = "windows")]` only — there is **no macOS arm**,
+so this fork does not build on macOS. `souvlaki` (which does support macOS upstream) is declared
+only under `[target.'cfg(target_os = "windows")'.dependencies]`, confirming there is no macOS
+media-controls code here either (`grep -rn macos ref:sone-windows/src-tauri/Cargo.toml` — no
+hits). **This means the entire reference set contains zero Tauri/Rust macOS TIDAL precedent** —
+see `audio-engineering.md` §6 (output) and `packaging-distribution.md` §8 (the full five-item
+macOS work list: output, media integration, signing, GStreamer bundling, keyring) ("Tauri is
+cross-platform" is not evidence that a `#[cfg]`-split GStreamer sink is; the macOS arm was simply
+never written, upstream or in this fork).
 
 ## 10. Bus factor / contributor counts
 

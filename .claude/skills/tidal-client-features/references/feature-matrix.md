@@ -8,7 +8,7 @@ Priority tiers: **MVP** = required for a first usable release; **v1** = required
 a TIDAL client; **later** = post-1.0; **out-of-scope** = will not build (with reason).
 
 Reference-client abbreviations used in the "who implements" column: HT = High Tide, SO =
-Sone/sone-windows, TH = tidal-hifi, TL = TidaLuna, MO = mopidy-tidal, ST = Strawberry, TT = tidalt,
+Sone/Sone-windows, TH = tidal-hifi, TL = TidaLuna, MO = mopidy-tidal, ST = Strawberry, TT = tidalt,
 CL = tidal-cli, PT = python-tidal (library-level support, not a standalone client). A reference
 client implementing a feature is evidence the API is reachable, not proof streamboat's own
 architecture should copy that client's implementation.
@@ -42,13 +42,13 @@ Table of contents:
 | Play / pause / next / previous / stop | **MVP** | Local — `playbackControls/*` | The whole point of the app |
 | Seek (absolute, relative ±) | **MVP** | Local — `SEEK`, `SEEK_FORWARDS`, `SEEK_BACKWARDS` | Table stakes |
 | Volume, mute, unmute-to-previous | **MVP** | Local — `SET_VOLUME`, `TOGGLE_MUTE` | Table stakes |
-| Manifest fetch + quality cascade (HI_RES_LOSSLESS→LOSSLESS→HIGH→LOW) | **MVP** | `playbackinfopostpaywall`; SO, HT, ST, TT, tidalrs — ref:sone/src-tauri/src/tidal_api.rs, ref:python-tidal/tidalapi/media.py | Nothing plays without it; retrofitting terminal-vs-transient handling later is painful |
+| Manifest fetch + quality cascade | **MVP** | `playbackinfopostpaywall`; SO, HT, ST, TT, tidalrs — ref:python-tidal/tidalapi/media.py | Nothing plays without it; retrofitting terminal-vs-transient handling later is painful. **Correction, previously misattributed**: the `HI_RES_LOSSLESS→LOSSLESS→HIGH→LOW` order shown here does not come from Sone — Sone's shipped `ORDER` is `[HI_RES_LOSSLESS, HI_RES, LOSSLESS, HIGH]` (`ref:sone/src-tauri/src/commands/playback.rs:33`), no `LOW`; the `→LOW` form matches tidalt's docs instead (`ref:tidalt/docs/architecture.md:17`, itself flagged stale elsewhere against tidalt's own code). Whether to keep the retired `HI_RES` rung and whether `LOW`/`HIGH` are in scope at all are both still open — see `audio-pipeline` Open decisions #3/#13 and `tidal-oss-landscape` Unverified — don't treat either ladder as settled MVP scope. |
 | DASH (MPD) and BTS manifest handling | **MVP** | PT, HT, SO, MO, ST — ref:python-tidal/tidalapi/media.py | Both occur in normal use; missing one silently fails some tracks |
 | Detect encrypted manifests and refuse cleanly | **MVP** | ST does this — ref:strawberry/src/tidal/tidalstreamurlrequest.cpp | Legal posture, not just a feature |
 | Shuffle (seeded, reversible) | **MVP** | Local — `lastShuffleSeed` | Users notice immediately if shuffle is destructive/unseeded |
 | Repeat off / all / one | **MVP** | Local — `RepeatMode {Off=0,All=1,One=2}` | Table stakes |
 | Queue view: reorder, remove, clear, play-next vs add-to-queue | **MVP** | Local — `ADD_NEXT` vs `ADD_LAST`, `MOVE_TRACK`, `REMOVE_AT_INDEX`, `CLEAR_QUEUE` | Play-next vs add-to-queue as distinct insert positions is tested immediately |
-| Gapless playback (preload next) | **MVP** | GStreamer `playbin3` about-to-finish (HT) or `concat` + GStreamer ≥1.24 (SO) | A native client's core reason to exist — the web player can't always guarantee this |
+| Gapless playback (preload next) | **MVP** | GStreamer `playbin3` about-to-finish, needs GStreamer ≥1.24 (HT) or `concat` (SO) | A native client's core reason to exist — the web player can't always guarantee this. **Correction, previously misattributed the 1.24 floor**: it applies only to the `playbin3`/`about-to-finish` design (High Tide's); Sone's `concat` design has no such floor — `gapless_supported()` is just `gst::ElementFactory::find("concat").is_some()`, and `concat` has shipped since long before 1.24 (`ref:sone/src-tauri/src/audio.rs:3302-3309`; Sone's own README claims a 1.24 floor, contradicted by its own code — cite the code). |
 | Streaming-quality selector | **MVP** | `settings/SET_STREAMING_QUALITY` | Choosing quality is core to why users pay for TIDAL |
 | Queue source attribution ("Playing from …") | **v1** | Local — `sourceName`, `sourceUrl` | Cheap and expected once the queue exists |
 | Lazy queue filling for huge lists | **v1** | Local — `FETCH_REST_OF_THE_TRACKS_AND_ADD_TO_QUEUE` | Without it, a 10,000-track collection stalls on load |
@@ -114,7 +114,7 @@ Table of contents:
 
 | Feature | Tier | API availability / who implements | Rationale |
 | --- | --- | --- | --- |
-| Be controlled by MPRIS (Linux) / SMTC (Windows) / Now Playing (macOS) | **MVP** | `souvlaki` 0.8.3 covers all three in one crate — Linux via `dbus`/`dbus-crossroads`, Windows SMTC, macOS `MPNowPlayingInfoCenter` (ref:sone-windows/src-tauri/Cargo.lock:5041-5055) — but the reference clients still split per platform: sone-windows uses it for Windows SMTC only (ref:sone-windows/src-tauri/Cargo.toml:64); Sone/Linux uses `mpris-server` instead (ref:sone/src-tauri/Cargo.toml:66); High Tide hand-rolls Python D-Bus MPRIS (ref:high-tide/src/mpris.py); tidal-hifi has its own MPRIS service | Expected baseline OS integration on every desktop platform; evaluate `souvlaki` per platform before assuming a split is needed |
+| Be controlled by MPRIS (Linux) / SMTC (Windows) / Now Playing (macOS) | **MVP** | `souvlaki` 0.8.3 covers all three in one crate — Linux via `dbus`/`dbus-crossroads`, Windows SMTC, macOS `MPNowPlayingInfoCenter` (ref:sone-windows/src-tauri/Cargo.lock:5040-5056) — but the reference clients still split per platform: Sone-windows uses it for Windows SMTC only (ref:sone-windows/src-tauri/Cargo.toml:64); Sone/Linux uses `mpris-server` instead (ref:sone/src-tauri/Cargo.toml:66); High Tide hand-rolls Python D-Bus MPRIS (ref:high-tide/src/mpris.py); tidal-hifi has its own MPRIS service | Expected baseline OS integration on every desktop platform; evaluate `souvlaki` per platform before assuming a split is needed |
 | Hardware media keys | **MVP** | Via the media-controls integration above — ref:tidal-hifi/src/constants/mediaKeys.ts | Comes largely free once OS media-control integration exists |
 | Last.fm scrobbling | **v1** | Native has `lastFm/*`; SO adds Last.fm + Libre.fm + ListenBrainz — ref:.../actionTypes.ts, ref:sone/README.md | TIDAL itself treats this as headline (own onboarding step, own route — `LOADER_DATA__LASTFM`) |
 | System tray + minimise/close to tray + autostart | **v1** | `settings.desktop.closeToTray`, `autoStartMode`; SO, TH — ref:.../store/index.ts | Expected desktop-app behaviour on Windows/macOS/Linux |
@@ -141,7 +141,7 @@ Table of contents:
 | Universal share links (`?u`) — producing | **v1** | Trivial string append — ref:tidal-hifi/src/features/tidal/url.ts | Cheap once share links exist |
 | Sidebar nav: Feed, Uploads | later | Depends on social/creator scope decisions | Not part of the primary navigation loop until scoped |
 | Native fullscreen | later | Local — `view/ENTER_NATIVE_FULLSCREEN` | Nice-to-have window-management feature |
-| Mini player (floating) | later (differentiator) | **Not in native app**; SO, sone-windows add one — ref:sone/README.md | Cheap, popular with OSS clients, no schema risk |
+| Mini player (floating) | later (differentiator) | **Not in native app**; SO, Sone-windows add one — ref:sone/README.md | Cheap, popular with OSS clients, no schema risk |
 | Language / localisation | later | Client ships i18n bundles (`locale.bundles`) — ref:.../store/index.ts | Nice-to-have, large surface area, no functional blocker |
 | Universal share-link resolution via `/dspSharingLinks` | later | `/dspSharingLinks`, `/shares`, `/savedShares` (v2 spec, no OSS client) — ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json | Relevant only if streamboat wants to *resolve* an incoming shared link |
 | Theming / custom colours | later (differentiator) | **Not in native app**; SO (15 presets + picker), TH (themes) — ref:sone/README.md | Cheap, visible, no schema risk |

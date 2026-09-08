@@ -12,28 +12,63 @@ Table of contents:
 
 ## 1. ALSA and small-device audio constraints
 
-**CPU is not the binding constraint for FLAC.** FLAC decoding at 24/192 is a low-cost integer
-workload; the reference deployments (mopidy-tidal, upmpdcli's plugin, Music Assistant) all serve
-24/192 from Pi-class hardware. The documented sizing advice for the *Connect binary specifically*
-is "a Raspberry Pi 3/4 will work … for a usb dac and hi-res audio, consider at least a Pi 3b+ or,
-even better, a Pi 4b" (`ref:tidal-connect/README.md:161`), and on an Asus Tinkerboard the author had
-to keep the CPU governor above about 600 MHz to avoid crackling. **No measured decode-CPU benchmark
-was found anywhere in the reference set; do not quote a percentage.**
+**Single-stream 24/192 FLAC decode on Pi-class hardware is empirically fine — three shipping
+precedents (mopidy-tidal, upmpdcli's plugin, Music Assistant) all serve it from Pi-class hardware.**
+That is not the same claim as "headless CPU/memory feasibility is settled" — see
+`audio-pipeline/references/os-integration.md` §8, which owns the unmeasured case this file must not
+reassure past: **two concurrent gapless decode branches** (§6 below; audio-pipeline prices this at
+~23 MB of decoded PCM per branch at 24/192) **plus TLS plus DASH manifest parsing**, run together,
+is what actually gates whether a GStreamer-based engine or a pure-Rust engine is the right headless
+build — and no benchmark of that combined load exists anywhere in the reference set. The documented
+sizing advice for the *Connect binary specifically* is "a Raspberry Pi 3/4 will work … for a usb dac
+and hi-res audio, consider at least a Pi 3b+ or, even better, a Pi 4b"
+(`ref:tidal-connect/README.md:161`), and on an Asus Tinkerboard the author had to keep the CPU
+governor above about 600 MHz to avoid crackling — single-stream anecdotes, not a benchmark. **No
+measured decode-CPU benchmark was found anywhere in the reference set for any case; do not quote a
+percentage. Treat `audio-pipeline/references/os-integration.md` §8's measurement recipe (decode
+24/192 stereo FLAC to `/dev/null` with each engine candidate on Pi 3B+/4/5, both single-branch and
+two-branch) as required before committing to an engine for the headless build, not optional.**
 
 **The real costs are elsewhere**: HTTPS + TLS for the CDN fetch, DASH manifest parsing, and any
 resampling. Avoid resampling entirely in bit-perfect mode (`ref:sone` and `ref:tidalt` both do).
 
 **USB DAC / I²S output — the most complete small-device output recipe in the reference set**:
 `ref:tidalt/internal/player/alsa.c` opens `hw:` devices and negotiates formats with
-`snd_pcm_hw_params`, preferring `S32_LE > S16_LE > S24_3LE > S24_LE` for 16-bit sources and
-`S24_3LE > S24_LE > S32_LE` for 24-bit. The S32_LE-first ordering for 16-bit sources is because
-"many USB DACs (e.g. CS43198-based devices) have a buggy or non-functional S16_LE USB endpoint but
-work correctly via their native 32-bit endpoint" — **not** because of "a Hidizs USB issue" (a
-mislabeling worth avoiding; the Hidizs S9 Pro Plus appears in a *different* comment about anomalous
-period-size values, 87 frames). It falls back to `plughw:` **only** when format negotiation is
-refused, retries on device-busy against `hw:`, and recovers xruns with `snd_pcm_recover`. It also
-reserves the device over D-Bus (`org.freedesktop.ReserveDevice1.Audio<N>`, in
-`ref:tidalt/internal/player/mpv.go:328-359`) so PipeWire yields it, releasing on stop.
+`snd_pcm_hw_params`. Full recipe (both format-preference orders, period-before-buffer ordering with
+the 87-frame anecdote, `org.freedesktop.ReserveDevice1` reservation with release-on-pause, and
+format-refusal-vs-EBUSY with memoised `plughw:` fallback) is owned by
+`audio-pipeline/references/output-backends.md` §1-2 — cite it rather than restating; this is the
+same recipe referenced again in `headless-daemon-precedents.md` §2 of this skill, so fix drift in
+one place, not two.
+
+**Four further ALSA lifecycle invariants live in the same codebase around pause/resume/skip and
+unrecoverable output errors, and none is inferable from the one-line summary above — these are the
+failures that make a headless box "randomly stop working".** [`ref:tidalt/internal/player/mpv.go:979-985,1023-1028,1055-1080`,
+`ref:tidalt/internal/player/alsa_fallback_test.go:9-40`]
+
+1. **Pause closes the device and releases the D-Bus reservation**, so the PCM handle is nil whenever
+   the stream loop returns from a paused state. Reusing the handle on a pause→skip path
+   "dereferences a NULL pcm inside libasound on the first `snd_pcm_drop`/`writei` — a SIGSEGV that
+   takes the whole process down" (`mpv.go:1058-1066`). The reopen condition must therefore be
+   `formatChanged || deviceClosed`, not `formatChanged` alone.
+2. **Format refusal and `EBUSY` must be distinguishable errors.** Only a genuine `configure_hw_pcm`
+   refusal may downgrade the output to `plughw:`; a plain `snd_pcm_open` failure (`EBUSY`, `ENODEV`)
+   must not — "after a pause releases the D-Bus reservation, WirePlumber can still hold its handle",
+   and treating that as a format refusal "would permanently downgrade a DAC that is perfectly capable
+   of bit-perfect output" (`alsa_fallback_test.go:9-26`).
+3. **The `plughw:` fallback must be memoised per device** so pause/resume and gapless transitions "do
+   not re-pay a known-failing `hw:` open plus its reservation stall" (`alsa_fallback_test.go:29-40`).
+4. **An unrecoverable output error must not signal track completion.** tidalt returns with an
+   `aborted` flag set "so the UI does not auto-advance into the same broken state"
+   (`mpv.go:1023-1028`) — this is the *output*-error half of the "on an unplayable track,
+   skip-with-event or stop" decision in `daemon-architecture.md` §4, which otherwise only ever
+   considers *source* errors (a bad manifest, a 429).
+
+Still unaddressed anywhere in this skill or its precedents: device **removal** mid-playback (a USB
+DAC unplugged mid-track → `ENODEV`/`SND_PCM_STATE_DISCONNECTED`, which `snd_pcm_recover` does not
+fix) and hotplug re-selection when the configured card name reappears. Specify a bounded
+reopen-with-backoff and an `output_error` event (`daemon-architecture.md` §4 already names this
+event; this is its concrete trigger) rather than a silent stuck-paused daemon.
 
 **Sample-rate switching**: a bit-perfect daemon must reopen the PCM when the track's rate changes,
 which produces an audible gap on most DACs. Decide whether streamboat prioritises bit-perfect (gap
@@ -74,9 +109,9 @@ Range-capable local proxy (`headless-daemon-precedents.md` §1 — but note that
 legal-posture caveat* before copying its storage design, not just its buffer size). Adopt a
 comparable read-ahead buffer and make it configurable; sizing itself is [inferred, not measured].
 
-**Two specific hardware failure modes are well documented in the Pi audio community and cheap to
+**Three specific hardware failure modes are well documented in the Pi audio community and cheap to
 check in `streamboat doctor` (§5) — an earlier draft of this reference said "no guidance found" for
-both, which was too pessimistic:**
+the first two, which was too pessimistic:**
 
 1. **Wi-Fi power management.** Pi Wi-Fi defaults to `power_save` on, a documented cause of audio
    stalls and dropped connections. Fix: `iw dev wlan0 set power_save off`, persisted via a systemd
@@ -208,6 +243,27 @@ skill:
 **Decisions to state explicitly, not leave to accident**: where the queue state file lives
 (`$XDG_STATE_HOME`); whether it is written per mutation or on shutdown plus a timer; whether a
 restart resumes playing or paused; how many tracks ahead are prefetched.
+
+**MPD already answers all three with named config keys, and there is a collision with the "stable
+per-item uid" recommendation in `daemon-architecture.md` §4 that will produce a real bug if left
+unstated.** MPD's `state_file`: "Specify the state file location. The parent directory must be
+writable by the MPD user (+wx)." `restore_paused`: "If set to yes, then MPD is put into pause mode
+instead of starting playback after startup. Default is no" — i.e. reference MPD's *default* is to
+**resume playing** on restart, arguably the wrong default for a headless box that reboots unattended
+at 3am; decide it deliberately rather than inheriting MPD's default by accident. The collision: MPD's
+own spec states song ids are "assigned to a song when it is added, and will stay the same, no matter
+how much it is moved around" but "Song ids are not preserved across MPD restarts." So either
+streamboat persists its own item `uid`s and maps them to freshly issued MPD `songid`s on each start —
+and must then bump the `playlist` queue-version number so connected clients resync rather than
+trusting stale `plchanges` state — or it persists the MPD-facing ids too and deviates from reference
+MPD behaviour. State which. The same choice governs whether a native-protocol client reconnecting
+after a daemon restart sees a revision *gap* (resync from a fresh snapshot, per the reconnect rule in
+`daemon-architecture.md` §4) or a revision *reset*, which the monotonic-revision design does not
+currently cover — specify that a restart resets the revision and that clients must detect this via a
+per-boot session id carried in the snapshot. [documented-web:
+https://raw.githubusercontent.com/MusicPlayerDaemon/MPD/master/doc/user.rst (`state_file`,
+`restore_paused`); https://raw.githubusercontent.com/MusicPlayerDaemon/MPD/master/doc/protocol.rst
+(song id stability across restarts)]
 
 **Sleep/idle inhibition and resume-from-suspend are a related, unaddressed pair on a desktop host**
 (a laptop running the GUI-embedded core, not just a Pi): acquire a sleep/idle inhibitor only while

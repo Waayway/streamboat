@@ -9,12 +9,12 @@ always clone drift, not an error; prefer the named function/constant when both a
 
 | `ref:<project>` | GitHub URL | Commit read | What it is |
 | --- | --- | --- | --- |
-| `python-tidal` | https://github.com/EbbLabs/python-tidal (current home; the README still links `tamland/python-tidal`, the project's earlier home) | `9c41fbe` | The de-facto reference unofficial-API client (Python, LGPL-3.0-or-later, v0.8.11). Nearly every endpoint in this skill was first confirmed here. |
+| `python-tidal` | https://github.com/EbbLabs/python-tidal (formerly `tamland/python-tidal`) | `9c41fbe` | The de-facto reference unofficial-API client (Python, LGPL-3.0-or-later, v0.8.11). Nearly every endpoint in this skill was first confirmed here. |
 | `high-tide` | https://github.com/Nokse22/high-tide | `49f2472` | GTK4/libadwaita Linux client built on python-tidal. PKCE-only login, libsecret storage, Flatpak packaging. |
 | `sone` | https://github.com/lullabyX/sone | `21494b9` | Tauri (Rust) native client — the most defensively-engineered TIDAL API layer reviewed (rate gate, sub-status classification, play reporting). Primary source for request-hardening patterns. |
 | `sone-windows` | https://github.com/lvllaby/sone-windows | `f2009f2` | Windows port of Sone; same API layer, WASAPI/SMTC specifics. |
 | `strawberry` | https://github.com/strawberrymusicplayer/strawberry | `5d24706` | Qt6 multi-service player. Source of the "refuse encrypted streams" posture and the legacy `api.tidalhifi.com` host. |
-| `mopidy-tidal` | https://github.com/tehkillerbee/mopidy-tidal | `18abb3b` | Headless Mopidy backend. Source for the caching-proxy pattern and proof that CDN URLs support HTTP Range. |
+| `mopidy-tidal` | https://github.com/EbbLabs/mopidy-tidal (formerly `tehkillerbee/mopidy-tidal`) | `18abb3b` | Headless Mopidy backend. Source for the caching-proxy pattern and proof that CDN URLs support HTTP Range. |
 | `tidal-hifi` | https://github.com/Mastermindzh/tidal-hifi | `b1326db` | Electron wrapper around the official web player with a Widevine-capable (castlabs) Electron build — proves the "wrap the sanctioned Player module" architecture. |
 | `TidaLuna` | https://github.com/Inrixia/TidaLuna | `d8cd6bc` | A mod/plugin loader running *inside* the official desktop client. Contains an `OLD_AES` decryptor — cited here only as a documented fact, never as something to copy. |
 | `tidalt` | https://github.com/Benehiko/tidalt | `6cf18c9` | Go TUI client, FFmpeg + raw ALSA. Plaintext-with-comment client credentials. |

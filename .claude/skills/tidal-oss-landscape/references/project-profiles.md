@@ -1,6 +1,6 @@
 # Project profiles — everything except Sone
 
-Sone and sone-windows have their own file (`sone-deep-dive.md`); auth/streaming/manifest detail
+Sone and Sone-windows have their own file (`sone-deep-dive.md`); auth/streaming/manifest detail
 common to all projects is in `api-auth-streaming.md`; audio-engineering comparisons are in
 `audio-engineering.md`. This file is the per-project narrative for everything else, corrected
 against the fact-check pass. Full sourcing: `docs/research/oss-landscape.md` §4-§17.
@@ -22,6 +22,8 @@ against the fact-check pass. Full sourcing: `docs/research/oss-landscape.md` §4
 11. tidalrs — Rust API client library
 12. TidalSwift — Apple-platform precedent (read-only, do not copy)
 13. Smaller / historical projects
+14. Headless precedents named but never fetched (upmpdcli, spotifyd, ncspot, psst, go-librespot)
+15. Module maps for the projects that didn't have one
 
 ## 1. High Tide — the owner's named reference #2
 
@@ -67,9 +69,10 @@ volume" is on in settings, else linear. **There is no bit-perfect or exclusive m
 `~/.cache/high-tide/music`), created at startup with **no GSettings key to disable it** (the full
 16-key schema has none). `_get_cached_or_stream_url` first checks
 `MUSIC_DIR/{track.id}_{session.audio_quality}.m4a`; otherwise, unless
-`Gio.NetworkMonitor.get_network_metered()`, it spawns a background thread that runs `ffmpeg
--protocol_whitelist file,crypto,data,http,https,tcp,tls -i manifest.mpd -f mp4 -c copy -y <tmp>`
-for MPD, or a raw `requests.get(stream_url, stream=True)` writing 8 KiB chunks for BTS. **MPD
+`Gio.NetworkMonitor.get_network_metered()`, it spawns a background thread that runs a local
+`ffmpeg` remux of the MPD manifest to a local `.mp4` with `-c copy`
+(`ref:high-tide/src/lib/player_object.py:530-553`), or a raw `requests.get(stream_url,
+stream=True)` writing 8 KiB chunks for BTS. **MPD
 caching only fires on the GStreamer ≥ 1.26 branch** (where a manifest file exists on disk) — on
 older GStreamer, the `data:` URI branch never spawns this thread, so DASH tracks aren't cached
 there; BTS caches unconditionally regardless of GStreamer version. It is bounded, not unbounded: a
@@ -156,7 +159,7 @@ local index of a remote catalogue. Search limits default to 4 artists/10 albums/
 `audio-engineering.md` §4 for the full EBU R128/bit-perfect incompatibility, and note here the
 platform reality check: Strawberry's own README scopes bit-perfect to **Linux only** ("Bit-perfect
 playback on Linux"), and its **macOS/Windows binary releases are sponsor-only**. So Strawberry is
-real evidence for a Windows-WASAPI-exclusive path (same mechanism as sone-windows) but is not the
+real evidence for a Windows-WASAPI-exclusive path (same mechanism as Sone-windows) but is not the
 cross-platform bit-perfect precedent it might look like from its feature list alone.
 
 **Borrow**: the honest refuse-and-explain behaviour on encrypted streams; the user-selectable
@@ -323,11 +326,18 @@ in `proxy.py` so GStreamer can seek. `translate_uri` prefers the local proxy URL
 entry exists; otherwise falls back to `track.get_url()`, then to `as_stream()` on
 `URLNotAvailable` (the PKCE case). Directly reusable for streamboat's headless mode.
 
+**Added by the third fact-check pass**: the login hack's third-party leakage is worse than the QR
+call alone. `login_hack.py:250-260` also builds a spoken-prompt URL against `api.voicerss.org`
+with a **hardcoded API key** (`voice_rss_api_key = "<hardcoded key, redacted; see
+ref:mopidy-tidal/mopidy_tidal/login_hack.py:251>"`) to speak the login instructions aloud — a
+second, previously undocumented third-party call inside the same pattern this skill recommends
+borrowing.
+
 **Borrow**: the login-hack pattern (locally-rendered QR, see caveat above); the three login
 methods; the config schema shape; the Range-capable caching proxy; the pre-flight quality check.
 **Avoid**: coupling to Mopidy's provider API if streamboat wants its own daemon protocol; the
 hardcoded `lgf.audio.tidal.com` host (CDN hostnames change); sending login URLs to a third-party
-QR service.
+QR service; the `api.voicerss.org` TTS call and its hardcoded key.
 
 ## 5a. Music Assistant — a second, actively-maintained headless precedent
 
@@ -547,21 +557,15 @@ mopidy-tidal's login-hack should have used, §5 above). FFmpeg (libavformat/liba
 libswresample) via cgo for decode, `staticav` build tag for distro packages bundling a static
 FFmpeg; ALSA via cgo (`-lasound`).
 
-**Architecturally the most interesting thing in the whole set**: the daemon/client split. There is
-no separate always-running daemon by default — **whichever process claims the D-Bus name
-`org.mpris.MediaPlayer2.tidalt` first becomes the server**; a later invocation gets
-`ErrAlreadyRunning` and switches to client mode. Name-claiming is simultaneously the mutex and the
-discovery mechanism, because exactly one process may own an ALSA `hw:` device. Modes: `tidalt`
-(TUI, server-or-client depending on who's first), `tidalt daemon` (headless server only),
-`tidalt play <url>` (a one-shot client forwarding a `tidal://` URL over D-Bus in milliseconds and
-exiting — what a registered browser URL handler actually invokes), `tidalt setup`/`tidalt setup
---daemon` (XDG handler / systemd `--user` service registration). Control surfaces: MPRIS2
-(`org.mpris.MediaPlayer2.tidalt`, `SupportedUriSchemes: ["tidal"]`) plus a private `io.tidalt.App`
-interface for everything MPRIS can't express. This is *exactly* the desktop-plus-headless shape
-streamboat needs, generalized — and it's the only implementation of it in the set. **Portability
-caveat**: the D-Bus name-claim trick is Linux-only; Windows/macOS need an equivalent single-
-instance mutex plus a local transport (lock file + named pipe/Unix socket — similar to Sone's
-`tauri-plugin-single-instance`). `ref:tidalt/docs/phone-control.md` also notes KDE Connect/
+**Architecturally the most interesting thing in the whole set**: the daemon/client split — the only
+implementation of the desktop-plus-headless shape streamboat needs in this set. Full mechanics
+(D-Bus name-claim as both mutex and discovery, the four subcommand modes, and the "one process may
+own an ALSA `hw:` device" rationale) are owned by
+`headless-and-tidal-connect/references/headless-daemon-precedents.md` §2 and
+`headless-and-tidal-connect/references/daemon-architecture.md` §1 — cite those rather than
+restating. **Portability caveat**: the D-Bus name-claim trick is Linux-only; Windows/macOS need an
+equivalent single-instance mutex plus a local transport (lock file + named pipe/Unix socket —
+similar to Sone's `tauri-plugin-single-instance`). `ref:tidalt/docs/phone-control.md` also notes KDE Connect/
 GSConnect already bridge MPRIS2 to an existing phone companion app with zero app-specific code —
 a free partial answer to remote control while mobile is out of scope. Source:
 `ref:tidalt/docs/client-server.md`, `ref:tidalt/docs/mpris2.md`, `ref:tidalt/docs/
@@ -597,8 +601,12 @@ README: *"This library is not officially affiliated with Tidal. Use at your own 
 compliance with Tidal's Terms of Service."*
 
 **The single most reusable dependency for a Rust streamboat**: MIT (no copyleft), async, typed,
-actively released, deliberately stops at "return a manifest/URL" — no decrypt, no download, no
-play. Main gaps: lyrics, mixes/radio, videos, DASH parsing (left to the consumer). **Risk**: 19★,
+actively released, and it stops at "return a manifest/URL" — it contains no decryption, download
+or playback code. **Corrected (third fact-check pass): drop "deliberately" from that framing** —
+there is no statement in the README or `src/` declaring this scope as a policy decision (a grep
+for `decrypt`/`encryption` across both returns nothing); it simply has no such code, which is a
+weaker claim than an explicit design choice — it could as easily be "not implemented yet." Main
+gaps: lyrics, mixes/radio, videos, DASH parsing (left to the consumer). **Risk**: 19★,
 **4 contributors, `phayes` 60 of 67 commits — bus factor 1** (confirmed via the GitHub
 contributors API, `sone-deep-dive.md` §10), v0.5.0 — treat as a fork candidate, not a load-bearing
 dependency, and re-check its release health periodically.
@@ -639,3 +647,62 @@ low-tide` (a terminal UI TIDAL client), `yaronzz/Tidal-Media-Downloader` (a down
 explicitly out of scope, cited only for its 2026-03-21 API-key breakage report, see
 `verification-notes.md`), `GioF71/upmpdcli-docker` TIDAL plugin. `michaelherger/lms-plugin-tidal`
 and Music Assistant's TIDAL provider were subsequently fetched and read — see §5a/§5b above.
+
+## 14. Headless precedents named by this project's own sources but never fetched — flagged as the
+highest-value follow-up reads (added by the third fact-check pass)
+
+`tidal-connect`'s own README (§6 above) points users at "upmpdcli's TIDAL plugin" as a
+HI_RES_LOSSLESS alternative, and §13 already lists a Docker wrapper of it as unverified — but the
+upstream project itself has never been fetched, and neither has the librespot frontend ecosystem
+that §18-B of the main report already accepts as the architectural precedent for a pure-Rust
+stack. **Not fetched in this pass either — this is a source pointer, not new facts**:
+
+- **`medoc92/upmpdcli`**, `src/mediaserver/cdplugins/tidal/` — a Python TIDAL plugin behind a
+  UPnP/OpenHome renderer. A **fourth control-surface shape** alongside MPD-compatible
+  (mopidy-tidal, §5), MPRIS+private-D-Bus (tidalt, §10) and HTTP+WebSocket — directly relevant to
+  the headless-mode control-protocol decision (`SKILL.md` Open decision #7), which currently has
+  only two implemented precedents for three named options.
+- **`librespot-org/spotifyd`** and **`hrkfdn/ncspot`** — the frontends that prove librespot's
+  core-library-plus-thin-frontend seam actually works in practice; the empirical evidence (or
+  refutation) for whether a core+frontend split streamboat is being asked to adopt (`SKILL.md`
+  Pitfall 6) stays thin under real use.
+- **`jpochyla/psst`** (Rust + Druid GUI) — the closest existing thing to "pure-Rust GUI streaming
+  client with a bit-perfect-adjacent audio path," and the missing data point for the
+  language/runtime and GStreamer-vs-pure-Rust open decisions (`SKILL.md` Open decisions #1-2).
+- **`devgianlu/go-librespot`** — the modern daemon rewrite, a second data point for the
+  core/daemon architecture question.
+
+None of these is TIDAL — the value is entirely in the control-surface and core/frontend-split
+questions, not in anything TIDAL-API-specific.
+
+## 15. Module maps for the projects that didn't have one (added by the third fact-check pass)
+
+Sone and High Tide already have full module maps (`sone-deep-dive.md` §2; §1 above). Everything
+else in this file was prose-only — a reader who wants to go read a recommended borrow had a
+filename but no orientation. Three-to-six-line trees, in priority order by how often this skill
+recommends borrowing from them:
+
+**Strawberry** (§2 above) — `src/tidal/` (6 impl + 6 header files: the whole TIDAL backend);
+`src/engine/{gstengine,gstenginepipeline}.cpp` (the shared GStreamer engine every backend, TIDAL
+included, plays through); `src/collection/` (the `CollectionBackend` this skill recommends for
+the local-library schema); `src/settings/tidalsettingspage.cpp`;
+`src/constants/{tidalsettings,backendsettings}.h` (incl. `kExclusiveMode`); `src/core/` (the
+shared `OAuthenticator` and `Utilities::MaybeDecryptApiCredential`).
+
+**tidalt** (§10 above) — `cmd/` (CLI entry); `internal/tidal/` (auth + API client);
+`internal/player/` (incl. `alsa.c`, `avcodec.c` — the C ALSA/FFmpeg glue);
+`docs/{architecture,client-server,mpris2,phone-control}.md` (the daemon/client D-Bus design
+docs, genuinely worth reading in full, not just the summary here).
+
+**tidal-hifi** (§3 above) — `src/{main.ts,preload.ts}` (Electron main/preload split);
+`src/TidalControllers/` (the four-strategy controller pattern); `src/features/api/` (the local
+Express+swagger API); `src/scripts/`; `build/electron-builder.*.yml`; `docs/`.
+
+**mopidy-tidal** (§5 above) —
+`mopidy_tidal/{backend,library,playback,playlists,search,web_auth_server,login_hack}.py` +
+`gstreamer_proxy/{proxy,cache}.py` (the Range-capable caching proxy).
+
+**TidaLuna** (§4 above) — `native/injector.ts` (CSP-stripping app injection);
+`plugins/lib/src/{classes,helpers,redux}/` (credential extraction, the Redux action-namespace
+dump); `plugins/lib.native/src/request/` (the hardcoded AES key — read for the boundary
+streamboat must not cross, never for code); `plugins/linux/src/`.

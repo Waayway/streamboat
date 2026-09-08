@@ -4,10 +4,11 @@ Full narrative: `docs/research/tidal-api.md` §1 and §8.10.
 
 ## Table of contents
 
-1. What it is and why it is bigger than "ISRC lookup and JSON:API playlists"
+1. What it is and why it is bigger than "ISRC lookup and JSON:API playlists" (includes the ISRC/UPC
+   lookup calls)
 2. Auth on the official API
 3. The enumerated surface
-4. `/trackManifests/{id}` — the playback contract
+4. `/trackManifests/{id}` and `/videoManifests/{id}` — the playback contracts
 5. The "compliant-but-Chromium" architecture option
 6. CORS
 7. Format differences from the unofficial API
@@ -48,6 +49,15 @@ product surfaces streamboat might one day want:
 - Offline: `/offlineTasks`, `/downloads`, `/trackFiles/{id}`,
   `/installations/{id}/relationships/offlineInventory`, `/userOfflineMixes` — see
   `references/playback.md` §11 before building toward any of these.
+- **ISRC/UPC lookup** — the one thing `SKILL.md`'s open decision 1 cites as covered "alone" by the
+  official API:
+  ```
+  GET https://openapi.tidal.com/v2/tracks?filter[isrc]=<ISRC>&countryCode=
+  GET https://openapi.tidal.com/v2/albums?filter[barcodeId]=<UPC/EAN>&countryCode=
+  ```
+  Not reachable on the unofficial API at all. `ref:python-tidal/tidalapi/session.py`
+  `get_tracks_by_isrc`/`get_albums_by_barcode` (lines 890-950); TidaLuna hits the same ISRC filter
+  directly (`ref:TidaLuna/plugins/lib/src/classes/TidalApi/index.ts:97`).
 
 Sone already uses this API opportunistically for artist bios and artworks
 (`{}/artistBiographies/{}`, `{}/artworks`) and for playlist create/patch, **using the same Bearer
@@ -77,12 +87,31 @@ instruction in the schema docs: "`UNKNOWN` is the forward-compatible default; cl
 module." Copy that rule for any official-API page renderer, the same way §5 of
 `references/catalog-and-library.md` says to skip unknown module types on the unofficial pages API.
 
-## 4. `/trackManifests/{id}` — the playback contract
+## 4. `/trackManifests/{id}` and `/videoManifests/{id}` — the playback contracts
 
 Fully documented in `references/playback.md` §10 (parameters, response shape, quality→formats
 ladder, DRM fields). Summary: it is DRM-protected (`drmData`), and whether a newly-registered
 third-party client gets full tracks or previews from it is unresolved (`tidal-music` Discussion
-#179).
+#179) — one developer on that thread reports first-hand, after PKCE login, that their users "cannot
+play but the 30s low quality preview of tracks" (comment dated 2025-09-06); no TIDAL staff reply
+confirms or denies it. Treat it as a leaning signal, not a settled answer — see
+`references/playback.md` §10 for the full quote and dates.
+
+**`/videoManifests/{id}`** is this endpoint's video sibling — named only in passing elsewhere in this
+skill until now:
+```
+GET https://openapi.tidal.com/v2/videoManifests/{id}
+    ?uriScheme=HTTPS|DATA
+    &usage=PLAYBACK|DOWNLOAD
+```
+A simpler parameter set than `/trackManifests/{id}` — no `formats[]`, `manifestType`, or `adaptive`;
+video quality is presumably server-selected. Response (`VideoManifests_Attributes`): `link` (a
+`Link_Object` — a `data:` URL when `uriScheme=DATA`), `drmData` (same shape as `/trackManifests/{id}`
+above), `videoPresentation: FULL|PREVIEW`, `previewReason`. Same DRM caveat applies: decoding it
+without a licensed CDM does not work regardless of the contractual question.
+(`ref:tidal-sdk-web/packages/player/src/internal/helpers/playback-info-resolver.ts:429-470`
+`_fetchVideoManifest`, `ref:tidal-sdk-web/packages/api/bin/tidal-api-oas.json` path
+`/videoManifests/{id}`.)
 
 ## 5. The "compliant-but-Chromium" architecture option
 
@@ -109,7 +138,7 @@ decision to state, not one to make silently. See "Open decisions" in `SKILL.md`,
 
 `api.tidal.com` (the **unofficial** API) is very likely **not** CORS-enabled for arbitrary browser
 origins — unlike `openapi.tidal.com/v2` (the official API), which the browser-based `tidal-sdk-web`
-calls directly. Every unofficial-API OSS client with a webview frontend (Sone, sone-windows) routes
+calls directly. Every unofficial-API OSS client with a webview frontend (Sone, Sone-windows) routes
 100% of its TIDAL calls through native/backend code and only lets the webview touch
 `resources.tidal.com` directly. **Genuinely unverified, and weaker-sourced than it may look**: the
 `tidal-api-docs` citation once offered in support (`README.md:17`,

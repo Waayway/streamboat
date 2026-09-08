@@ -16,12 +16,14 @@
 - §12 Binary size / RAM / startup: the levers, since the brief named this criterion
 - §13 Day-1 developer-environment cost, and one Windows trip hazard
 - §14 Workspace mechanics: `rust-toolchain.toml`, the pnpm+cargo coexistence, GStreamer version drift
+- §15 macOS CPU-architecture strategy: universal binary vs. Apple-Silicon-only
+- §16 System tray / close-window behaviour has no sub-decision row
 
 These are the facts an implementer hits in roughly the first week of a Tauri 2 + Rust + React
 project, gathered because `docs/research/tech-stack.md`'s original pass under-covered them (they
 came out of the fact-check gap-finding pass, not the original research). Primary sources are GitHub
 raw-file mirrors of `tauri-apps/tauri-docs` (readable through this environment's proxy even though
-`v2.tauri.app` itself is blocked) plus SONE's actual checked-out config.
+`v2.tauri.app` itself is blocked) plus Sone's actual checked-out config.
 
 ---
 
@@ -32,7 +34,7 @@ Tauri 2's biggest change from v1: every window/command permission must be explic
 the console. Design and test against this from day one, not after the first "why doesn't this
 button work" debugging session.
 
-SONE ships one capabilities file (`ref:sone/src-tauri/capabilities/default.json`):
+Sone ships one capabilities file (`ref:sone/src-tauri/capabilities/default.json`):
 
 - identifier `default`, `windows: ["main", "miniplayer"]`
 - `core:default`
@@ -43,15 +45,15 @@ SONE ships one capabilities file (`ref:sone/src-tauri/capabilities/default.json`
 - `global-shortcut:allow-register`
 - `deep-link:default`
 
-SONE also sets `security.csp: null` in `tauri.conf.json` — **no content policy at all**. Decide
+Sone also sets `security.csp: null` in `tauri.conf.json` — **no content policy at all**. Decide
 deliberately: a real CSP (`img-src` limited to the TIDAL CDN hosts plus `asset:`/`tauri:`, no inline
-scripts) versus copying SONE's open posture knowingly. This matters specifically for a music client:
+scripts) versus copying Sone's open posture knowingly. This matters specifically for a music client:
 it renders remote artwork, lyrics, and user-authored playlist/track names inside a webview that
 holds `invoke` — that is a security decision, not a formality.
 
 ## §2 Plugins, and the two-mechanism OAuth redirect
 
-SONE's plugin set (`ref:sone/src-tauri/Cargo.toml`), all version-**pinned exactly** with `=` — a
+Sone's plugin set (`ref:sone/src-tauri/Cargo.toml`), all version-**pinned exactly** with `=` — a
 convention worth copying to avoid surprise webview/plugin behaviour changes mid-project:
 
 | Plugin | Pinned version |
@@ -73,12 +75,12 @@ accident.
 
 ## §3 Window chrome is a hidden cost of "beautiful"
 
-SONE's window config: `decorations: false`, `visible: false` until first paint (avoids a white
+Sone's window config: `decorations: false`, `visible: false` until first paint (avoids a white
 flash), 1200×800, plus a second `miniplayer` window. Turning decorations off moves the titlebar, drag
 regions, resize handles, and (per OS) macOS traffic lights / Windows Snap Layouts into your own code —
 this is *why* its capability file needs the whole `core:window:allow-start-dragging`/
 `allow-start-resize-dragging`/`allow-minimize`/etc. list in §1. Decide early: native decorations
-(cheap, native feel, constrained design) versus custom chrome (SONE's route, real recurring per-OS
+(cheap, native feel, constrained design) versus custom chrome (Sone's route, real recurring per-OS
 polish work — not a one-time cost).
 
 ## §4 Auto-update coverage is partial
@@ -90,9 +92,9 @@ enforced in production.
 
 **Bundle coverage, exactly**: Linux **AppImage only** (`.AppImage`, `.AppImage.tar.gz`), macOS
 `.app.tar.gz`, Windows `.msi` and NSIS `.exe`. There is **no updater for deb/rpm** (those need a
-hosted repo — SONE hosts apt/dnf/zypper on Cloudsmith) and **none for Snap/Flatpak** (store-managed
+hosted repo — Sone hosts apt/dnf/zypper on Cloudsmith) and **none for Snap/Flatpak** (store-managed
 updates instead). Plan the update channel per package format, not as one in-app mechanism — and note
-this is consistent with `engineering-baseline.md`'s own recommendation of no silent in-app updater
+this is consistent with `docs/research/engineering-baseline.md`'s own recommendation of no silent in-app updater
 initially, now backed by the actual coverage table.
 
 Source: `https://raw.githubusercontent.com/tauri-apps/tauri-docs/v2/src/content/docs/plugin/updater.mdx`
@@ -120,7 +122,7 @@ Source: `https://raw.githubusercontent.com/tauri-apps/tauri-docs/v2/src/content/
 
 `tauri build` produces artifacts **only for the host platform**. Museeks' own README states this
 plainly: "Tauri does not support cross-platform binaries, so the command will only generate binaries
-for your current platform." SONE's repo has **no cross-platform build workflow at all** —
+for your current platform." Sone's repo has **no cross-platform build workflow at all** —
 `.github/workflows/` holds only `flathub-update.yml` — and releases come from local per-distro Docker
 builds:
 
@@ -137,7 +139,7 @@ report might leave you with.
 
 ## §7 Flathub packaging needs two offline-source generators, regenerated every release
 
-SONE's release automation (`ref:sone/.github/workflows/flathub-update.yml:95-139`) runs:
+Sone's release automation (`ref:sone/.github/workflows/flathub-update.yml:95-139`) runs:
 
 ```
 python3 flatpak-builder-tools/cargo/flatpak-cargo-generator.py sone/src-tauri/Cargo.lock -o flathub/cargo-sources.json
@@ -174,7 +176,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 All startup logic lives in `src/lib.rs` behind
 `#[cfg_attr(mobile, tauri::mobile_entry_point)] pub fn run()`, with `src/main.rs` reduced to calling
-`run()` (plus `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`). SONE already has
+`run()` (plus `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`). Sone already has
 exactly this shape. Tauri mobile targets Android 8/API 26 and iOS 9 at the platform floor; the
 community `tauri-plugin-native-audio` needs Android 8.0+/iOS 14.0+ and the iOS Background Modes →
 Audio capability. See `references/mobile-path.md` for the full mobile comparison.
@@ -209,11 +211,11 @@ Documented as of 2026 (Tauri issue tracker, verified directly):
 | Font weight offset by 100 | `tauri-apps/tauri#14286` — Epiphany (also WebKitGTK) renders it correctly, so this is a Tauri-side default, not an engine-wide bug |
 | "Shadow copy" / glitchy rendering on maximize/unmaximize | `tauri-apps/tauri#13157`, WebKitGTK 2.48.0 |
 | Blurry rendering during CSS animations; `contenteditable` spans not behaving as inputs | Documented in Tauri's linux-graphics doc (page itself blocked in this environment — directionally right, not re-verified this pass) |
-| Blank window / rendering glitches / Wayland protocol error on NVIDIA | `WEBKIT_DISABLE_COMPOSITING_MODE=1` — SONE's README carries this exact workaround |
+| Blank window / rendering glitches / Wayland protocol error on NVIDIA | `WEBKIT_DISABLE_COMPOSITING_MODE=1` — Sone's README carries this exact workaround |
 | DMABUF renderer crashes | `WEBKIT_DISABLE_DMABUF_RENDERER=1`, at the cost of the fast path |
-| SVG `stroke-width` presentation attribute double-scaled by CSS `zoom` | SONE ships a CSS override in `ref:sone/src/App.css` — copy the pattern, not necessarily the exact rule |
+| SVG `stroke-width` presentation attribute double-scaled by CSS `zoom` | Sone ships a CSS override in `ref:sone/src/App.css` — copy the pattern, not necessarily the exact rule |
 
-The practical floor is whatever WebKitGTK version ships on your build container's distro: SONE's deb
+The practical floor is whatever WebKitGTK version ships on your build container's distro: Sone's deb
 depends on `libwebkit2gtk-4.1-0` and is built `FROM ubuntu:22.04`
 (`ref:sone/build-scripts/build/Dockerfile.deb`) — so Ubuntu 22.04's WebKitGTK 4.1 is the practical
 design baseline. Concrete rules: bundle fonts locally (no Google Fonts CDN — the app must work
@@ -231,7 +233,7 @@ numbers (75% less RAM, 20-50× smaller bundles, 3.7× faster startup) are SEO-bl
 reproducible benchmark. Direct artefact measurement was not possible in this research environment
 (`api.github.com` is blocked for repos outside this session). What can be stated without a benchmark:
 
-- **SONE ships no `[profile.release]` section and no `rust-toolchain.toml` at all**
+- **Sone ships no `[profile.release]` section and no `rust-toolchain.toml` at all**
   (`ref:sone/src-tauri/Cargo.toml`, checked 2026-09-07) — its own release artefacts are unoptimised
   defaults, not a size datum for a tuned build.
 - Tauri documents the actual `[profile.release]` levers:
@@ -247,9 +249,20 @@ reproducible benchmark. Direct artefact measurement was not possible in this res
   GStreamer into the AppImage, and shipping the GStreamer runtime as an MSI on Windows. In practice
   **the GStreamer runtime, not the UI toolkit, likely dominates installed size on Windows/macOS.**
 
-If the owner wants real numbers, measure SONE/Museeks/tidal-hifi release assets on a machine with
+If the owner wants real numbers, measure Sone/Museeks/tidal-hifi release assets on a machine with
 GitHub access, and add this as a scored criterion (even 3-5 points, redistributed from Effort or
 Cross-platform) rather than leaving it dropped.
+
+**Museeks ships exactly this `[profile.release]` block in production** (verified live,
+`raw.githubusercontent.com/martpie/museeks/master/src-tauri/Cargo.toml`, fetched 2026-09-08):
+`codegen-units = 1`, `lto = true`, `opt-level = "s"`, `panic = "abort"`, `strip = true` — a second
+shipped Tauri 2 + Rust + React music player (see `references/real-world-players.md`) actually running
+these levers, not only Tauri's own docs recommending them. It is also a shipped precedent for
+generating TypeScript types from Rust rather than hand-maintaining them (cross-cutting decision #6 in
+`docs/research/tech-stack.md`, and Recommendation 1's own risk mitigation in
+`references/scoring-and-candidates.md` §3): Museeks pins `ts-rs = "12.0.1"` in the same `Cargo.toml`,
+independently corroborating the `ts-rs`/`specta` choice against Sone's 870-hand-written-line
+`src/types.ts` counterexample.
 
 ## §13 Day-1 developer-environment cost, and one Windows trip hazard
 
@@ -262,7 +275,7 @@ fetched 2026-09-08):
   `libssl-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev` (Arch: `webkit2gtk-4.1`,
   `appmenu-gtk-module`, `libappindicator-gtk3`, `librsvg`, `xdotool`; Fedora: `webkit2gtk4.1-devel`,
   `libappindicator-gtk3-devel`, `libxdo-devel`, plus the C-development group). This confirms Tauri 2
-  on Linux hosts a **GTK3** window (`libayatana-appindicator3`, `libgtk-3-0` also in SONE's deb
+  on Linux hosts a **GTK3** window (`libayatana-appindicator3`, `libgtk-3-0` also in Sone's deb
   `depends`) with **WebKitGTK 4.1**, not GTK4 — worth remembering wherever HiDPI/fractional scaling or
   Linux look-and-feel comes up.
 - **Windows**: Microsoft C++ Build Tools with "Desktop development with C++", WebView2 (preinstalled
@@ -281,11 +294,59 @@ directory names.** Before ~100 component files exist, pin the mechanics:
 
 - Decide explicitly whether `desktop/src-tauri` is a member of the root Cargo workspace or a nested
   one.
-- SONE has a root `pnpm-workspace.yaml` sitting next to `src-tauri/` with **no `rust-toolchain.toml`
+- Sone has a root `pnpm-workspace.yaml` sitting next to `src-tauri/` with **no `rust-toolchain.toml`
   at all** — a reproducibility gap worth avoiding, not a pattern to copy. It matters concretely here
   because the recommended `gstreamer` 0.25.3 needs MSRV 1.92/edition 2024 while `tauri` 2.11.x
   declares MSRV 1.77.2: **pin the toolchain explicitly in `rust-toolchain.toml` from day one.**
-- Corpus consequence of picking `gstreamer` 0.25 over SONE's pinned 0.23: SONE is the codebase an
+- Corpus consequence of picking `gstreamer` 0.25 over Sone's pinned 0.23: Sone is the codebase an
   agent will most often be asked to imitate, so expect agent-suggested GStreamer code to target the
   slightly older 0.23 API even once the project is on 0.25 — see
   `references/audio-engine-comparison.md` §3, item 3.
+
+## §15 macOS CPU-architecture strategy: universal binary vs. Apple-Silicon-only
+
+**Gap identified during fact-checking: never mentioned elsewhere in this research** — zero
+occurrences of "universal", `universal-apple-darwin`, `aarch64-apple-darwin` or
+`x86_64-apple-darwin` before this pass, despite §8's macOS packaging coverage. It is a required
+`tauri build` flag decision, and it propagates into the audio-backend choice.
+
+Tauri supports `tauri build --target universal-apple-darwin`, which builds both Rust targets and
+`lipo`s them into one `.app` running natively on Intel and Apple Silicon
+(https://github.com/orgs/tauri-apps/discussions/9419,
+https://dev.to/hiyoyok/building-a-universal-binary-with-tauri-v2-its-easier-than-you-think-1b53 —
+both via search 2026-09-08, `v2.tauri.app` itself blocked here; verify against the official
+distribute/macos page before publishing). Costs: roughly double the build time (two full compiles)
+and roughly double the artifact size; and **every bundled sidecar or native library must itself be
+universal** (community guidance names `ffmpeg` as the go-to example of this trap).
+
+Consequences:
+
+1. **Owner decision**: drop Intel and ship Apple-Silicon-only, or pay 2x build+size for a universal
+   binary.
+2. **Interacts with the engine choice** (`audio-engine-comparison.md`): a lipo'd `libmpv.dylib` is one
+   fat dylib, while a universal GStreamer plugin tree is a much bigger packaging job — an argument for
+   libmpv on macOS this report otherwise makes only on packaging-weight grounds.
+3. **Interacts with §8's `minimumSystemVersion`** — raising the floor to 12.0+ (recommended there) is
+   itself close to where Intel support becomes moot.
+
+## §16 System tray / close-window behaviour has no sub-decision row
+
+**Gap identified during fact-checking**: "what happens when I close the window" is a first-week
+product decision for a music player, and the main report's sub-decision table covers window chrome,
+icons, virtualisation, state, and styling but not the tray — "tray" appears exactly once in the whole
+report, inside a parenthetical.
+
+Sone does **not** use Tauri's built-in tray plugin on Linux — it depends on `ksni = "0.3"`
+(StatusNotifierItem over D-Bus) under `[target.'cfg(target_os = "linux")'.dependencies]`
+(`ref:sone/src-tauri/Cargo.toml:69`), while its packages **still** declare
+`libayatana-appindicator3-1` (deb, `ref:sone/src-tauri/tauri.conf.json:43`) and
+`libappindicator-gtk3` (rpm, `:62`) as runtime dependencies — because Tauri's own Linux prerequisites
+list `libayatana-appindicator3-dev` regardless (§13 above), that dependency arrives via Tauri whether
+or not the tray plugin is used.
+
+The tray is the one desktop feature with no headless counterpart, and no macOS/Windows equivalent to
+`ksni` (both use their native tray APIs directly). It is linked to a real product decision: does
+closing the window quit the app, or keep it playing in the tray/background? That decision determines
+whether the desktop shell can ever hold the audio device while invisible — which interacts with the
+"first process claims the device, later ones become clients" rule in `architecture-shapes.md` §4. Add
+both as an explicit sub-decision row and an Open Question rather than leaving them implicit.

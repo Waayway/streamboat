@@ -27,6 +27,8 @@ Minimum viable set, all triggered on push + PR:
 | license scan | ubuntu-latest | disallowed-license list |
 | dependency audit | ubuntu-latest | known-vuln advisory database |
 | package install smoke test | Docker, per distro | installs the built `.deb`/`.rpm`, asserts window/daemon start + MPRIS/control-socket name + no missing `.so` — release-candidate tags only (`packaging-and-distribution.md` §4) |
+| packaging-metadata validation | ubuntu-latest | `appstreamcli validate --explain`, `desktop-file-validate`, `flatpak-builder-lint manifest\|appstream\|repo`, `glib-compile-schemas --strict --dry-run` (`packaging-and-distribution.md` §2) |
+| shell/workflow lint | ubuntu-latest | `shellcheck` over `packaging/`+`build-scripts/`+`.githooks/`; `actionlint` over `.github/workflows/` (§4 below) |
 
 Plus scheduled jobs: daily API-spec diff (`testing-strategy.md` §4), weekly live canary run from a
 **maintainer-local cron, not a GitHub-hosted self-hosted runner on the public repo**
@@ -44,7 +46,7 @@ Notes drawn from the references:
   fails."
 - Pin third-party actions to a commit SHA for anything that touches secrets or publishes
   (tidal-sdk-web pins `cypress-io/github-action@09090944...`, `tj-actions/changed-files@9426d409...`,
-  `fossas/fossa-action@29693cc5...`; sone pins `actions/checkout@34e11487...`). Renovate/Dependabot
+  `fossas/fossa-action@29693cc5...`; Sone pins `actions/checkout@34e11487...`). Renovate/Dependabot
   keep the pins current.
 - Set `permissions:` explicitly per workflow (`contents: read` by default, `contents: write` only
   on release) — tidalt and tidal-hifi both do.
@@ -57,7 +59,7 @@ Notes drawn from the references:
   `astral-sh/setup-uv` with `enable-cache: true` and a `cache-suffix` per matrix leg
   (ref:mopidy-tidal/.github/workflows/test.yml), `actions/setup-go` with `go-version-file: go.mod`,
   `actions/setup-python` `cache: 'poetry'`.
-- Docker BuildKit cache mounts for compiled dependencies: sone's deb Dockerfile mounts
+- Docker BuildKit cache mounts for compiled dependencies: Sone's deb Dockerfile mounts
   `/root/.cargo/registry`, `/root/.cargo/git` and `/app/src-tauri/target` as named caches
   (ref:sone/build-scripts/build/Dockerfile.deb).
 - Cache heavy test binaries separately with restore/save (tidal-sdk-web caches `~/.cache/Cypress`
@@ -93,15 +95,48 @@ of stack.
   fail on high/critical with a documented allowlist file for accepted risks.
 - **Static analysis**: CodeQL on the default branch (free for public repos). tidal-hifi also wires
   SonarCloud (`.sonarcloud.properties`). **No reference project runs a sanitizer, Valgrind, Miri or
-  CodeQL at all** (grep across all 21 checkouts for `fsanitize|ASAN|UBSAN|valgrind|miri` hits only
-  a false positive; zero CodeQL/Scorecard workflows) — run the §2.6 fuzz targets under ASan+UBSan
-  nightly regardless; see `testing-strategy.md` §6 for the full recommendation.
+  CodeQL at all** — grep across all 21 checkouts for `fsanitize|ASAN|UBSAN|valgrind|miri` actually
+  returns 10+ files with matches, every one a case-insensitive substring false positive (not the
+  single hit an earlier pass claimed; see `testing-strategy.md` §6 for the corrected detail), and a
+  separate `codeql|scorecard` grep across workflow YAML returns zero files — run the fuzz targets
+  under ASan+UBSan nightly regardless; see `testing-strategy.md` §6 for the full recommendation.
 - **Supply chain**: pin actions by SHA (above), enable branch protection with required checks,
   require signed commits or at least DCO, enable GitHub secret scanning + push protection, publish
   build provenance attestations, and publish `checksums.txt` with every release (see
   `packaging-and-distribution.md` §8 for the "no precedent, budget accordingly" caveat on
-  provenance/SBOM).
+  provenance/SBOM — and the correction that only tidal-cli attests actual provenance;
+  tidal-sdk-web's OIDC use disables provenance explicitly).
 - **License scanning**: see `licensing-and-legal.md` §3.
+- **Gap: inventory CI secrets explicitly, and use GitHub Environments to scope them.** This skill
+  otherwise names secrets one at a time across several files with no single list and no protection
+  mechanism named. The reference set's actual secret surface (grep every
+  `.github/workflows/*.yml` for `secrets\.[A-Z_]+` across all 21 checkouts):
+  `APPLE_DEVELOPER_ID_CERTIFICATE`/`_PASSWORD`, `APPLE_NOTARIZATION_APPLE_ID`/`_PASSWORD`,
+  `MACOS_KEYCHAIN_PASSWORD` (strawberry); `UBUNTU_PPA_GPG_PRIVATE_KEY`,
+  `GPG_SIGNING_KEY_ID`/`_PASSWORD`/`_IN_MEMORY_KEY`; `SNAPCRAFT_STORE_CREDENTIALS`,
+  `AUR_SSH_PRIVATE_KEY` (tidal-hifi); `FLATHUB_TOKEN`; `DOCKERHUB_TOKEN`; `CODECOV_TOKEN`;
+  `TIDAL_CLIENT_ID`; `PLAYER_REFRESH_TOKEN`/`PLAYER_TEST_USER` (tidal-sdk-web). Note
+  `CLOUDSMITH_API_KEY`/`CLOUDSMITH_REPO` exist only as local shell env in Sone's publish script
+  (ref:sone/build-scripts/publish-cloudsmith.sh:6-7), never reaching CI — a maintainer runs that
+  step by hand. The mechanism this skill hadn't named: four checkouts gate a privileged job behind
+  a named GitHub `environment:` (ref:tidal-cli/.github/workflows/release.yml:27,
+  ref:tidal-sdk-android/.github/workflows/publish-pages.yml:11,
+  ref:tidal-sdk-ios/.github/workflows/docs.yml:28,
+  ref:tidal-sdk-web/.github/workflows/{cypress.yml,docs.yml}:27) — this is how a secret gets scoped
+  to one job and, optionally, gated behind a required human reviewer before a release runs. Add: a
+  secrets-inventory table (secret → job → holder → expiry) in `docs/DECISIONS.md` or
+  `docs/releasing.md`, a required-reviewer GitHub Environment on every publishing job, and a
+  rotation note — Apple Developer ID certificates expire yearly, and the Trusted Signing profile
+  and the AUR SSH key are both single points of failure for a solo maintainer with no documented
+  succession plan.
+- **Gap: lint the packaging shell scripts and workflow YAML themselves — release credentials run
+  here, and no reference project checks it.** Add `shellcheck` over `packaging/` +
+  `build-scripts/` + `.githooks/`, and `actionlint` over `.github/workflows/`, as explicit jobs.
+  tidal-sdk-ios's pre-commit `check-jsonschema` hooks (§3 above) validate workflow *schema*, not
+  *semantics* — unquoted shell inside a `run:` block, an invalid `needs:` graph, an expression
+  typo — which is exactly what `actionlint` covers and no checkout runs. Same for shellcheck: zero
+  of the 21 checkouts run it despite Sone alone shipping nine build/test shell scripts with no
+  linting configured (ref:sone/build-scripts/build/*.sh, ref:sone/build-scripts/test/*.sh).
 
 ## 5. Reproducible builds
 
@@ -113,7 +148,14 @@ Full bit-for-bit reproducibility is a large project; the achievable subset:
   `.python-version`) and have CI read them rather than hardcoding. **Rarer in the reference set
   than that phrasing implies** — only 2 of 21 checkouts pin a toolchain in-tree at all
   (`ref:tidal-hifi/.nvmrc`, `ref:tidal-sdk-web/.nvmrc`); no `rust-toolchain.toml` exists anywhere,
-  sone's `Cargo.toml` has no `rust-version` MSRV field (ref:sone/src-tauri/Cargo.toml:7).
+  Sone's `Cargo.toml` has no `rust-version` MSRV field (ref:sone/src-tauri/Cargo.toml:7).
+- **What the ecosystem declares instead of an MSRV: editions and runtime floors, not a minimum
+  compiler version.** tidalrs declares `edition = "2024"` (ref:tidalrs/Cargo.toml:5), tidalt pins
+  `go 1.26.4` in `go.mod` (ref:tidalt/go.mod:3), and tidal-cli declares `"engines": {"node":
+  ">=20"}` (ref:tidal-cli/package.json:43-45) — none of these is an MSRV; an edition or a `go`
+  directive states the language dialect the code uses, and an `engines` field states the oldest
+  runtime it will run on, but neither commits to the oldest *compiler* that can build it. Across
+  all 21 checkouts, 2 pin a toolchain in-tree (above) and 0 declare an actual MSRV.
 - **Pinning the build toolchain and declaring a minimum-supported toolchain (MSRV) are two
   different decisions — make both explicitly, in `docs/DECISIONS.md`.** The build pin is what
   reproducible-build tooling reads; the MSRV is what a Debian/Fedora packager checks before they
@@ -121,11 +163,14 @@ Full bit-for-bit reproducibility is a large project; the achievable subset:
   package, ever. Choose the MSRV against the oldest target distro's shipped toolchain (the same
   constraint that drives building the deb on Ubuntu 22.04 for the oldest glibc,
   `packaging-and-distribution.md` §4), and add a dedicated "oldest supported toolchain" CI leg.
-- Build release artifacts inside a pinned container image (sone's Dockerfiles pin
+- Build release artifacts inside a pinned container image (Sone's Dockerfiles pin
   `ubuntu:22.04` and `pnpm@11.1.3`; tidalt pins `FFMPEG_VERSION=7.1.5`).
 - Publish the exact build command and container digest in the release notes.
 - Strip and normalise: `-ldflags="-s -w"` (Go), `strip = true` in the Rust release profile, and
-  avoid embedding absolute build paths.
+  avoid embedding absolute build paths — Sone-windows's generated `.wxs`/`.nsi` packaging
+  fragments embed the developer's own absolute local path, both a reproducible-build break and an
+  incidental username leak (`packaging-and-distribution.md` §4a); generate those files from a
+  CI-relative path only.
 - Verify by rebuilding one release from the tag on a clean machine and diffing hashes; document
   the result even when it is "not yet reproducible, differs in X".
 

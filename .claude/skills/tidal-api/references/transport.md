@@ -20,7 +20,7 @@ Full narrative: `docs/research/tidal-api.md` §2 and §4.
 | Host | Purpose |
 |---|---|
 | `auth.tidal.com/v1/oauth2/` | `device_authorization`, `token` (all grant types), `logout` |
-| `login.tidal.com/` | `authorize` (browser login page) |
+| `login.tidal.com/` | `authorize` (browser login page). Strawberry additionally posts its token exchange to `login.tidal.com/oauth2/token` rather than `auth.tidal.com/v1/oauth2/token` (`ref:strawberry/src/tidal/tidalservice.cpp:80-81`) — both hosts work, don't assume the token endpoint is always on `auth.tidal.com`. |
 | `api.tidal.com/v1/` | tracks, albums, artists, playlists, favorites, pages, playbackinfo, lyrics, credits, `rt/connect` |
 | `api.tidal.com/v2/` | `home/feed/*`, `search`, `suggestions/`, `my-collection/playlists/folders`, `favorites/mixes`, `artist/{id}`, `feed/activities`, `profiles/{id}`, `user-playlists/{id}/public` |
 | `openapi.tidal.com/v2/` | official Developer API (JSON:API) — see `references/official-api.md` |
@@ -116,10 +116,19 @@ Two shapes, handle both:
 
 ## 6. The canonical sub-status table
 
+**This table is the single owner of the `playbackinfo` sub-status taxonomy across every
+streamboat skill.** `tidal-oss-landscape`, `tidal-client-features`, `audio-pipeline`,
+`streamboat-engineering-baseline` and `tech-stack-evaluation` all reference or test against this
+classification — fix it here only, and point cross-references at this section rather than
+re-copying the table.
+
 An earlier internal draft of this guide (and several OSS clients) reconstruct this table by
 inference. **TIDAL's own Android SDK names every code in the 4xxx range** —
-`ref:tidal-sdk-android/player/common/.../ApiError.kt` — use it as the source of truth over any
-client's guessed classification.
+`ref:tidal-sdk-android/player/common/.../ApiError.kt` — use it as the source of truth for the
+*names* over any client's guessed classification, but note the SDK assigns no
+retryable/terminal classification of its own; the terminal-vs-recoverable column below is Sone's
+shipped classification (`ref:sone/src-tauri/src/tidal_api.rs:18`, attested by running code) plus
+one narrow inference for 4034 called out below.
 
 | subStatus | Official name | Recommended handling |
 |---|---|---|
@@ -136,7 +145,7 @@ client's guessed classification.
 | 4031 | `NO_CONTENT_MATCHING_REQUEST` | terminal for the requested parameters |
 | 4032 | `NO_CONTENT_MATCHING_SUBSCRIPTION_LOCATION` | region-gated; terminal for this account's region |
 | 4033 | `NO_CONTENT_MATCHING_SUBSCRIPTION_CONFIGURATION` | **user-fixable** (upsell) — do not blacklist |
-| **4034** | `NO_CONTENT_MATCHING_CLIENT` | **client/tier-scoped, not truly terminal** — retry once at a lower tier or a different client id before giving up; **do not permanently blacklist** (Sone's blanket "terminal" treatment of this code is wrong — copy the table above, not Sone's set) |
+| **4034** | `NO_CONTENT_MATCHING_CLIENT` | **terminal for this request, per Sone's shipped classification** (`ref:sone/src-tauri/src/tidal_api.rs:18`, `TERMINAL_SUB_STATUSES`) — quote this code in the terminal set below, identically. `[inferred]` One narrow retry is defensible before giving up: a *different client id* (the code name is client-scoped), not a lower quality tier — a tier change alters the request parameters, which is what 4031 (`NO_CONTENT_MATCHING_REQUEST`, also terminal) already covers, so retrying 4034 at a lower tier would contradict how 4031 is read in this same table. This client-id retry is this guide's own inference, not attested by any source; TIDAL's Android SDK (`ApiError.kt`) names the code but assigns it no retryable/terminal classification at all |
 | 4035 | `NO_CONTENT_MATCHING_PRE_PAYWALL_LOCATION` | terminal for this account's region |
 | 6001 | session error | — |
 | 11001, 11002, 11003, 11101 | token/auth errors | — |
@@ -147,10 +156,10 @@ auth error. Watch for float-encoded sub-statuses (`4005.0`) in some responses.
 ## 7. Rate limiting
 
 No published numbers. Two independent developer questions to TIDAL are **confirmed unanswered**
-(re-checked directly): `github.com/orgs/tidal-music/discussions/269` (0 comments, marked Unanswered)
-and `.../discussions/285` ("Limitations on requests that can be made consecutively" — a developer
-there says "I throttle for 500ms between every request" as their own practice; this is the only
-concrete community-sourced number available, not a documented limit).
+(re-checked directly): `github.com/orgs/tidal-music/discussions/269` (re-verified 2026-09-08: 0
+comments, still marked Unanswered) and `.../discussions/285` ("Limitations on requests that can be
+made consecutively" — a developer there says "I throttle for 500ms between every request" as their
+own practice; this is the only concrete community-sourced number available, not a documented limit).
 
 Observed handling to copy:
 
@@ -169,10 +178,18 @@ Observed handling to copy:
 
 ## 8. Deserialization pitfalls, consolidated
 
-**No example response bodies or captured fixtures exist in any of the 22 reference checkouts.**
+**No example response bodies or captured fixtures exist in any of the 21 reference checkouts.**
 python-tidal's own tests hit the *live* API with real credentials; there are no `.json` fixture files
 anywhere in the tree. streamboat cannot borrow fixtures from this ecosystem — capture your own
 against a live account, before writing parsers, as a concrete first-week task.
+
+**python-tidal's `Config(alac=...)` flag is vestigial — do not model it.** Its docstring makes strong
+claims ("`alac=false` will mean that video streams turn into audio-only streams … `num_videos` will
+turn into `num_tracks` in playlists"), but the flag is only assigned
+(`ref:python-tidal/tidalapi/session.py:140,144`) and never read anywhere else in the module —
+confirmed by grep, not just by inspection. It is a leftover from the legacy `x-tidal-token` era; a
+port of python-tidal's `Config` should drop this field rather than implement the behavior the
+docstring describes.
 
 **Date/timestamp format is a parser trap.** TIDAL emits `2022-09-23T04:52:14.568+0000` — ISO-8601
 *basic*-format offset (no colon), not RFC 3339 extended (`+00:00`). Python's `dateutil.isoparse`
@@ -192,4 +209,7 @@ a **string**, even for integer-id entity types (`references/catalog-and-library.
 unrecognised value. `playlistsAndFavoritePlaylists` items are `{playlist, created}` wrappers, not
 bare playlists (`references/catalog-and-library.md` §7). `PlaybackMode`/`AssetPresentation` are not
 modelled as enums anywhere in python-tidal — it only sends the literal strings `"STREAM"`/`"FULL"`;
-source `OFFLINE`/`PREVIEW` from the Android SDK instead.
+source `OFFLINE`/`PREVIEW` from the Android SDK instead. A BTS manifest's `codecs` field is not the
+raw string to compare against — python-tidal normalizes it with `codecs.upper().split(".")[0]`
+(`mp4a.40.2` → `MP4A`) before comparing; normalize the same way, or compare full dotted strings
+consistently, but don't mix the two (`references/playback.md` §2).
