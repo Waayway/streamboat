@@ -6,9 +6,9 @@ Windows and macOS **and** as a headless server/CLI, must eventually reach Androi
 must deliver hi-res bit-perfect audio, must look good, and will be built by a solo owner
 using AI coding agents heavily.
 
-Research date: 2026-09-07. Reference checkouts live under
-the reference checkouts (shallow clones of the cited GitHub projects; see references/sources.md)
-and are cited as `ref:<project>/<path>`.
+Research date: 2026-09-07. Reference checkouts are shallow clones of the cited GitHub projects
+(project-to-URL mapping in `.claude/skills/tech-stack-evaluation/references/sources.md`) and are
+cited as `ref:<project>/<path>`.
 
 ---
 
