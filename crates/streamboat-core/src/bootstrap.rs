@@ -12,6 +12,7 @@ use crate::token_store::{EncryptedFileStore, KeySlot, KeyStorage, NoKeySlot};
 pub const KEYRING_SERVICE: &str = "io.github.waayway.streamboat";
 pub const KEYRING_USER: &str = "master-key";
 
+#[derive(Clone)]
 pub struct Context {
     pub dirs: AppDirs,
     pub settings: Settings,

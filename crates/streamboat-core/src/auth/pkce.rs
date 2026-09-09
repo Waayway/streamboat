@@ -47,6 +47,18 @@ pub struct PkceSession {
     verifier: Zeroizing<String>,
 }
 
+impl std::fmt::Debug for PkceSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PkceSession")
+            .field("authorize_url", &self.authorize_url)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("client_id", &self.client_id)
+            .field("client_unique_key", &self.client_unique_key)
+            .field("verifier", &"<redacted>")
+            .finish()
+    }
+}
+
 impl PkceSession {
     /// Build the authorize URL. `client_unique_key` is the persistent device
     /// identity (`DeviceIdentity`), sent identically on authorize, exchange

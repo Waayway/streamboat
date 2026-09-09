@@ -1,5 +1,6 @@
-//! `streamboat`: the desktop shell (iced, not yet built) and its CLI
-//! subcommands. This spike ships the CLI: login, resolve, play.
+//! `streamboat`: the desktop shell (iced) and its CLI subcommands. Running
+//! with no subcommand launches the GUI (`ui::run`); every subcommand below
+//! keeps working exactly as it did before the shell existed.
 
 use std::io::Write;
 use std::sync::mpsc;
@@ -15,6 +16,8 @@ use streamboat_core::proto::{Command, Event, OutputConfig, PlayItem};
 use streamboat_core::{AudioQuality, StreamSource};
 use streamboat_player::{GstEngine, Player, PlayerConfig, PlayerDeps};
 
+mod ui;
+
 #[derive(Parser)]
 #[command(
     name = "streamboat",
@@ -22,8 +25,9 @@ use streamboat_player::{GstEngine, Player, PlayerConfig, PlayerDeps};
     about = "An open-source TIDAL client for subscribers"
 )]
 struct Cli {
+    /// No subcommand launches the iced desktop shell.
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -117,10 +121,13 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    let Some(cmd) = cli.cmd else {
+        return ui::run();
+    };
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(run(cli.cmd))
+    rt.block_on(run(cmd))
 }
 
 async fn run(cmd: Cmd) -> anyhow::Result<()> {
@@ -373,17 +380,9 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
                 output,
                 volume,
             };
-            // Streaming privileges, play reporting and scrobbling are not
-            // yet wired into the CLI spike (D-033, D-027, D-037 are built
-            // but not yet plumbed through `Context`); every dependency here
-            // is `None`, which is exactly what makes them optional.
-            let handle = Player::spawn(
-                ctx.api.clone(),
-                Box::new(engine),
-                rx,
-                cfg,
-                PlayerDeps::default(),
-            );
+            let deps = PlayerDeps::for_context(&ctx)
+                .context("wiring play reporting, scrobbling and streaming privileges")?;
+            let handle = Player::spawn(ctx.api.clone(), Box::new(engine), rx, cfg, deps);
             let mut events = handle.subscribe();
             handle.send(Command::Play {
                 items: ids

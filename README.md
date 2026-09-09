@@ -15,20 +15,34 @@ and never produces a playable file that outlives your subscription.
 The first milestone is in: a **playable spike** from the command line. It logs
 in with the device-code flow, resolves a track's manifest through the quality
 cascade, and plays it to the end through GStreamer on Linux, with gapless
-hand-over to the next track and a selectable ALSA device. The desktop shell
-(iced) and the libmpv backend for Windows and macOS come next. Everything that
-was decided about the product and the stack is in `docs/DECISIONS.md`.
+hand-over to the next track and a selectable ALSA device.
+
+The desktop shell now exists too: `streamboat` with no subcommand opens an
+iced 0.14 window — Login (device-code or PKCE), Home and Explore (TIDAL's own
+server-driven feed sections, with a graceful card for a section type this
+client doesn't recognise yet), Search, Now Playing with a reorderable queue,
+a persistent playback bar, the signal-path panel, and Settings. Every CLI
+subcommand keeps working exactly as before. Entity/album/artist/playlist
+pages, the mini-player and the tray are the next wave; the libmpv backend for
+Windows and macOS is being built alongside this. Everything that was decided
+about the product and the stack is in `docs/DECISIONS.md`.
 
 ## Build (Linux)
 
 ```
 sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   libgstreamer-plugins-bad1.0-dev gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
-  gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-alsa libasound2-dev pkg-config
+  gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-alsa libasound2-dev pkg-config \
+  libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev \
+  libxcursor-dev
 cargo build --release
 ```
 
-Binaries: `target/release/streamboat` (CLI, later the desktop shell) and
+The second line of packages is for iced/winit (the desktop shell); skip it for a
+`streamboatd`-only build (`cargo build -p streamboat-server --release`, no GUI
+libraries linked).
+
+Binaries: `target/release/streamboat` (desktop shell + CLI subcommands) and
 `target/release/streamboatd` (daemon).
 
 GStreamer 1.26.10 or newer is needed for TIDAL's FLAC-in-DASH streams through
@@ -74,6 +88,12 @@ ecosystem PKCE client id is unverified, so paste is the default.
 ## Use
 
 ```
+streamboat                               # opens the desktop shell (Login if not signed in)
+```
+
+Or from the CLI:
+
+```
 export STREAMBOAT_CLIENT_ID=...          # and STREAMBOAT_CLIENT_SECRET=... for hi-res
 streamboat login                         # opens link.tidal.com with a code
 streamboat search "blue in green"
@@ -114,9 +134,9 @@ keyring, `streamboat keyring to-file` does the reverse. `key_storage` in
 
 ```
 crates/streamboat-core      Apache-2.0  API client, login, token store, manifests, protocol types
-crates/streamboat-player    GPL-3.0     Engine trait, GStreamer backend, queue, playback, MPRIS
+crates/streamboat-player    GPL-3.0     Engine trait, GStreamer and libmpv backends, ALSA writer, queue, playback, MPRIS
 crates/streamboat-server    GPL-3.0     streamboatd: HTTP+WS control API, stdio fallback
-crates/streamboat-desktop   GPL-3.0     streamboat (CLI now, iced shell next)
+crates/streamboat-desktop   GPL-3.0     streamboat (iced desktop shell + CLI subcommands)
 docs/DECISIONS.md                       what was decided and why
 docs/research/                          the fact-checked research the decisions rest on
 .claude/skills/                         repo knowledge for coding agents

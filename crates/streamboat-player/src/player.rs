@@ -11,13 +11,16 @@ use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
+use streamboat_core::bootstrap::Context;
 use streamboat_core::models::{Track, TrackSummary};
-use streamboat_core::privileges::{PrivilegesEvent, StreamingPrivileges};
+use streamboat_core::privileges::{PrivilegesEvent, StreamingPrivileges, hostname_display_name};
 use streamboat_core::proto::{
     Command, Event, OutputConfig, PlaybackStatus, PlayerState, QueuePosition, StreamInfo,
 };
 use streamboat_core::reporting::{PlayEvent, PlayReporter, REPORT_THRESHOLD_MS};
-use streamboat_core::scrobble::{ScrobbleTrack, Scrobbler};
+use streamboat_core::scrobble::{
+    LastfmScrobbler, ListenBrainzScrobbler, ScrobbleHub, ScrobbleTrack, Scrobbler,
+};
 use streamboat_core::{ApiClient, AudioQuality, ResolvedStream};
 use tokio::sync::{broadcast, mpsc};
 
@@ -41,6 +44,52 @@ pub struct PlayerDeps {
     pub reporter: Option<Arc<PlayReporter>>,
     /// Scrobbles to Last.fm/ListenBrainz (D-037).
     pub scrobbler: Option<Arc<dyn Scrobbler>>,
+}
+
+impl PlayerDeps {
+    /// The production wiring every front end shares (`streamboatd`, the
+    /// `streamboat` CLI and the desktop shell): the play reporter from
+    /// `Settings::play_reporting` (D-027), the scrobble backends whose
+    /// credentials are complete (D-037), and the streaming-privileges client
+    /// (D-033) — all persisted under the data dir. Must be called inside a
+    /// tokio runtime, because the privileges client spawns its socket task.
+    pub fn for_context(ctx: &Context) -> streamboat_core::Result<Self> {
+        let reporter = Arc::new(PlayReporter::open(
+            ctx.api.clone(),
+            ctx.dirs.data.join("play_reports.json"),
+            ctx.settings.play_reporting,
+        )?);
+
+        let mut backends: Vec<Arc<dyn Scrobbler>> = Vec::new();
+        if let Some(lastfm) = LastfmScrobbler::open(
+            &ctx.settings.scrobble.lastfm,
+            ctx.dirs.data.join("scrobble_lastfm.json"),
+            ctx.api.user_agent(),
+        )? {
+            backends.push(Arc::new(lastfm));
+        }
+        if let Some(listenbrainz) = ListenBrainzScrobbler::open(
+            &ctx.settings.scrobble.listenbrainz,
+            ctx.dirs.data.join("scrobble_listenbrainz.json"),
+            ctx.api.user_agent(),
+        )? {
+            backends.push(Arc::new(listenbrainz));
+        }
+        let scrobbler: Option<Arc<dyn Scrobbler>> = if backends.is_empty() {
+            None
+        } else {
+            Some(Arc::new(ScrobbleHub::new(backends)))
+        };
+
+        let (privileges, privileges_events) =
+            StreamingPrivileges::spawn(ctx.api.clone(), hostname_display_name());
+        Ok(Self {
+            privileges: Some(Arc::new(privileges)),
+            privileges_events: Some(privileges_events),
+            reporter: Some(reporter),
+            scrobbler,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -611,6 +660,49 @@ impl Player {
                 self.prefetched_for = None;
                 self.status = PlaybackStatus::Stopped;
                 self.emit_queue();
+                self.emit_state();
+            }
+            Command::MoveQueueItem { from, to } => {
+                if from < self.queue.len() && to < self.queue.len() && from != to {
+                    let playing_id = self
+                        .index
+                        .and_then(|i| self.queue.get(i))
+                        .map(|e| e.item_id);
+                    let entry = self.queue.remove(from);
+                    self.queue.insert(to, entry);
+                    self.index = playing_id.and_then(|id| self.index_of_item(id));
+                    self.prefetched_for = None;
+                    self.engine.set_next(None);
+                    if let Some(i) = self.index {
+                        self.prefetch(i).await;
+                    }
+                    self.emit_queue();
+                }
+                self.emit_state();
+            }
+            Command::RemoveQueueItem { index } => {
+                if index < self.queue.len() {
+                    let playing_id = self
+                        .index
+                        .and_then(|i| self.queue.get(i))
+                        .map(|e| e.item_id);
+                    if playing_id == Some(self.queue[index].item_id) {
+                        self.emit(Event::Warning {
+                            message:
+                                "cannot remove the track that is currently playing; skip to it first"
+                                    .into(),
+                        });
+                    } else {
+                        let _ = self.queue.remove(index);
+                        self.index = playing_id.and_then(|id| self.index_of_item(id));
+                        self.prefetched_for = None;
+                        self.engine.set_next(None);
+                        if let Some(i) = self.index {
+                            self.prefetch(i).await;
+                        }
+                        self.emit_queue();
+                    }
+                }
                 self.emit_state();
             }
             Command::GetState => self.emit_state(),

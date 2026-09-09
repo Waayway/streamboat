@@ -136,6 +136,16 @@ pub struct Settings {
     /// Scrobbling to Last.fm and ListenBrainz (D-037), each backend off
     /// until its credentials are supplied.
     pub scrobble: crate::scrobble::ScrobbleSettings,
+    /// Desktop shell theme choice (D-012, D-013): a small set of design
+    /// tokens, not a native-per-OS look. Dark is the default.
+    pub theme: ThemePreference,
+    /// ReplayGain mode (D-019): off / album / track. Persisted here for the
+    /// Settings screen; the player/engine side of switching modes live is
+    /// not built yet (`docs/architecture.md` "not yet built") — today the
+    /// engine always applies the single per-track gain the manifest reports,
+    /// equivalent to album mode, and bypasses it in exclusive/bit-perfect
+    /// output regardless of this setting.
+    pub replay_gain_mode: ReplayGainMode,
 }
 
 impl Default for Settings {
@@ -154,7 +164,74 @@ impl Default for Settings {
             // D-027: on by default, unlike every other opt-in field here.
             play_reporting: true,
             scrobble: crate::scrobble::ScrobbleSettings::default(),
+            theme: ThemePreference::default(),
+            replay_gain_mode: ReplayGainMode::default(),
         }
+    }
+}
+
+/// Desktop shell theme choice (D-012). A small, closed set on purpose: the
+/// owner's brief is one distinctive look with dark/light variants driven by
+/// design tokens, not a system-native theme per OS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePreference {
+    #[default]
+    Dark,
+    Light,
+}
+
+/// ReplayGain mode (D-019): off, album (default), or track. TIDAL's
+/// per-track gain/peak is the only value the API reports either way; "album"
+/// vs "track" is normally a normalization-target distinction upstream
+/// players make when they have the whole album's loudness data, which this
+/// client does not compute independently — see the field doc on
+/// [`Settings::replay_gain_mode`] for what is and is not wired up yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayGainMode {
+    Off,
+    #[default]
+    Album,
+    Track,
+}
+
+impl ReplayGainMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReplayGainMode::Off => "off",
+            ReplayGainMode::Album => "album",
+            ReplayGainMode::Track => "track",
+        }
+    }
+
+    pub const ALL: [ReplayGainMode; 3] = [
+        ReplayGainMode::Off,
+        ReplayGainMode::Album,
+        ReplayGainMode::Track,
+    ];
+}
+
+impl std::fmt::Display for ReplayGainMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl ThemePreference {
+    pub const ALL: [ThemePreference; 2] = [ThemePreference::Dark, ThemePreference::Light];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThemePreference::Dark => "dark",
+            ThemePreference::Light => "light",
+        }
+    }
+}
+
+impl std::fmt::Display for ThemePreference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

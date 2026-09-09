@@ -13,10 +13,8 @@ use clap::Parser;
 use streamboat_core::AudioQuality;
 use streamboat_core::auth::device_code::{start_device_flow, wait_for_device_token};
 use streamboat_core::bootstrap::Context;
-use streamboat_core::privileges::{StreamingPrivileges, hostname_display_name};
+use streamboat_core::privileges::StreamingPrivileges;
 use streamboat_core::proto::{Command, Event, OutputConfig};
-use streamboat_core::reporting::PlayReporter;
-use streamboat_core::scrobble::{LastfmScrobbler, ListenBrainzScrobbler, ScrobbleHub, Scrobbler};
 use streamboat_player::{GstEngine, Player, PlayerConfig, PlayerDeps, PlayerHandle};
 use streamboat_server::api::{self, ApiState};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -88,62 +86,19 @@ async fn main() -> anyhow::Result<()> {
         output,
         volume: cli.volume,
     };
-    // Play reporting (D-027): on by default, from `Settings::play_reporting`.
-    let reporter = Arc::new(
-        PlayReporter::open(
-            ctx.api.clone(),
-            ctx.dirs.data.join("play_reports.json"),
-            ctx.settings.play_reporting,
-        )
-        .context("opening the play-reporting outbox")?,
-    );
+    // Play reporting, scrobbling and streaming privileges (D-027, D-037,
+    // D-033) — the same wiring the desktop shell uses. A headless daemon
+    // needs the privileges socket from day one
+    // (`headless-and-tidal-connect` daemon-architecture.md §6): with no user
+    // watching, a silent revocation is unrecoverable.
+    let deps = PlayerDeps::for_context(&ctx)
+        .context("wiring play reporting, scrobbling and streaming privileges")?;
+    let privileges = deps
+        .privileges
+        .clone()
+        .expect("PlayerDeps::for_context always creates the privileges client");
 
-    // Scrobbling (D-037): only the backends with both `enabled` and a full
-    // credential set actually exist.
-    let mut scrobble_backends: Vec<Arc<dyn Scrobbler>> = Vec::new();
-    if let Some(lastfm) = LastfmScrobbler::open(
-        &ctx.settings.scrobble.lastfm,
-        ctx.dirs.data.join("scrobble_lastfm.json"),
-        ctx.api.user_agent(),
-    )
-    .context("opening the last.fm scrobble queue")?
-    {
-        scrobble_backends.push(Arc::new(lastfm));
-    }
-    if let Some(listenbrainz) = ListenBrainzScrobbler::open(
-        &ctx.settings.scrobble.listenbrainz,
-        ctx.dirs.data.join("scrobble_listenbrainz.json"),
-        ctx.api.user_agent(),
-    )
-    .context("opening the listenbrainz scrobble queue")?
-    {
-        scrobble_backends.push(Arc::new(listenbrainz));
-    }
-    let scrobbler: Option<Arc<dyn Scrobbler>> = if scrobble_backends.is_empty() {
-        None
-    } else {
-        Some(Arc::new(ScrobbleHub::new(scrobble_backends)))
-    };
-
-    // Streaming privileges ("Pushkin", D-033): a headless daemon needs this
-    // from day one (`headless-and-tidal-connect` daemon-architecture.md
-    // §6) — with no user watching, a silent revocation is unrecoverable.
-    let (privileges, privileges_events) =
-        StreamingPrivileges::spawn(ctx.api.clone(), hostname_display_name());
-    let privileges = Arc::new(privileges);
-
-    let handle = Player::spawn(
-        ctx.api.clone(),
-        Box::new(engine),
-        rx,
-        cfg,
-        PlayerDeps {
-            privileges: Some(privileges.clone()),
-            privileges_events: Some(privileges_events),
-            reporter: Some(reporter),
-            scrobbler,
-        },
-    );
+    let handle = Player::spawn(ctx.api.clone(), Box::new(engine), rx, cfg, deps);
 
     // MPRIS registration lives in the engine/player layer (D-030) so it
     // works the same way in daemon mode; it logs and does nothing useful

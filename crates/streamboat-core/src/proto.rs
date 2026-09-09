@@ -42,6 +42,19 @@ pub enum Command {
         output: OutputConfig,
     },
     ClearQueue,
+    /// Move a queue entry from one index to another (UI reorder-by-buttons).
+    /// A no-op past the queue bounds; the currently playing entry is tracked
+    /// by identity across the move, not by index.
+    MoveQueueItem {
+        from: usize,
+        to: usize,
+    },
+    /// Remove one queue entry by its current index. Refused with a
+    /// [`Event::Warning`] if `index` is the entry currently playing — skip to
+    /// it first, then remove.
+    RemoveQueueItem {
+        index: usize,
+    },
     GetState,
     Shutdown,
 }

@@ -50,6 +50,12 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 async-trait = "0.1"
 md-5 = "0.11"
 httpdate = "1"
+iced = "=0.14.0"
+futures = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+[workspace.dependencies.iced_test]
+version = "=0.14.0"
 
 [profile.release]
 lto = "thin"
