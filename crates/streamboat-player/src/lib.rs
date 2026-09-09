@@ -2,6 +2,11 @@
 //! stream and the DAC. The [`engine::Engine`] trait is the contract both
 //! backends satisfy (D-016): GStreamer on Linux, libmpv on Windows and macOS.
 //! [`player::Player`] owns the queue and turns protocol Commands into Events.
+//! [`platform::default_engine`]/[`platform::enumerate_output_devices`] pick
+//! the compiled-in engine and list its output devices; [`media_controls`]
+//! picks the OS media-integration adapter (MPRIS/SMTC/NowPlaying) the same
+//! way — both `streamboatd` and the desktop shell go through these instead
+//! of naming a concrete backend or adapter directly.
 //!
 //! This crate is GPL so that engineering adapted from Sone, High Tide and
 //! Strawberry (all GPL-3.0) is licence-clean here and never lands in the
@@ -12,13 +17,23 @@ pub mod alsa_writer;
 pub mod engine;
 #[cfg(feature = "gstreamer")]
 pub mod gst;
+/// OS media-integration adapter selection (D-030) — see the module doc
+/// comment for why this, not any single adapter module, is what
+/// `streamboatd`/the desktop shell should call.
+pub mod media_controls;
 #[cfg(all(feature = "mpris", target_os = "linux"))]
 pub mod mpris;
 #[cfg(feature = "mpv")]
 pub mod mpv;
+#[cfg(all(feature = "nowplaying", target_os = "macos"))]
+pub mod nowplaying;
+pub mod platform;
 pub mod player;
+#[cfg(all(feature = "smtc", target_os = "windows"))]
+pub mod smtc;
 
 pub use engine::{Engine, EngineEvent, LoadItem};
+pub use platform::{OutputDevice, default_engine, enumerate_output_devices};
 pub use player::{Player, PlayerConfig, PlayerDeps, PlayerHandle};
 
 #[cfg(feature = "gstreamer")]

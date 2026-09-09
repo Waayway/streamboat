@@ -8,7 +8,7 @@ implementation choices made while building the first milestone (D-044).
 | Crate | Licence | Contents |
 | --- | --- | --- |
 | `streamboat-core` | Apache-2.0 | `http` (authenticated client, single-flight and cross-process refresh, 429 gate), `auth::device_code`, `auth::pkce`, `token_store` (AES-256-GCM file, `SBTK` header, keyring-held master key), `manifest` (BTS/EMU/DASH parsing, refusal rule), `api` (sessions, tracks, `playbackinfopostpaywall`, quality cascade, plus the catalogue/library surface below), `proto` (Command/Event), `config` (`AppDirs`, `Settings`, the control API's bearer-token file), `credentials` (device-code and PKCE pairs), `bootstrap`, `privileges` (the Pushkin streaming-privileges websocket, D-033), `reporting` (play reporting to `ec.tidal.com` and the server-anchored clock, D-027), `scrobble` (Last.fm/ListenBrainz, D-037) |
-| `streamboat-player` | GPL-3.0-only | `engine::Engine` trait, `gst::GstEngine` (playbin3, default feature), `mpv::MpvEngine` (libmpv2, `mpv` feature — D-016), `alsa_writer::ExclusiveSink` (exclusive-mode ALSA writer, Linux, `alsa-direct` feature, default on), `player::Player` (queue, prefetch, Command→Event loop, `PlayerHandle::publish` for externally-sourced events, and the optional `PlayerDeps` wiring for the three modules above), `mpris` (Linux, feature `mpris`, default on: `org.mpris.MediaPlayer2.streamboat`) |
+| `streamboat-player` | GPL-3.0-only | `engine::Engine` trait, `gst::GstEngine` (playbin3, default feature), `mpv::MpvEngine` (libmpv2, `mpv` feature — D-016), `alsa_writer::ExclusiveSink` (exclusive-mode ALSA writer, Linux, `alsa-direct` feature, default on), `player::Player` (queue, prefetch, Command→Event loop, `PlayerHandle::publish` for externally-sourced events, and the optional `PlayerDeps` wiring for the three modules above), `platform::default_engine`/`platform::enumerate_output_devices` (pick the compiled-in engine and list its output devices, see below), `media_controls::spawn` (picks the OS media-integration adapter below), `mpris` (Linux, feature `mpris`, default on: `org.mpris.MediaPlayer2.streamboat`), `smtc` (Windows, feature `smtc`, default on: SMTC via `MediaPlayer::SystemMediaTransportControls`), `nowplaying` (macOS, feature `nowplaying`, default on: `MPNowPlayingInfoCenter`/`MPRemoteCommandCenter`) |
 | `streamboat-server` | GPL-3.0-only | `streamboatd`: `api` (the HTTP + WebSocket control API, see below) hosted by default; `--stdio` keeps the original JSON-lines transport; headless login as `auth_required`/`auth_ok` events on the same broadcast every front end reads; constructs the privileges socket, play reporter and scrobblers from `Settings` |
 | `streamboat-desktop` | GPL-3.0-only | `streamboat`: CLI subcommands (login [--pkce], logout, whoami, search, resolve, play, devices, keyring, paths); the iced shell is not built yet |
 
@@ -240,6 +240,98 @@ GStreamer, not libmpv, on Linux in production).
   log messages are not forwarded as `EngineEvent::Warning` — `Event::LogMessage`
   needs `mpv_request_log_messages`, which `libmpv2` 6 does not wrap.
 
+## Engine selection, device enumeration and media controls (D-016, D-030)
+
+`streamboat-player::platform` and `streamboat-player::media_controls` are
+what `streamboatd` (and, once it exists, the desktop shell — see the note in
+"Not yet built" below) call instead of naming `GstEngine`/`MpvEngine` or an
+individual OS adapter directly, so engine/adapter selection lives in one
+place:
+
+- **`platform::default_engine(events, output, runtime_dir) ->
+  EngineResult<Box<dyn Engine>>`**: four non-overlapping `cfg` predicates
+  over the `gstreamer`/`mpv` features (not `target_os` alone, since
+  `cargo test -p streamboat-player --features mpv` builds both features at
+  once on Linux) — Linux-with-`gstreamer` always wins there, matching
+  D-016, even though `mpv` is also compiled in that job; `MpvEngine` stays
+  reachable in that build only by constructing it directly, exactly as
+  `mpv.rs`'s own tests already do. A build with neither feature compiled is
+  a `compile_error!`, not a runtime `EngineError` — Cargo has no per-target
+  default-feature selection, so `Cargo.toml`'s header comment documents the
+  exact `--no-default-features --features mpv,smtc`/`mpv,nowplaying`
+  invocation Windows/macOS builds need.
+- **`platform::enumerate_output_devices() -> Vec<OutputDevice>`**
+  (`OutputDevice { id, name, exclusive_capable }`): GStreamer's
+  `DeviceMonitor` on Linux — moved here from `streamboat-desktop`'s
+  `devices` CLI subcommand, which still has its own copy of the same logic
+  inline (that CLI is another agent's in-flight work in this repository;
+  the desktop shell's `devices` command should call this function instead
+  once that lands, per the note below) — reading `api.alsa.path` or
+  `alsa.card`+`alsa.device` into an `hw:C,D` id
+  (`os-integration.md` §1/§3's table); mpv's `audio-device-list` property
+  on Windows/macOS, via a short-lived, otherwise-idle `Mpv` instance that
+  opens no device, filtered to entries the running platform's own AO driver
+  produces (`wasapi/`, `coreaudio`) plus the generic `auto` entry.
+  `exclusive_capable` is `false` only for that generic entry, since
+  exclusive mode (D-017) needs a concrete device. Absent either backend
+  feature, this returns an empty list rather than failing to build:
+  device enumeration is a nicety a missing backend degrades, unlike engine
+  construction itself.
+- **`media_controls::spawn(handle)`**: `cfg`-picks `mpris::spawn` (Linux),
+  `smtc::spawn` (Windows, new), or `nowplaying::spawn` (macOS, new) — one
+  adapter per OS, so no "prefer the platform pick over what else is
+  compiled" logic is needed here the way `default_engine` needs it. Logs
+  and returns on any other combination (an adapter feature deliberately
+  dropped, or an unlisted OS).
+
+**`smtc.rs`** (Windows, feature `smtc`, default on; `windows` 0.62.2 pinned,
+features `Media`, `Media_Playback`, `Foundation`, `Storage_Streams`,
+`Win32_System_WinRT`): `Windows::Media::Playback::MediaPlayer`'s own
+`SystemMediaTransportControls` property, not
+`SystemMediaTransportControlsInterop::GetForWindow` — the latter is the path
+`os-integration.md` §5 documents as needing a real `HWND` ("a
+`streamboat-server` Windows service or CLI daemon with no window gets no
+SMTC integration at all"); a bare `MediaPlayer` instance creates its own
+implicit message-only window, so this works from a plain background thread
+with no window of streamboat's own. `RoInitialize(RO_INIT_MULTITHREADED)`
+once per thread (every WinRT call needs an apartment first — the
+`Win32_System_WinRT` feature beyond the four the task named is for exactly
+this), `ButtonPressed` mapped to Play/Pause/Stop/Next/Previous `Command`s,
+`DisplayUpdater` (`MusicProperties` title/artist/album, a thumbnail from the
+album-cover URL via `RandomAccessStreamReference::CreateFromUri`),
+`PlaybackStatus`, and `SystemMediaTransportControlsTimelineProperties` from
+`Event::Position` (`TimeSpan::Duration` is 100 ns ticks). Volume: SMTC has
+no volume surface of its own, so D-017's rule stays entirely at the
+`Player`/engine layer — nothing here needs to force anything back.
+
+**`nowplaying.rs`** (macOS, feature `nowplaying`, default on;
+`objc2-media-player` 0.3.2 + `objc2-foundation` 0.3.2 + `objc2` 0.6.3 +
+`block2` 0.6.2, all pinned and verified on crates.io, default features on
+every one — `objc2-media-player`'s own default set already includes
+`MPNowPlayingInfoCenter`/`MPRemoteCommand(Center, Event)`/`block2`):
+`MPNowPlayingInfoCenter.nowPlayingInfo`/`.playbackState` rebuilt in full on
+every update (title, artist, album, duration, elapsed, a fixed playback
+rate of `1.0` — mirroring `mpris.rs`'s own "always resend the whole
+`Metadata`" style) and `MPRemoteCommandCenter`'s play/pause/toggle/next/
+previous/`changePlaybackPosition` commands, each `addTargetWithHandler`'d
+with a `block2::RcBlock` that sends a `Command` through the plain `Send`
+handle. **Open, not resolved by this change**: `os-integration.md` §1 notes
+`souvlaki`'s own README says macOS now-playing integration "requires an
+AppDelegate/winit event loop" — a bare `streamboatd` has none. This is
+written correctly against the documented Objective-C contract and registers
+unconditionally regardless (same "log and continue" rule every adapter
+here follows), but whether `MPRemoteCommandCenter`'s command *handlers*
+actually fire with no run loop at all is unverified; the desktop shell,
+once it has one, is where this is most likely to work fully.
+
+**Untested beyond compiling — see "Cross-target type-checking" below**:
+neither `smtc.rs` nor `nowplaying.rs` has ever run against a real SMTC
+popup or Control Center; both are written from the `windows`/`objc2*`
+crates' own published, generated bindings (checked line-by-line against
+each crate's actual source for this change, not from memory) rather than
+from a live build, the same standing `mpv.rs`'s own Windows/macOS AO option
+values already carry.
+
 ## Catalogue and library API surface (D-001, D-015, D-028, D-039)
 
 `streamboat-core::api` is now a module directory: `mod.rs` keeps the spike's
@@ -409,7 +501,17 @@ reuses one id for both anyway, the cheapest safe move the reference names).
   same-format gapless pair reopens the PCM exactly once, skipping with a
   message if `null` can't be opened (see the exclusive-mode bullet above
   for what this does *not* verify — everything hardware-dependent, tested
-  only by hand against a real DAC).
+  only by hand against a real DAC); `platform` covers `enumerate_output_devices`
+  not panicking and `default_engine` constructing the GStreamer backend
+  (both Linux, fakesink) plus a pure `parse_mpv_device_list` JSON-mapping
+  test that runs on Linux too under the `mpv` feature (deliberately not
+  gated to "only when mpv is the preferred backend," unlike the function it
+  tests, so `cargo test -p streamboat-player --features mpv` still exercises
+  it even though `GstEngine` wins there); `smtc`/`nowplaying` unit tests
+  cover pure mapping only (`PlaybackStatus`/`MediaPlaybackStatus`/
+  `MPNowPlayingPlaybackState` conversion, the exclusive-mode volume-is-the-
+  engine's-problem rule) and are compiled only on their own OS — neither
+  runs anywhere in this change, see "Cross-target type-checking" below.
 - `streamboat-server`: `tests/api.rs` (see "Control API" above) — health,
   auth, Host allowlisting, a command changing state, and both directions of
   the WebSocket, all over real sockets against an in-process daemon.
@@ -418,19 +520,94 @@ reuses one id for both anyway, the cheapest safe move the reference names).
   a Debian container job
   builds `streamboatd` without GUI libraries and asserts none are linked —
   `axum`, `tokio-tungstenite` and `mpris-server`/`zbus` are all pure Rust and
-  link no system D-Bus or GUI library, so this still passes.
+  link no system D-Bus or GUI library, so this still passes; a `cross-check`
+  job type-checks the Windows (`mpv`, `smtc`) feature combination — see
+  below for exactly what that does and does not prove, and why macOS has no
+  equivalent CI job.
+
+## Cross-target type-checking (D-016, this task)
+
+Run by hand for this change (`rustup target add x86_64-pc-windows-gnu
+aarch64-apple-darwin`), and as the new `cross-check` CI job for the half
+that can run unattended:
+
+- **`cargo check -p streamboat-player --target x86_64-pc-windows-gnu
+  --no-default-features --features mpv,smtc` — passes, in CI now.** Needs
+  `gcc-mingw-w64-x86-64` installed first: `streamboat-core`'s `reqwest`/
+  `tokio-tungstenite` pull in `ring`, whose build script compiles C
+  regardless of target, even at `cargo check` time — this is not specific
+  to `libmpv2-sys` (which also builds cleanly here) or to anything new in
+  this change, it is just the first time this workspace has cross-checked a
+  non-Linux target at all. With that toolchain present the whole
+  dependency graph — `libmpv2-sys`/`libmpv2`, `windows` 0.62.2 with every
+  feature this task uses, and `smtc.rs` itself — type-checks with zero
+  errors and exactly one warning, pre-existing and unrelated to this
+  change (`streamboat-core::fsutil`'s `unused import: File`, live only on
+  a non-Linux target; not touched here since `streamboat-core` is outside
+  this task's scope — flagged for whoever next touches that module).
+- **`cargo check -p streamboat-player --target aarch64-apple-darwin
+  --no-default-features --features mpv,nowplaying` (or `nowplaying` alone)
+  — fails before reaching any of this task's code, in or out of CI.** Same
+  `ring` build script, but this time it invokes the *host's* `cc` with
+  macOS-only flags (`-arch arm64`, `-mmacosx-version-min=11.0`) that a
+  plain Linux `cc` does not understand — cross-compiling `ring`'s C needs a
+  real Apple SDK/`osxcross`-class toolchain, not just a Rust target added
+  via `rustup`, and installing one is out of scope for this change (and
+  arguably for a CI runner at all — Apple's SDK terms are the same reason
+  no reference client in this project's research vendors one). This blocks
+  before `objc2`/`nowplaying.rs` are reached at all, on either feature
+  combination, so there is no CI job for it.
+- **Supplementary check, not part of the CI job (`ring` never involved):**
+  a standalone scratch crate depending on `objc2-foundation` 0.3.2,
+  `objc2-media-player` 0.3.2 and `block2` 0.6.2, plus `objc2` 0.6.3 as
+  declared (resolving to 0.6.4 here, same as the real crate's own Cargo.lock
+  entry) — reproducing `nowplaying.rs`'s `wire_commands`/
+  `update_now_playing_info` logic verbatim, checked clean against
+  `aarch64-apple-darwin` with zero errors and (once two redundant nested
+  `unsafe` blocks inside a closure already covered by an enclosing one were
+  removed — a real finding from this check, now fixed in `nowplaying.rs`
+  too) zero warnings. This is real evidence for the `objc2` API calls
+  themselves (extern statics, `RcBlock::new`, `addTargetWithHandler`,
+  `NSDictionary::from_slices`, `NonNull::cast`) being correct against the
+  pinned versions on this target; it is not evidence that the full crate
+  builds for macOS (blocked by `ring`, above) or that `MPNowPlayingInfoCenter`/
+  `MPRemoteCommandCenter` behave as documented against a live Objective-C
+  runtime — no macOS machine of any kind was available to this change.
+- **Untested no differently than `mpv.rs`'s existing Windows/macOS AO
+  option values**: neither `smtc.rs` nor `nowplaying.rs` has run against a
+  real SMTC popup, Control Center, or `MPRemoteCommandCenter` callback.
+  Both are written from the `windows`/`objc2*` crates' own published,
+  generated bindings, checked line-by-line against each crate's actual
+  source for this change (not from memory) and, for `smtc.rs`, against a
+  full, successful cross-target `cargo check` — a meaningfully higher bar
+  than "compiles," but still short of "seen it work."
 
 ## Not yet built (in decision order)
 
 the `streamboat://` handler for the desktop shell (D-024); the Flatpak Secret
-portal (D-026); wiring `MpvEngine` into `streamboat`/`streamboatd`'s engine
-selection for Windows and macOS (D-016 — the backend itself is built and
-tested on Linux, see above); the
-`org.freedesktop.ReserveDevice1` device-reservation handshake for the ALSA
-writer (`output-backends.md` §2, explicitly optional — `EBUSY` on open is
-handled with a bounded retry regardless); SMTC/NowPlayingInfoCenter (MPRIS is
-done for Linux, D-030); streaming privileges, play reporting and scrobbling
-wired into the `streamboat` CLI/desktop shell rather than only `streamboatd`
-(D-033, D-027, D-037 — the modules and the daemon wiring exist; see the
-section above); the iced shell (D-013); the offline cache (D-022); packaging
-(D-041).
+portal (D-026); the `org.freedesktop.ReserveDevice1` device-reservation
+handshake for the ALSA writer (`output-backends.md` §2, explicitly optional
+— `EBUSY` on open is handled with a bounded retry regardless); streaming
+privileges, play reporting and scrobbling wired into the `streamboat` CLI/desktop shell
+rather than only `streamboatd` (D-033, D-027, D-037 — the modules and the
+daemon wiring exist; see the section above); the iced shell (D-013); the
+offline cache (D-022); packaging (D-041).
+
+`streamboat_player::default_engine`/`enumerate_output_devices`/
+`media_controls::spawn` (D-016, D-030 — see "Engine selection, device
+enumeration and media controls" above) are built and wired into
+`streamboatd`; **the desktop shell's `main.rs` should call the same three
+helpers once its own rewrite lands** — `Cmd::Play` in place of its direct
+`GstEngine::new(...)`, `Cmd::Devices` in place of its own inline
+`DeviceMonitor` copy (`enumerate_output_devices` is the single
+source of that logic now), and once it holds a `PlayerHandle` for real,
+`media_controls::spawn(handle)` in place of nothing today — this was not
+done here because another agent owns `crates/streamboat-desktop/src/main.rs`
+in this worktree. `smtc.rs`/`nowplaying.rs` are built (Windows/macOS,
+default-on features `smtc`/`nowplaying`) but genuinely untested beyond
+`cargo check`/cross-target type-checking — no Windows or macOS CI runner
+exists yet; see "Cross-target type-checking" below for exactly what did and
+did not get checked, and each module's own doc comment for the specific
+open questions (SMTC: none beyond "no live popup was ever seen"; NowPlaying:
+whether `MPRemoteCommandCenter`'s handlers fire at all with no AppKit run
+loop in a bare daemon).

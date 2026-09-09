@@ -17,7 +17,7 @@ use streamboat_core::privileges::{StreamingPrivileges, hostname_display_name};
 use streamboat_core::proto::{Command, Event, OutputConfig};
 use streamboat_core::reporting::PlayReporter;
 use streamboat_core::scrobble::{LastfmScrobbler, ListenBrainzScrobbler, ScrobbleHub, Scrobbler};
-use streamboat_player::{GstEngine, Player, PlayerConfig, PlayerDeps, PlayerHandle};
+use streamboat_player::{Player, PlayerConfig, PlayerDeps, PlayerHandle, default_engine};
 use streamboat_server::api::{self, ApiState};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::broadcast;
@@ -80,7 +80,9 @@ async fn main() -> anyhow::Result<()> {
         (d, _) => OutputConfig::Shared { device: d },
     };
     let (tx, rx) = mpsc::channel();
-    let engine = GstEngine::new(tx, output.clone(), ctx.dirs.runtime.clone())?;
+    // Whichever backend this build actually compiled, preferring D-016's
+    // platform pick (`streamboat_player::platform`'s module doc comment).
+    let engine = default_engine(tx, output.clone(), ctx.dirs.runtime.clone())?;
     let cfg = PlayerConfig {
         quality_ceiling: cli
             .quality
@@ -134,7 +136,8 @@ async fn main() -> anyhow::Result<()> {
 
     let handle = Player::spawn(
         ctx.api.clone(),
-        Box::new(engine),
+        // `default_engine` already returns `Box<dyn Engine>`.
+        engine,
         rx,
         cfg,
         PlayerDeps {
@@ -145,12 +148,12 @@ async fn main() -> anyhow::Result<()> {
         },
     );
 
-    // MPRIS registration lives in the engine/player layer (D-030) so it
-    // works the same way in daemon mode; it logs and does nothing useful
-    // when there is no D-Bus session (a headless box, this CI), never
-    // failing the daemon.
-    #[cfg(all(feature = "mpris", target_os = "linux"))]
-    streamboat_player::mpris::spawn(handle.clone());
+    // OS media-key integration (MPRIS/SMTC/NowPlaying, D-030) lives in the
+    // engine/player layer so it works the same way in daemon mode; whichever
+    // adapter this build compiled for this target logs and does nothing
+    // useful when there is no D-Bus session/WinRT runtime/run loop (a
+    // headless box, this CI), never failing the daemon.
+    streamboat_player::media_controls::spawn(handle.clone());
 
     if cli.stdio {
         // Subscribe before kicking off headless login: `PlayerHandle::publish`

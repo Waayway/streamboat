@@ -35,7 +35,11 @@ const DASHDEMUX2_FLAC_FLOOR: (u32, u32, u32) = (1, 26, 10);
 
 static INIT: OnceLock<Result<(), String>> = OnceLock::new();
 
-fn ensure_init() -> EngineResult<()> {
+/// `pub(crate)` so [`crate::platform::enumerate_output_devices`] can reuse
+/// the same GStreamer init (and `dashdemux2` demotion) `GstEngine::new`
+/// itself relies on, rather than calling `gst::init()` a second, redundant
+/// way.
+pub(crate) fn ensure_init() -> EngineResult<()> {
     INIT.get_or_init(|| {
         gst::init().map_err(|e| e.to_string())?;
         let (maj, min, mic, _) = gst::version();
