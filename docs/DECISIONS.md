@@ -536,3 +536,69 @@ the API-drift canary exists, since a client of an unofficial API goes stale in a
 to hear about.
 
 Alternatives: check-and-notify (the research recommendation); a signed updater for bundles.
+
+## 2026-09-09 — Round 12: first milestone, binaries, testing, fixtures
+
+### D-044 First milestone: a playable spike from the CLI, then the UI (q13.1) — decided
+
+Log in, resolve a manifest and play one track to the end from the CLI, through the same
+Command/Event types the GUI will use, with the audio engine behind its trait on all three OSes
+(GStreamer on Linux, libmpv on Windows and macOS) and the gapless-plus-exclusive combination
+(D-018) prototyped. No browse UI until this is proven. Sequencing inside the full-client first
+release (D-001), not a change to its scope.
+
+Alternatives: daemon and CLI first; auth and browse UI first.
+
+### D-045 Binary shape: `streamboat` and `streamboatd` (q13.2) — decided
+
+Two artifacts: `streamboat`, the iced desktop shell with CLI subcommands, and `streamboatd`, a
+GUI-free daemon. A CI job builds `streamboatd` in a container with no GUI libraries to prove it
+stays headless-clean. Crate layout behind them: `streamboat-core` (Apache-2.0: API client, auth,
+manifest parsing, models), `streamboat-player` (GPL-3.0-only: engine trait, GStreamer and libmpv
+backends, per-OS output writers, queue), `streamboat-server` (GPL-3.0-only: daemon, control API,
+MPRIS/SMTC adapters), `streamboat-desktop` (GPL-3.0-only: iced shell, tray, mini-player).
+
+Alternatives: one binary with a daemon subcommand (tidalt).
+
+### D-046 Testing and CI from the start: unit, fixture and UI tests (q13.3) — decided
+
+Parser/transport split with synthetic API fixtures and a mock HTTP server; clippy and rustfmt
+gates; a CI job building the daemon in a GUI-free container; and iced UI tests through the
+toolkit's headless test harness for key screens (widget-tree assertions, simulated input) from
+the first screens onward. Fork-safe: no job needs a secret or a live TIDAL account. An opt-in
+live canary against the developer's own account runs outside CI to catch API drift.
+
+Alternatives: unit and fixture tests only (the research recommendation); Rust unit tests only.
+
+### D-047 API test fixtures: synthetic (q13.4) — decided
+
+Structure-preserving, content-invented fixtures written from the documented schemas: real field
+names and shapes, invented titles, artists and IDs. Nothing of TIDAL's catalogue is republished.
+The live canary (D-046) is what catches drift between fixtures and the real wire format.
+
+Alternatives: real captures redacted and public; real captures kept private.
+
+## The decided stack at a glance (as of 2026-09-09)
+
+| Area | Decision | Ref |
+| --- | --- | --- |
+| Product | Full client at first release: browse (Home/Explore via server-driven feed), search, collection, playlists, queue, lyrics, mixes and radio, gapless, MPRIS/SMTC | D-001, D-015 |
+| Platforms | Linux, Windows, macOS desktop at parity; Linux daemon; Windows/macOS always-on via tray | D-002, D-011, D-014 |
+| Mobile | Someday; core stays UI-free, proven by CI | D-004 |
+| Quality | LOW, HIGH, LOSSLESS, HI_RES_LOSSLESS at launch; no Atmos decode, no MQA/360 | D-003 |
+| Licence | GPL-3.0-only apps and player crate; Apache-2.0 core; no CLA/DCO | D-005, D-006, D-009 |
+| Identity | `io.github.waayway.streamboat`; `streamboat://` URI scheme | D-007 |
+| Language | Rust workspace; no webview | D-008 |
+| UI | iced; one look everywhere, token-themed; hybrid browse renderer | D-012, D-013, D-015 |
+| Process model | Two artifacts over one core; single-instance lock; GUI falls back to remote client | D-010, D-045 |
+| Engine | GStreamer (Linux, bundled and pinned) and libmpv (Windows/macOS, bundled) behind one trait | D-016, D-020 |
+| Output | Exclusive/bit-perfect on all three OSes in v1, off by default; reopen device on format change; ReplayGain on by default; no crossfade; no DSP | D-017, D-018, D-019, D-021 |
+| Offline | Pinned, encrypted, device-bound offline cache with strict guardrails | D-022 |
+| Credentials & login | Embedded default with user override; device code (headless) and PKCE (desktop); honest User-Agent with fallback | D-023, D-024, D-025 |
+| Tokens & account | Keyring with encrypted-file fallback; play reporting on by default, disclosed; library writes only | D-026, D-027, D-028 |
+| Privacy | No telemetry; local crash dumps plus debug bundle | D-029 |
+| Control | HTTP + WebSocket JSON on loopback, daemon-hosted, additive versioning; MPRIS/SMTC adapters; MPD subset later | D-030, D-031, D-032 |
+| Multi-device | Streaming-privileges websocket with claim-on-intent; Snapcast plugin output; no Connect target or controller | D-033, D-034, D-035 |
+| Extras | Signal-path panel and mini-player in v1; Last.fm and ListenBrainz; video later (desktop); follow artists only | D-036 to D-039 |
+| Distribution | AI disclosure and human-authored commits; GitHub Releases, AUR, deb/rpm, AppImage, Docker, Windows MSI/winget, macOS DMG; no Flathub, no signing, no updater for v1 | D-040 to D-043 |
+| Delivery | Playable CLI spike first; unit, fixture and iced UI tests from the start; synthetic fixtures | D-044, D-046, D-047 |
