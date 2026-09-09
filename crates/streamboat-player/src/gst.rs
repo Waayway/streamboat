@@ -53,20 +53,25 @@ fn ensure_init() -> EngineResult<()> {
     .map_err(EngineError::Unavailable)
 }
 
-struct Shared {
+pub(crate) struct Shared {
     /// The successor handed to `set_next`, consumed by `about-to-finish`.
-    next: Mutex<Option<LoadItem>>,
+    pub(crate) next: Mutex<Option<LoadItem>>,
     /// The item whose URI is currently set on playbin (may be the successor
     /// after `about-to-finish` fired but before its stream started).
-    current: Mutex<Option<LoadItem>>,
+    pub(crate) current: Mutex<Option<LoadItem>>,
     /// The item audio is actually flowing for.
-    playing: Mutex<Option<LoadItem>>,
-    events: Sender<EngineEvent>,
-    stop_bus: AtomicBool,
+    pub(crate) playing: Mutex<Option<LoadItem>>,
+    pub(crate) events: Sender<EngineEvent>,
+    pub(crate) stop_bus: AtomicBool,
+    /// The exclusive-mode ALSA sink, when one is active (D-017), so the
+    /// `about-to-finish` handler can decide the gapless successor's
+    /// bit-perfect format before its first buffer reaches the appsink.
+    #[cfg(feature = "alsa-direct")]
+    pub(crate) alsa_exclusive: Mutex<Option<Arc<crate::alsa_writer::ExclusiveSink>>>,
 }
 
 impl Shared {
-    fn emit(&self, e: EngineEvent) {
+    pub(crate) fn emit(&self, e: EngineEvent) {
         let _ = self.events.send(e);
     }
 }
@@ -122,6 +127,8 @@ impl GstEngine {
             playing: Mutex::new(None),
             events,
             stop_bus: AtomicBool::new(false),
+            #[cfg(feature = "alsa-direct")]
+            alsa_exclusive: Mutex::new(None),
         });
 
         // Gapless: when playbin is about to run dry, hand it the successor.
@@ -136,6 +143,20 @@ impl GstEngine {
             if let Some(item) = next {
                 match uri_for(&item.source, None) {
                     Ok((uri, _)) => {
+                        // Decide the successor's bit-perfect format before its
+                        // first buffer can reach the appsink (D-018): same
+                        // format as the current track keeps the PCM open,
+                        // gapless; a different one reopens with a silence
+                        // pre-roll once the writer observes it.
+                        #[cfg(feature = "alsa-direct")]
+                        if let Some(sink) = s.alsa_exclusive.lock().unwrap().clone() {
+                            if let Err(e) = sink.prepare_item(item.bit_depth) {
+                                s.emit(EngineEvent::Error {
+                                    id: Some(item.id),
+                                    message: e.to_string(),
+                                });
+                            }
+                        }
                         pb.set_property("uri", &uri);
                         *s.current.lock().unwrap() = Some(item);
                     }
@@ -244,11 +265,31 @@ impl GstEngine {
                                 }
                                 if let Some(c) = cur {
                                     shared.emit(EngineEvent::Started { id: c.id });
-                                    if let Some(desc) = describe_sink_caps(&sink_probe) {
-                                        shared.emit(EngineEvent::Format {
-                                            id: c.id,
-                                            description: desc,
-                                        });
+                                    // The alsa-direct writer emits its own
+                                    // Format event from the real hw_params
+                                    // read-back once it opens/confirms the
+                                    // PCM; this caps-guess would otherwise
+                                    // report the *source* format flowing
+                                    // into the writer's bin, not the device
+                                    // format (D-036: report only what is
+                                    // observed).
+                                    let alsa_direct_active = {
+                                        #[cfg(feature = "alsa-direct")]
+                                        {
+                                            shared.alsa_exclusive.lock().unwrap().is_some()
+                                        }
+                                        #[cfg(not(feature = "alsa-direct"))]
+                                        {
+                                            false
+                                        }
+                                    };
+                                    if !alsa_direct_active {
+                                        if let Some(desc) = describe_sink_caps(&sink_probe) {
+                                            shared.emit(EngineEvent::Format {
+                                                id: c.id,
+                                                description: desc,
+                                            });
+                                        }
                                     }
                                 }
                             }
@@ -261,6 +302,15 @@ impl GstEngine {
     }
 
     fn apply_output(&mut self, output: &OutputConfig) -> EngineResult<()> {
+        // Any previous exclusive-mode ALSA writer belongs to the output
+        // being replaced; stop it (and its thread) before building whatever
+        // comes next, mirroring the D-Bus device-reservation release-order
+        // rule (release the old resource before acquiring the new one).
+        #[cfg(feature = "alsa-direct")]
+        if let Some(old) = self.shared.alsa_exclusive.lock().unwrap().take() {
+            old.stop();
+        }
+
         let test_sink = self.sink_override.clone();
         let (sink, flags, name): (gst::Element, &str, String) = match (&test_sink, output) {
             (Some(desc), _) => {
@@ -270,6 +320,22 @@ impl GstEngine {
                     .map_err(|e| EngineError::Output(format!("test sink {desc:?}: {e}")))?;
                 (sink, "audio+soft-volume", format!("test:{desc}"))
             }
+            #[cfg(feature = "alsa-direct")]
+            (None, OutputConfig::Exclusive { device }) => {
+                let exclusive =
+                    crate::alsa_writer::ExclusiveSink::new(device, self.shared.clone())?;
+                let sink = exclusive.bin.clone();
+                *self.shared.alsa_exclusive.lock().unwrap() = Some(Arc::new(exclusive));
+                // native-audio: no audioconvert/audioresample/volume from
+                // playbin's own side; our bin's own audioconvert only ever
+                // does a lossless container widening or a channel mix.
+                (
+                    sink,
+                    "audio+native-audio",
+                    format!("alsa-direct device={device}"),
+                )
+            }
+            #[cfg(not(feature = "alsa-direct"))]
             (None, OutputConfig::Exclusive { device }) => {
                 let sink = gst::ElementFactory::make("alsasink")
                     .property("device", device)
@@ -428,6 +494,10 @@ impl Engine for GstEngine {
             self.temp_files.push(p);
         }
         self.set_replaygain(&item);
+        #[cfg(feature = "alsa-direct")]
+        if let Some(sink) = self.shared.alsa_exclusive.lock().unwrap().clone() {
+            sink.prepare_item(item.bit_depth)?;
+        }
         self.playbin.set_property("uri", &uri);
         if !self.output.is_exclusive() {
             self.playbin.set_property("volume", self.volume);
@@ -447,14 +517,27 @@ impl Engine for GstEngine {
         self.playbin
             .set_state(gst::State::Playing)
             .map(|_| ())
-            .map_err(|e| EngineError::Other(format!("play: {e}")))
+            .map_err(|e| EngineError::Other(format!("play: {e}")))?;
+        #[cfg(feature = "alsa-direct")]
+        if let Some(sink) = self.shared.alsa_exclusive.lock().unwrap().clone() {
+            sink.set_pause(false);
+        }
+        Ok(())
     }
 
     fn pause(&mut self) -> EngineResult<()> {
         self.playbin
             .set_state(gst::State::Paused)
             .map(|_| ())
-            .map_err(|e| EngineError::Other(format!("pause: {e}")))
+            .map_err(|e| EngineError::Other(format!("pause: {e}")))?;
+        // Hardware pause when the device supports it, else the writer
+        // falls back to a software pause (silence-paced), per D-018/§12:
+        // hold the device across a pause rather than releasing it.
+        #[cfg(feature = "alsa-direct")]
+        if let Some(sink) = self.shared.alsa_exclusive.lock().unwrap().clone() {
+            sink.set_pause(true);
+        }
+        Ok(())
     }
 
     fn stop(&mut self) -> EngineResult<()> {
@@ -508,13 +591,61 @@ impl Engine for GstEngine {
     }
 
     fn position(&self) -> Option<(u64, Option<u64>)> {
+        let dur = self
+            .playbin
+            .query_duration::<gst::ClockTime>()
+            .map(|d| d.mseconds());
+        // The write-vs-audible correction (`snd_pcm_delay`, §8) is only
+        // meaningful for the exclusive-mode writer; a normal sink answers
+        // playbin's own position query correctly already.
+        #[cfg(feature = "alsa-direct")]
+        if let Some(sink) = self.shared.alsa_exclusive.lock().unwrap().clone() {
+            if let Some(pos) = sink.position_ms() {
+                return Some((pos, dur));
+            }
+        }
         let pos = self.playbin.query_position::<gst::ClockTime>()?;
-        let dur = self.playbin.query_duration::<gst::ClockTime>();
-        Some((pos.mseconds(), dur.map(|d| d.mseconds())))
+        Some((pos.mseconds(), dur))
     }
 
     fn signal_path(&self) -> Option<SignalPath> {
         let (maj, min, mic, _) = gst::version();
+
+        // The alsa-direct writer reports the *actually negotiated* device
+        // format from its own hw_params read-back, rather than the
+        // best-effort caps-guess `find_sink_caps` below has to make for an
+        // opaque `alsasink`/`autoaudiosink` (D-036: report only what is
+        // observed).
+        #[cfg(feature = "alsa-direct")]
+        if let Some(sink) = self.shared.alsa_exclusive.lock().unwrap().clone() {
+            let playing = self.shared.playing.lock().unwrap().clone();
+            let source_format = playing.as_ref().map(|i| {
+                format!(
+                    "{} {} Hz {}-bit",
+                    i.codec.clone().unwrap_or_else(|| "?".into()),
+                    i.sample_rate
+                        .map(|r| r.to_string())
+                        .unwrap_or_else(|| "?".into()),
+                    i.bit_depth
+                        .map(|b| b.to_string())
+                        .unwrap_or_else(|| "?".into())
+                )
+            });
+            return Some(SignalPath {
+                engine: format!("gstreamer {maj}.{min}.{mic} + alsa-direct writer"),
+                source_format,
+                decoder: decoder_name(&self.playbin),
+                sink: Some(self.sink_name.clone()),
+                device: Some(sink.device().to_string()),
+                device_format: sink.device_format_description(),
+                exclusive: true,
+                converted: sink.converted_description(),
+                volume_applied: false,
+                replaygain_applied: false,
+                bit_perfect: sink.bit_perfect(),
+            });
+        }
+
         let sink: gst::Element = self.playbin.property("audio-sink");
         let device_format = find_sink_caps(&sink).and_then(|c| {
             let s = c.structure(0)?;
@@ -580,6 +711,14 @@ impl Engine for GstEngine {
 
 impl Drop for GstEngine {
     fn drop(&mut self) {
+        // Stop the writer thread deterministically rather than relying on
+        // the playbin's own signal-handler closure to drop its `Shared`
+        // clone (and this `Arc<ExclusiveSink>` with it) at some later,
+        // GObject-refcount-determined point.
+        #[cfg(feature = "alsa-direct")]
+        if let Some(sink) = self.shared.alsa_exclusive.lock().unwrap().take() {
+            sink.stop();
+        }
         self.shared.stop_bus.store(true, Ordering::Relaxed);
         let _ = self.playbin.set_state(gst::State::Null);
         if let Some(t) = self.bus_thread.take() {

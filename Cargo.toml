@@ -40,6 +40,8 @@ hex = "0.4"
 gstreamer = "0.24"
 gstreamer-audio = "0.24"
 axum = { version = "0.8", features = ["ws"] }
+alsa = "0.10"
+libc = "0.2"
 wiremock = "0.6"
 tempfile = "3"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }

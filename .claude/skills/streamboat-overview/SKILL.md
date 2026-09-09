@@ -250,9 +250,10 @@ The first milestone (D-044), the playable CLI spike, is built for Linux: `cargo 
 produces `streamboat` (CLI) and `streamboatd` (a daemon hosting the HTTP + WebSocket control API by
 default, `--stdio` for the original JSON-lines protocol); `streamboat login` runs the device-code
 flow, `streamboat resolve <id>` shows the cascade result, `streamboat play <id>…` plays through
-GStreamer with gapless hand-over and a selectable `hw:` device. `docs/architecture.md` records what
-exists, the implementation choices made along the way, and the ordered list of what is not built yet
-(libmpv backend, ALSA writer, SMTC/NowPlayingInfoCenter, iced shell). Read it before touching code.
+GStreamer with gapless hand-over and a selectable `hw:` device, exclusive through the project's own
+ALSA writer. `docs/architecture.md` records what exists, the implementation choices made along the
+way, and the ordered list of what is not built yet (libmpv backend, SMTC/NowPlayingInfoCenter, iced
+shell). Read it before touching code.
 
 Topic skills still carry their pre-decision "Open decisions" sections, each now headed by a note
 pointing at the decision log; read them as the inputs that were considered, not as open questions.

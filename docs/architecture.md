@@ -8,7 +8,7 @@ implementation choices made while building the first milestone (D-044).
 | Crate | Licence | Contents |
 | --- | --- | --- |
 | `streamboat-core` | Apache-2.0 | `http` (authenticated client, single-flight and cross-process refresh, 429 gate), `auth::device_code`, `auth::pkce`, `token_store` (AES-256-GCM file, `SBTK` header, keyring-held master key), `manifest` (BTS/EMU/DASH parsing, refusal rule), `api` (sessions, tracks, `playbackinfopostpaywall`, quality cascade, plus the catalogue/library surface below), `proto` (Command/Event), `config` (`AppDirs`, `Settings`, the control API's bearer-token file), `credentials` (device-code and PKCE pairs), `bootstrap`, `privileges` (the Pushkin streaming-privileges websocket, D-033), `reporting` (play reporting to `ec.tidal.com` and the server-anchored clock, D-027), `scrobble` (Last.fm/ListenBrainz, D-037) |
-| `streamboat-player` | GPL-3.0-only | `engine::Engine` trait, `gst::GstEngine` (playbin3), `player::Player` (queue, prefetch, Command→Event loop, `PlayerHandle::publish` for externally-sourced events, and the optional `PlayerDeps` wiring for the three modules above), `mpris` (Linux, feature `mpris`, default on: `org.mpris.MediaPlayer2.streamboat`) |
+| `streamboat-player` | GPL-3.0-only | `engine::Engine` trait, `gst::GstEngine` (playbin3), `alsa_writer::ExclusiveSink` (exclusive-mode ALSA writer, Linux, `alsa-direct` feature, default on), `player::Player` (queue, prefetch, Command→Event loop, `PlayerHandle::publish` for externally-sourced events, and the optional `PlayerDeps` wiring for the three modules above), `mpris` (Linux, feature `mpris`, default on: `org.mpris.MediaPlayer2.streamboat`) |
 | `streamboat-server` | GPL-3.0-only | `streamboatd`: `api` (the HTTP + WebSocket control API, see below) hosted by default; `--stdio` keeps the original JSON-lines transport; headless login as `auth_required`/`auth_ok` events on the same broadcast every front end reads; constructs the privileges socket, play reporter and scrobblers from `Settings` |
 | `streamboat-desktop` | GPL-3.0-only | `streamboat`: CLI subcommands (login [--pkce], logout, whoami, search, resolve, play, devices, keyring, paths); the iced shell is not built yet |
 
@@ -82,10 +82,65 @@ streamboat play 123 456
   Manifests are never persisted beyond that.
 - **`dashdemux2` demotion**: on GStreamer < 1.26.10 the modern demuxer is
   ranked `NONE` at init so the legacy `dashdemux` handles FLAC-in-DASH.
-- **Exclusive mode**: `alsasink device=hw:X,Y` with playbin's `native-audio`
-  flag (no conversion/resample/soft-volume elements). An unsupported format
-  fails negotiation loudly rather than being resampled. The hand-written
-  ALSA writer with `hw_params` read-back (Sone's design) is the next step.
+- **Exclusive mode (D-017, D-018)**: on Linux with the `alsa-direct` feature
+  (default on), `OutputConfig::Exclusive` builds `audioconvert
+  dithering=none noise-shaping=none ! appsink` (`crates/streamboat-player/
+  src/alsa_writer.rs::ExclusiveSink`) instead of `alsasink`, fed by playbin
+  through the same `native-audio` flag (no playbin-inserted conversion). A
+  dedicated writer thread pulls samples from the appsink itself
+  (`try-pull-sample`, not a signal callback) and owns the `snd_pcm_t`
+  directly via the `alsa` 0.10 crate:
+  - **Format**: probed once per device open (`S32LE`, ALSA `S24_LE`
+    (= GStreamer `S24_32LE`), ALSA `S24_3LE` (= GStreamer `S24LE`), `FLOAT`,
+    `S16LE`, in that priority). Each track's declared bit depth picks
+    pass-through or the *narrowest lossless* promotion against that probed
+    set (`pick_format`), pinned onto the appsink's `caps` property before
+    the track's first buffer can reach it — no fallback ladder: a source
+    with no lossless promotion available refuses to play rather than
+    converting silently.
+  - **Rate**: deliberately left unconstrained on the appsink caps. The
+    writer opens `hw_params` with the rate the appsink actually receives,
+    then reads `get_rate()` back and fails loudly ("DAC doesn't support N
+    kHz; turn off bit-perfect mode for compatibility") if it differs —
+    this read-back, not GStreamer negotiation, is what makes an
+    unsupported rate an actionable message instead of an opaque pipeline
+    error.
+  - **Period before buffer** (1024 frames, then `4×` for the buffer),
+    `sw_params.start_threshold`/`avail_min` restored after `hw_params`
+    resets them, channel fallback to the device minimum with a
+    stereo-to-N `mix-matrix` on the same `audioconvert`.
+  - **Gapless (D-018)**: the PCM stays open across same-format tracks —
+    reopen happens only when the writer observes an actual format/rate/
+    channel change, with a 250 ms silence pre-roll after every reopen.
+    Between tracks (queue gap, or paused) the writer feeds silence rather
+    than draining, keeping the DAC clock alive.
+  - **Recovery**: XRUN (`EPIPE`) → `prepare()` + a silence kick; suspend
+    (`ESTRPIPE`) → bounded `resume()` retry, falling back to `prepare()`;
+    `ENODEV` → a disconnected error, writer stops. Hardware pause
+    (`snd_pcm_pause`) when the device supports it, else a software pause
+    that keeps writing silence.
+  - **Position**: corrected for the device's buffered-but-unplayed frames
+    via `snd_pcm_delay()` (`frames_written − delay`), not
+    `frames_written / rate` alone.
+  - The `alsasink device=hw:X,Y` path (this section's previous shape)
+    remains the fallback when the `alsa-direct` feature is off.
+  - **Unverified until a DAC is available**: everything above is exercised
+    by pure unit tests (format/promotion tables, rate-mismatch message,
+    period/buffer/sw_params math, mix-matrix construction, XRUN/suspend/
+    ENODEV classification) and by an integration test that plays a
+    generated WAV through the real appsink → writer → ALSA `null` device
+    path to `EndOfStream` (`crates/streamboat-player/tests/alsa_direct.rs`,
+    skipped with a message if `null` can't be opened). `null` never XRUNs,
+    suspends, or reports `ENODEV`, never reports a plausible non-2-channel
+    minimum, and never actually reaches a non-44.1kHz rate mismatch, so the
+    XRUN/suspend/disconnect/channel-fallback/rate-refusal paths, the real
+    warm-up/settle behaviour of the 250 ms pre-roll, and whether hardware
+    pause (`can_pause()`) is ever true in practice are all unverified
+    against real hardware. Test on a DAC with:
+    `RUST_LOG=debug streamboat play <id> --device hw:1,0 --exclusive`
+    (unplug/replug the DAC mid-track for the `ENODEV` path; play an album
+    that mixes bit depths or sample rates for the reopen/pre-roll path; a
+    multi-channel USB interface for the channel-fallback/mix-matrix path).
 - **ReplayGain**: a single `volume` audio-filter with TIDAL's formula
   `min(10^((gain+4)/20), 1/peak)`; bypassed in exclusive mode. Known boundary
   glitch between tracks with different gain; the per-branch element is a
@@ -242,7 +297,7 @@ reuses one id for both anyway, the cheapest safe move the reference names).
 | `STREAMBOAT_CLIENT_ID`, `STREAMBOAT_CLIENT_SECRET` | Device-code client pair at run time (or at build time to embed) |
 | `STREAMBOAT_PKCE_CLIENT_ID`, `STREAMBOAT_PKCE_CLIENT_SECRET` | PKCE client pair (hi-res), same precedence |
 | `STREAMBOAT_MASTER_KEY` | 32-byte token-file key as hex or base64 (headless boxes) |
-| `STREAMBOAT_GST_SINK` | Replace the audio sink with any element description (`fakesink` in CI) |
+| `STREAMBOAT_GST_SINK` | Replace the audio sink with any element description (`fakesink` in CI) — takes priority over the alsa-direct exclusive-mode writer too, so CI never touches ALSA |
 | `STREAMBOAT_GST_PLAYBIN` | `playbin` instead of `playbin3` |
 | `RUST_LOG` | Log filter (`info` prints the signal path on track start) |
 
@@ -276,7 +331,16 @@ reuses one id for both anyway, the cheapest safe move the reference names).
   volume policy, JSON round trip); `mpris` unit tests cover pure mapping only
   (`TrackSummary` → `Metadata`, `PlaybackStatus` mapping, the exclusive-mode
   volume rule) — CI has no D-Bus session bus, so registering a real `Player`
-  is not exercised there.
+  is not exercised there; `alsa_writer`'s pure logic (format
+  probing/promotion table, the ALSA/GStreamer format-name inversion, the
+  rate read-back message, period/buffer/`sw_params` math, mix-matrix
+  construction, XRUN/suspend/`ENODEV` classification, reopen-on-change);
+  `tests/alsa_direct.rs` plays a generated WAV through the real appsink →
+  writer → ALSA `null` device path to `EndOfStream` and checks a
+  same-format gapless pair reopens the PCM exactly once, skipping with a
+  message if `null` can't be opened (see the exclusive-mode bullet above
+  for what this does *not* verify — everything hardware-dependent, tested
+  only by hand against a real DAC).
 - `streamboat-server`: `tests/api.rs` (see "Control API" above) — health,
   auth, Host allowlisting, a command changing state, and both directions of
   the WebSocket, all over real sockets against an in-process daemon.
@@ -288,10 +352,12 @@ reuses one id for both anyway, the cheapest safe move the reference names).
 ## Not yet built (in decision order)
 
 the `streamboat://` handler for the desktop shell (D-024); the Flatpak Secret
-portal (D-026); the libmpv backend for Windows and macOS (D-016); the ALSA writer
-thread with format read-back and the reopen-on-format-change policy (D-017,
-D-018); SMTC/NowPlayingInfoCenter (MPRIS is done for Linux, D-030);
-streaming privileges, play reporting and scrobbling wired into the
-`streamboat` CLI/desktop shell rather than only `streamboatd` (D-033, D-027,
-D-037 — the modules and the daemon wiring exist; see the section above); the
-iced shell (D-013); the offline cache (D-022); packaging (D-041).
+portal (D-026); the libmpv backend for Windows and macOS (D-016); the
+`org.freedesktop.ReserveDevice1` device-reservation handshake for the ALSA
+writer (`output-backends.md` §2, explicitly optional — `EBUSY` on open is
+handled with a bounded retry regardless); SMTC/NowPlayingInfoCenter (MPRIS is
+done for Linux, D-030); streaming privileges, play reporting and scrobbling
+wired into the `streamboat` CLI/desktop shell rather than only `streamboatd`
+(D-033, D-027, D-037 — the modules and the daemon wiring exist; see the
+section above); the iced shell (D-013); the offline cache (D-022); packaging
+(D-041).

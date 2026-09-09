@@ -8,13 +8,18 @@ description = "streamboat's audio engine: the Engine trait, the GStreamer and li
 repository.workspace = true
 
 [features]
-default = ["gstreamer", "mpris"]
+default = ["gstreamer", "mpris", "alsa-direct"]
 gstreamer = ["dep:gstreamer", "dep:gstreamer-audio"]
 # MPRIS2 (D-030): the dependency only exists for Linux (see the
 # target-specific table below), so this feature is a no-op elsewhere —
 # default-on everywhere is deliberate, it just has nothing to compile
 # outside Linux.
 mpris = ["dep:mpris-server"]
+# Exclusive-mode ALSA writer (D-017, D-018): a dedicated `snd_pcm_t` owned by
+# a writer thread, fed by a GStreamer appsink, instead of `alsasink`. Linux
+# only — the `alsa` crate links `libasound` via pkg-config, which does not
+# exist on Windows/macOS (those get libmpv's own exclusive output, D-016).
+alsa-direct = ["dep:alsa", "dep:libc", "gstreamer"]
 
 [dependencies]
 streamboat-core.workspace = true
@@ -30,6 +35,8 @@ gstreamer-audio = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mpris-server = { version = "0.10", optional = true }
+alsa = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
 
 [dev-dependencies]
 wiremock.workspace = true
