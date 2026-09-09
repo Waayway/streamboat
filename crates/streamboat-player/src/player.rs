@@ -426,6 +426,49 @@ impl Player {
                 self.emit_queue();
                 self.emit_state();
             }
+            Command::MoveQueueItem { from, to } => {
+                if from < self.queue.len() && to < self.queue.len() && from != to {
+                    let playing_id = self
+                        .index
+                        .and_then(|i| self.queue.get(i))
+                        .map(|e| e.item_id);
+                    let entry = self.queue.remove(from);
+                    self.queue.insert(to, entry);
+                    self.index = playing_id.and_then(|id| self.index_of_item(id));
+                    self.prefetched_for = None;
+                    self.engine.set_next(None);
+                    if let Some(i) = self.index {
+                        self.prefetch(i).await;
+                    }
+                    self.emit_queue();
+                }
+                self.emit_state();
+            }
+            Command::RemoveQueueItem { index } => {
+                if index < self.queue.len() {
+                    let playing_id = self
+                        .index
+                        .and_then(|i| self.queue.get(i))
+                        .map(|e| e.item_id);
+                    if playing_id == Some(self.queue[index].item_id) {
+                        self.emit(Event::Warning {
+                            message:
+                                "cannot remove the track that is currently playing; skip to it first"
+                                    .into(),
+                        });
+                    } else {
+                        let _ = self.queue.remove(index);
+                        self.index = playing_id.and_then(|id| self.index_of_item(id));
+                        self.prefetched_for = None;
+                        self.engine.set_next(None);
+                        if let Some(i) = self.index {
+                            self.prefetch(i).await;
+                        }
+                        self.emit_queue();
+                    }
+                }
+                self.emit_state();
+            }
             Command::GetState => self.emit_state(),
             Command::Shutdown => {}
         }

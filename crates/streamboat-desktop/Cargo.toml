@@ -11,14 +11,32 @@ repository.workspace = true
 name = "streamboat"
 path = "src/main.rs"
 
+[features]
+default = []
+# The libmpv engine backend for Windows/macOS (D-016) is being built by
+# another agent in `streamboat-player`. This feature only exists so the
+# desktop shell's `cfg`-gated call site (`src/ui/engine_select.rs`) has
+# something to turn on once that backend lands; it does nothing on its own
+# today. See that module's doc comment for the exact compile-time gate.
+mpv = []
+
 [dependencies]
 streamboat-core.workspace = true
 streamboat-player.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 gstreamer.workspace = true
+reqwest.workspace = true
+futures.workspace = true
+image.workspace = true
+thiserror.workspace = true
+iced = { workspace = true, features = ["tokio", "image", "svg", "advanced", "debug"] }
+
+[dev-dependencies]
+iced_test.workspace = true

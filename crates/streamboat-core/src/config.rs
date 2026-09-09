@@ -73,7 +73,7 @@ impl AppDirs {
 
 /// User-editable settings. Secrets in here are the user's own choice
 /// (a self-supplied client secret), which is why the file is written 0600.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Device-code client pair; overrides the environment / build-time value (D-023).
@@ -97,6 +97,107 @@ pub struct Settings {
     pub user_agent_override: Option<String>,
     /// ISO country code override; normally taken from the session.
     pub country_code: Option<String>,
+    /// Desktop shell theme choice (D-012, D-013): a small set of design
+    /// tokens, not a native-per-OS look. Dark is the default.
+    pub theme: ThemePreference,
+    /// ReplayGain mode (D-019): off / album / track. Persisted here for the
+    /// Settings screen; the player/engine side of switching modes live is
+    /// not built yet (`docs/architecture.md` "not yet built") — today the
+    /// engine always applies the single per-track gain the manifest reports,
+    /// equivalent to album mode, and bypasses it in exclusive/bit-perfect
+    /// output regardless of this setting.
+    pub replay_gain_mode: ReplayGainMode,
+    /// Play reporting (D-027): on by default, disableable, disclosed. Not
+    /// wired to a reporting client yet (`docs/architecture.md` "not yet
+    /// built") — this is the persisted user choice the Settings screen shows
+    /// and the future reporting code must honour.
+    pub play_reporting_enabled: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            client_id: None,
+            client_secret: None,
+            pkce_client_id: None,
+            pkce_client_secret: None,
+            pkce_redirect_uri: None,
+            key_storage: crate::token_store::KeyStorage::default(),
+            quality_ceiling: None,
+            output: None,
+            user_agent_override: None,
+            country_code: None,
+            theme: ThemePreference::default(),
+            replay_gain_mode: ReplayGainMode::default(),
+            // D-027: on by default.
+            play_reporting_enabled: true,
+        }
+    }
+}
+
+/// Desktop shell theme choice (D-012). A small, closed set on purpose: the
+/// owner's brief is one distinctive look with dark/light variants driven by
+/// design tokens, not a system-native theme per OS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemePreference {
+    #[default]
+    Dark,
+    Light,
+}
+
+/// ReplayGain mode (D-019): off, album (default), or track. TIDAL's
+/// per-track gain/peak is the only value the API reports either way; "album"
+/// vs "track" is normally a normalization-target distinction upstream
+/// players make when they have the whole album's loudness data, which this
+/// client does not compute independently — see the field doc on
+/// [`Settings::replay_gain_mode`] for what is and is not wired up yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayGainMode {
+    Off,
+    #[default]
+    Album,
+    Track,
+}
+
+impl ReplayGainMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReplayGainMode::Off => "off",
+            ReplayGainMode::Album => "album",
+            ReplayGainMode::Track => "track",
+        }
+    }
+
+    pub const ALL: [ReplayGainMode; 3] = [
+        ReplayGainMode::Off,
+        ReplayGainMode::Album,
+        ReplayGainMode::Track,
+    ];
+}
+
+impl std::fmt::Display for ReplayGainMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl ThemePreference {
+    pub const ALL: [ThemePreference; 2] = [ThemePreference::Dark, ThemePreference::Light];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ThemePreference::Dark => "dark",
+            ThemePreference::Light => "light",
+        }
+    }
+}
+
+impl std::fmt::Display for ThemePreference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 impl Settings {

@@ -314,6 +314,16 @@ pub enum KeyStorage {
     File,
 }
 
+impl std::fmt::Display for KeyStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            KeyStorage::Auto => "auto",
+            KeyStorage::Keyring => "keyring",
+            KeyStorage::File => "file",
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyLocation {
     /// `STREAMBOAT_MASTER_KEY` in the environment.
