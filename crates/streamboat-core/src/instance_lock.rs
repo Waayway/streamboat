@@ -11,7 +11,7 @@
 //! own, just one of two, so always taking that branch stays inside the
 //! decision rather than departing from it.
 //!
-//! Three files live under the runtime directory (`config::AppDirs::runtime`,
+//! Four files live under the runtime directory (`config::AppDirs::runtime`,
 //! `/run/user/<uid>/streamboat` on Linux):
 //!
 //! - `instance.lock` — the lock itself. Whichever process holds it — a
