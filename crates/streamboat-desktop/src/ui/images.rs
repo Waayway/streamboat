@@ -1,4 +1,4 @@
-//! The image cache (task item 1): a memory LRU keyed by URL, fetched with a
+//! The image cache: a memory LRU keyed by URL, fetched with a
 //! plain `reqwest` client and decoded off the UI thread. `Task::perform`
 //! runs the fetch-and-decode future on iced's own executor, not inside the
 //! synchronous `update`/`view` call, so a slow network or a large cover

@@ -192,7 +192,7 @@ pub fn banner<'a, Message: 'a>(
 const CARD_WIDTH: f32 = 140.0;
 const CARDS_PER_ROW: usize = 5;
 
-/// A scrollable stack of every section (task item 3: Home/Explore render
+/// A scrollable stack of every section (Home/Explore render
 /// server-driven sections with a graceful unknown-type fallback, D-015).
 /// Shared by Home and Explore so the two screens' cards, hover states and
 /// unknown-section note render identically. `view_all`/`clicked` are plain

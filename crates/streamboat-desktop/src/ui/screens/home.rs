@@ -1,4 +1,4 @@
-//! Home (task item 3): the server-driven `home/feed` sections, tab bar from
+//! Home: the server-driven `home/feed` sections, tab bar from
 //! the header, paging on the top-level cursor, per-section "view all" via
 //! `expand_section`, and the graceful unknown-section card (D-015).
 

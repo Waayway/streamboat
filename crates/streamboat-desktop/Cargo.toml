@@ -44,7 +44,7 @@ iced = { workspace = true, features = ["tokio", "image", "svg", "advanced", "deb
 # finds a snapserver via mDNS.
 mdns-sd = "0.21.3"
 
-# System tray (task item 2, D-014). Linux uses ksni (StatusNotifierItem over
+# System tray (D-014). Linux uses ksni (StatusNotifierItem over
 # D-Bus, no GTK dependency — `mpris.rs` already takes the same "own
 # dedicated thread with a current-thread tokio runtime" shape for the same
 # reason). Windows/macOS use tray-icon, cfg-gated and compile-checked only:

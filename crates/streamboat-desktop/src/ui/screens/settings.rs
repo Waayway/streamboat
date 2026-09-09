@@ -1,4 +1,4 @@
-//! Settings (task item 3): quality ceiling, output device + exclusive
+//! Settings: quality ceiling, output device + exclusive
 //! toggle, ReplayGain mode, play reporting toggle with the D-027 disclosure
 //! text, credentials, key storage, theme choice, logout.
 

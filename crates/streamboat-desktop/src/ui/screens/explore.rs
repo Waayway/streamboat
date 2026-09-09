@@ -1,4 +1,4 @@
-//! Explore (task item 3): the still-live v1 `pages/explore` shape (D-015 —
+//! Explore: the still-live v1 `pages/explore` shape (D-015 —
 //! Explore has no v2 feed counterpart), rendered with the same graceful
 //! unknown-module fallback as Home. No tab bar and no cursor: v1 pages are
 //! one shot, per `ApiClient::explore`'s doc comment.

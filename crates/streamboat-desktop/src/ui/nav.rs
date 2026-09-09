@@ -1,9 +1,9 @@
 //! The navigation stack: a persistent left sidebar plus back/forward, per
 //! `tidal-client-features` browse-pages-screens.md §7. Entity pages,
-//! Collection and Lyrics are real screens now (task item 1-2 of the next
-//! wave); this module still owns every [`Screen`] variant and the id each
-//! one carries, plus [`Screen::from_content_link`] (task item 5), which
-//! turns a parsed deep link into the screen it opens.
+//! Collection and Lyrics are real screens; this module owns every
+//! [`Screen`] variant and the id each one carries, plus
+//! [`Screen::from_content_link`], which turns a parsed deep link into the
+//! screen it opens.
 
 use streamboat_core::api::images::ContentLink;
 
@@ -77,7 +77,7 @@ impl Screen {
         }
     }
 
-    /// A parsed deep link (task item 5), turned into the screen it opens.
+    /// A parsed deep link, turned into the screen it opens.
     /// Always resolves to *some* screen — a folder link, with no dedicated
     /// per-folder screen yet, opens My Collection rather than failing.
     /// Callers additionally special-case [`ContentLink::Playlist`] to also
@@ -97,8 +97,8 @@ impl Screen {
     }
 }
 
-/// Back/forward navigation over [`Screen`]s (task item 1: "a `Screen` enum
-/// with a navigation stack (back/forward)").
+/// Back/forward navigation over [`Screen`]s: a `Screen` enum with a
+/// navigation stack (back/forward).
 #[derive(Debug, Clone)]
 pub struct Nav {
     current: Screen,
@@ -139,8 +139,10 @@ impl Nav {
 
     /// Replace the current screen without touching either stack — used
     /// when a screen navigates within itself (e.g. Home ↔ Explore tabs
-    /// that should not pile up back-stack entries). Unused by the wave-1
-    /// screens today but kept for the next wave's tab bars.
+    /// that should not pile up back-stack entries). Not used by any
+    /// screen yet — Home's own tab bar switches sections through its own
+    /// state (`ui::screens::home`), not through `Nav` — kept for a future
+    /// screen whose internal tabs should be `Nav`-level instead.
     #[allow(dead_code)]
     pub fn replace(&mut self, screen: Screen) {
         self.current = screen;

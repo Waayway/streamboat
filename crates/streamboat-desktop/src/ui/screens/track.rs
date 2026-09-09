@@ -1,4 +1,4 @@
-//! The standalone Track page (task item 1): resolves the track's album and
+//! The standalone Track page: resolves the track's album and
 //! opens it with this one row highlighted
 //! ([`crate::ui::screens::album::content_with_highlight`]), plus a credits
 //! panel from `tracks/{id}/credits` appended below

@@ -1,4 +1,4 @@
-//! The Playlist entity page (task item 1): header (image/title/description/
+//! The Playlist entity page: header (image/title/description/
 //! creator/track count), paginated items with load-more, play-all,
 //! favourite/unfavourite, and — for the user's own playlists — rename/
 //! describe, remove item, move item up/down (through the ETag-precondition

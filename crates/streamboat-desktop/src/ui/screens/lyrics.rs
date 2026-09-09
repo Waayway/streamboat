@@ -1,4 +1,4 @@
-//! Full-screen synced lyrics (task item 4): fetched on track start (via
+//! Full-screen synced lyrics: fetched on track start (via
 //! [`Message::Requested`], which `ui::app` sends both from
 //! `Event::TrackStarted` and when the user opens this screen), the current
 //! line highlighted from `Event::Position` with auto-scroll, a plain-text

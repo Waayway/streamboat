@@ -1,9 +1,9 @@
-//! The top-level `App`: startup (task item 2), the split top-level
+//! The top-level `App`: startup, the split top-level
 //! `Message` enum wrapping each screen's own (D-013), the navigation stack,
-//! the persistent sidebar and bottom playback bar, the keyboard shortcuts
-//! (task item 4), and — this wave — the multi-window daemon runtime
-//! (D-036), the mini-player window, the tray (D-014), and single-instance/
-//! remote-client startup (D-010, D-030, D-045).
+//! the persistent sidebar and bottom playback bar, the keyboard shortcuts,
+//! the multi-window daemon runtime (D-036), the mini-player window, the
+//! tray (D-014), and single-instance/remote-client startup (D-010, D-030,
+//! D-045).
 //!
 //! ## Multi-window (D-036)
 //!
@@ -11,7 +11,7 @@
 //! `iced::application(...)`: a `Daemon` opens no window on its own and
 //! never exits when its last window closes (see that function's own doc
 //! comment in `iced-0.14.0/src/daemon.rs`, verified against the pinned
-//! source per the task brief) — exactly the two properties D-014's "closing
+//! source) — exactly the two properties D-014's "closing
 //! the window keeps playing, quitting is explicit" needs, so this crate no
 //! longer has to fight the single-window shell's default exit-on-close
 //! behaviour. `boot` opens the main window itself via `window::open`, which
@@ -35,7 +35,7 @@
 //! playback starts) stay held exactly as before. Quitting is explicit: the
 //! tray's "Quit" item or Ctrl+Q sends `Command::Shutdown` and waits
 //! (briefly, with a timeout) for `Event::Stopped` before returning
-//! `iced::exit()`, per the task brief.
+//! `iced::exit()`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -69,16 +69,16 @@ use crate::ui::{playback_bar, screens, signal_path};
 
 const IMAGE_CACHE_CAPACITY: usize = 512;
 
-// --- Entity/Collection/Lyrics wave: screen state and cross-screen effects ---
-// Everything in this block through `impl From<...> for EntityEffect` is new
-// this wave (task items 1-4): one enum holding whichever entity screen is
-// currently open (constructed fresh per navigation by `App::sync_entity_screen`),
-// and one small effect type every entity screen's own `Effect` converts into,
-// so `update_album`/`update_artist`/... below share one `apply_entity_effect`
-// instead of five near-identical copies of "send Play, navigate, prefetch
-// artwork, open the add-to-playlist picker."
+// --- Entity, Collection and Lyrics screens: state and cross-screen effects ---
+// Everything in this block through `impl From<...> for EntityEffect` is one
+// enum holding whichever entity screen is currently open (constructed fresh
+// per navigation by `App::sync_entity_screen`), and one small effect type
+// every entity screen's own `Effect` converts into, so `update_album`/
+// `update_artist`/... below share one `apply_entity_effect` instead of five
+// near-identical copies of "send Play, navigate, prefetch artwork, open the
+// add-to-playlist picker."
 
-/// Whichever entity page (task item 1) is currently open, or `None` before
+/// Whichever entity page is currently open, or `None` before
 /// the first one loads. Rebuilt by [`App::sync_entity_screen`] whenever
 /// navigation lands on a different [`Screen::Entity`]/id.
 enum EntityScreen {
@@ -186,10 +186,10 @@ impl From<screens::collection::Effect> for EntityEffect {
         }
     }
 }
-// --- end Entity/Collection/Lyrics wave block ---
+// --- end Entity/Collection/Lyrics screens block ---
 
 /// How long to wait for `Event::Stopped` after `Command::Shutdown` before
-/// exiting anyway (task item 2: "wait for `Event::Stopped` briefly").
+/// exiting anyway.
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(800);
 
 pub struct App {
@@ -198,9 +198,9 @@ pub struct App {
     http: reqwest::Client,
 
     /// The main window's id, known synchronously from `window::open` in
-    /// `boot` (task item 1) — before it necessarily exists on screen.
+    /// `boot` — before it necessarily exists on screen.
     main_window: window::Id,
-    /// `Some` only while the mini-player window is open (task item 1);
+    /// `Some` only while the mini-player window is open;
     /// toggled by the playback bar and a keyboard shortcut.
     mini_window: Option<window::Id>,
     /// The `show-request` file to poll for a second GUI instance asking to
@@ -210,8 +210,8 @@ pub struct App {
     show_request_path: Option<PathBuf>,
     /// The startup decoder probe result (D-003). Stored so a future
     /// Settings-screen change can grey out an unreachable quality tier from
-    /// it; this wave already uses it once, at startup, to cap the
-    /// requested ceiling (see `ui::app::run_as_local_instance`).
+    /// it; it is already used once, at startup, to cap the requested
+    /// ceiling (see `ui::app::run_as_local_instance`).
     #[allow(dead_code)]
     decoder_support: DecoderSupport,
 
@@ -230,23 +230,23 @@ pub struct App {
     search: screens::search::State,
     settings: screens::settings::State,
 
-    /// Task item 1: whichever entity page is open, rebuilt on navigation by
+    /// Whichever entity page is open, rebuilt on navigation by
     /// [`App::sync_entity_screen`].
     entity: EntityScreen,
-    /// Task item 2: My Collection persists across visits like `home`/
-    /// `explore`/`search` above, rather than being rebuilt per navigation
-    /// like `entity` — it has no per-visit id to key a fresh load on.
+    /// My Collection persists across visits like `home`/`explore`/`search`
+    /// above, rather than being rebuilt per navigation like `entity` — it
+    /// has no per-visit id to key a fresh load on.
     collection: screens::collection::State,
-    /// Task item 4: the currently (pre)fetched track's lyrics.
+    /// The currently (pre)fetched track's lyrics.
     lyrics: screens::lyrics::State,
-    /// Task item 6: dismissible, auto-expiring notification banners.
+    /// Dismissible, auto-expiring notification banners.
     banner: banner::State,
-    /// Task item 3: the "add to playlist" picker, open over whichever
-    /// screen triggered it.
+    /// The "add to playlist" picker, open over whichever screen triggered
+    /// it.
     add_to_playlist: Option<actions::PickerState>,
-    /// Task item 5: a deep link passed on the command line (`streamboat
-    /// open <url>` or a bare URL as `argv[1]`), applied once the user is
-    /// confirmed logged in.
+    /// A deep link passed on the command line (`streamboat open <url>` or
+    /// a bare URL as `argv[1]`), applied once the user is confirmed logged
+    /// in.
     pending_open: Option<String>,
 }
 
@@ -271,7 +271,7 @@ pub enum Message {
     ImageFetched(String, Option<iced::widget::image::Handle>),
     KeyShortcut(Shortcut),
 
-    // --- Entity/Collection/Lyrics wave (task items 1-6) ---
+    // --- Entity, Collection and Lyrics screens ---
     Album(screens::album::Message),
     Artist(screens::artist::Message),
     Playlist(screens::playlist::Message),
@@ -281,14 +281,14 @@ pub enum Message {
     Collection(screens::collection::Message),
     Lyrics(screens::lyrics::Message),
     Banner(banner::Message),
-    /// Task item 3: the "add to playlist" picker overlay, opened by any
+    /// The "add to playlist" picker overlay, opened by any
     /// screen's `EntityEffect::OpenAddToPlaylist` (via `App::open_add_to_playlist`,
     /// called directly rather than through a `Message` — there is no UI
     /// element outside a screen's own track rows that opens this, so there
     /// is nothing that would ever construct a top-level `Message` for it).
     AddToPlaylist(actions::PickerMessage),
-    /// A shared playlist link resolved to its track ids (task item 5,
-    /// D-039 "shared playlist links open and play") — `Err` surfaces as a
+    /// A shared playlist link resolved to its track ids (D-039 "shared
+    /// playlist links open and play") — `Err` surfaces as a
     /// banner rather than a silent failure.
     DeepLinkPlaylistLoaded(Result<Vec<u64>, String>),
     /// A window's native close button was pressed (D-014).
@@ -329,8 +329,7 @@ pub enum Shortcut {
     TogglePlayPause,
     FocusSearch,
     Back,
-    /// Ctrl+M (task item 1: "toggled from the playback bar and a keyboard
-    /// shortcut").
+    /// Ctrl+M (toggled from the playback bar and a keyboard shortcut).
     ToggleMiniPlayer,
     /// Ctrl+Q (D-014: "quitting is explicit").
     Quit,
@@ -449,7 +448,7 @@ impl App {
             }
             Message::KeyShortcut(shortcut) => self.handle_shortcut(shortcut),
 
-            // --- Entity/Collection/Lyrics wave (task items 1-6) ---
+            // --- Entity, Collection and Lyrics screens ---
             Message::Album(inner) => self.update_album(inner),
             Message::Artist(inner) => self.update_artist(inner),
             Message::Playlist(inner) => self.update_playlist(inner),
@@ -499,8 +498,8 @@ impl App {
     /// Navigate to `screen` and make sure whatever state it needs (an
     /// entity page's data, My Collection's first tab, this track's lyrics)
     /// is loading — the one path every navigation in this module should go
-    /// through instead of calling `self.nav.go_to` directly, so nothing new
-    /// this wave adds is ever shown stale or empty.
+    /// through instead of calling `self.nav.go_to` directly, so no entity
+    /// page, collection tab, or lyrics view is ever shown stale or empty.
     fn navigate(&mut self, screen: Screen) -> Task<Message> {
         self.nav.go_to(screen);
         self.sync_entity_screen()
@@ -715,9 +714,9 @@ impl App {
         Task::none()
     }
 
-    /// Task item 5: apply a deep link once parsed — navigate immediately,
-    /// and for a shared playlist link, also fetch its tracks and start
-    /// playback (D-039).
+    /// Apply a deep link once parsed — navigate immediately, and for a
+    /// shared playlist link, also fetch its tracks and start playback
+    /// (D-039).
     fn open_deep_link(&mut self, link: ContentLink) -> Task<Message> {
         let screen = Screen::from_content_link(link.clone());
         let mut tasks = vec![self.navigate(screen)];
@@ -968,7 +967,7 @@ impl App {
         Task::none()
     }
 
-    /// Tray clicks (task item 2). `Show`/`Hide`/`Quit` are window/process
+    /// Tray clicks. `Show`/`Hide`/`Quit` are window/process
     /// lifecycle, handled here directly against iced's own `window`/`exit`
     /// `Task`s; everything else goes through
     /// `tray::tray_event_to_command`'s pure mapping, the same as any other
@@ -1046,7 +1045,7 @@ impl App {
             } => {
                 self.player_state.position_ms = position_ms;
                 self.player_state.duration_ms = duration_ms;
-                // Task item 4: keep the Lyrics screen's highlighted line
+                // Keep the Lyrics screen's highlighted line
                 // (and its auto-scroll) in sync even while the screen isn't
                 // the one currently shown, so it's correct the instant the
                 // user opens it.
@@ -1056,11 +1055,11 @@ impl App {
                 );
                 task.map(Message::Lyrics)
             }
-            // --- Banner wave (task item 6): replaces the previous silent
-            // arms for these three events with a dismissible, auto-expiring
-            // banner (`ui::banner`). `PlaybackTakenOver` additionally offers
-            // a resume button (D-033: only ever a real button press, never
-            // an automatic retry).
+            // --- These three events surface as a dismissible,
+            // auto-expiring banner (`ui::banner`) instead of being silently
+            // dropped. `PlaybackTakenOver` additionally offers a resume
+            // button (D-033: only ever a real button press, never an
+            // automatic retry).
             Event::Warning { message } => self
                 .banner
                 .push(message, banner::Tone::Warning, false)
@@ -1077,7 +1076,7 @@ impl App {
                     true,
                 )
                 .map(Message::Banner),
-            // --- Task item 4: prefetch this track's lyrics as soon as it
+            // --- Prefetch this track's lyrics as soon as it
             // starts, so the Lyrics screen (reached from Now Playing) opens
             // instantly instead of showing "Loading lyrics…" every time.
             Event::TrackStarted { track, .. } => {
@@ -1108,7 +1107,7 @@ impl App {
                 self.link.send(Command::TogglePlayPause);
             }
             Shortcut::FocusSearch => self.nav.go_to(Screen::Search),
-            // Task item 3: escape closes the add-to-playlist overlay first,
+            // Escape closes the add-to-playlist overlay first,
             // rather than navigating the screen underneath it — the modal
             // has no other keyboard dismissal and this is the one place
             // `Shortcut::Back` is already wired globally.
@@ -1210,7 +1209,7 @@ impl App {
             })
             .into();
 
-        // Task item 3: the "add to playlist" picker overlays whatever
+        // The "add to playlist" picker overlays whatever
         // screen opened it, dimming the background rather than replacing
         // it — iced 0.14 has no dedicated modal widget, so `stack!` plus a
         // full-size translucent backdrop is the mechanism (§6 of the
@@ -1238,7 +1237,7 @@ impl App {
         }
     }
 
-    /// The currently open entity page (task item 1), read from [`EntityScreen`]
+    /// The currently open entity page, read from [`EntityScreen`]
     /// rather than [`Screen::Entity`]'s own payload — `sync_entity_screen`
     /// keeps the two in lockstep, and this avoids a second id-based match.
     fn entity_view(&self) -> Element<'_, Message> {
@@ -1325,7 +1324,7 @@ fn nav_go(target: NavTarget) -> Message {
     Message::Nav(NavAction::Go(target))
 }
 
-/// The sidebar's back/forward pair over the navigation stack (task item 1).
+/// The sidebar's back/forward pair over the navigation stack.
 fn history_buttons(tokens: Tokens, can_back: bool, can_forward: bool) -> Element<'static, Message> {
     use iced::widget::{button, row, text};
     let arrow = |label: &'static str, enabled: bool, on_press: Message| {
@@ -1373,7 +1372,7 @@ fn player_events(link: &LinkKey) -> crate::ui::stream_ext::BoxStream<Event> {
     link.0.events()
 }
 
-/// Builder for the tray's event subscription (task item 2) — same
+/// Builder for the tray's event subscription — same
 /// `fn(&LinkKey) -> BoxStream<_>` idiom as [`player_events`] above, reusing
 /// `LinkKey` rather than inventing a second wrapper: the app holds exactly
 /// one link for its whole lifetime either way.
@@ -1397,9 +1396,9 @@ async fn wait_for_shutdown(link: SharedLink) {
     let _ = tokio::time::timeout(SHUTDOWN_GRACE, wait_for_stop).await;
 }
 
-/// Keyboard shortcuts (task item 4): space play/pause, ctrl+f focuses
-/// search, escape goes back one step, ctrl+m toggles the mini-player
-/// (task item 1), ctrl+q quits (D-014). Media keys arrive via MPRIS later,
+/// Keyboard shortcuts: space play/pause, ctrl+f focuses
+/// search, escape goes back one step, ctrl+m toggles the mini-player,
+/// ctrl+q quits (D-014). Media keys arrive via MPRIS later,
 /// not here.
 fn keyboard_shortcut(
     event: iced::Event,
@@ -1430,8 +1429,8 @@ fn keyboard_shortcut(
     }
 }
 
-/// Task item 5 (D-039 "shared playlist links open and play"): every track
-/// id of a shared playlist, for `App::open_deep_link` to hand straight to
+/// Every track id of a shared playlist (D-039 "shared playlist links open
+/// and play"), for `App::open_deep_link` to hand straight to
 /// `Command::Play`.
 async fn load_playlist_track_ids(
     api: streamboat_core::ApiClient,
@@ -1460,7 +1459,7 @@ fn main_window_settings() -> window::Settings {
     }
 }
 
-/// The mini-player window's settings (task item 1): compact, fixed-size,
+/// The mini-player window's settings: compact, fixed-size,
 /// always-on-top. Left at the default `exit_on_close_request: true` — a
 /// native close on this window is exactly the same as the toggle button,
 /// there is no state to preserve by hiding it instead.
@@ -1499,7 +1498,7 @@ pub fn run(open_url: Option<String>) -> anyhow::Result<()> {
 /// This process holds the instance lock: build the platform engine
 /// (D-016 via `engine_select`), probe which quality tiers it can actually
 /// decode and cap the requested ceiling if it exceeds them (D-003), spawn
-/// [`Player`], register MPRIS on Linux (task item 5), and run the shell
+/// [`Player`], register MPRIS on Linux, and run the shell
 /// with an in-process [`InProcessLink`]. If the stored tokens are not
 /// valid, the boot task flips to the Login screen instead of failing.
 fn run_as_local_instance(
@@ -1579,7 +1578,7 @@ fn run_as_remote_client(
     // Nothing runs locally to probe or cap: the daemon already resolved
     // its own ceiling at its own startup, and this process never touches
     // an `Engine` (D-010) — "everything reachable" is the honest default
-    // for a value this wave does not otherwise use in the remote case.
+    // for a value the remote-client path does not otherwise use.
     let decoder_support = DecoderSupport::all();
     run_program(ctx, link, open_url, decoder_support, None, bg_rt, None)
 }

@@ -5,7 +5,7 @@
 //! holds the single-instance lock and runs its own engine, wrapping a
 //! [`PlayerHandle`] from a `Player` spawned in the same process
 //! (`Player::spawn`) — one of only two `streamboat-player` APIs this crate
-//! is allowed to touch, per the task brief.
+//! touches at all, the seam D-010 draws.
 //!
 //! [`crate::ui::remote_link::RemoteLink`] is the other implementation, for
 //! when another process already holds the lock and hosts the control API

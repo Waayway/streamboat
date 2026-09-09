@@ -1192,8 +1192,8 @@ mod tests {
     #[test]
     fn memory_key_slot_is_a_valid_keyslot_for_offline_resolution() {
         // Exercises the same resolution path `OfflineCache::open` uses,
-        // against a `MemoryKeySlot` (per the task's request to use one in
-        // tests) instead of a real OS keyring.
+        // against a `MemoryKeySlot` (a test-only keyring stand-in) instead
+        // of a real OS keyring.
         let dir = tempfile::tempdir().unwrap();
         let slot = MemoryKeySlot::default();
         let key_path = dir.path().join("offline.key");

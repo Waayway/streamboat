@@ -63,9 +63,9 @@ jobs:
       # D-016: the Windows/macOS backend and OS media-key adapters
       # (`mpv.rs`, `smtc.rs`) — see `docs/architecture.md`'s "Cross-target
       # type-checking" section for exactly what this does and does not
-      # prove, and why the macOS (aarch64-apple-darwin) counterpart from
-      # this task cannot run in CI at all (`ring`'s C build needs a real
-      # Apple SDK/cross-toolchain, not just a target added via rustup).
+      # prove, and why the macOS (aarch64-apple-darwin) counterpart
+      # cannot run in CI at all (`ring`'s C build needs a real Apple
+      # SDK/cross-toolchain, not just a target added via rustup).
       - run: |
           cargo check -p streamboat-player --target x86_64-pc-windows-gnu \
             --no-default-features --features mpv,smtc

@@ -175,16 +175,17 @@ mod tests {
         assert!(!AudioQuality::LADDER.contains(&AudioQuality::HiResLegacy));
     }
 
-    // Real GStreamer is present in this sandbox (`STREAMBOAT_GST_SINK=fakesink`
-    // is set for audio tests; `flacdec` is installed here per the task brief),
-    // so this exercises the actual element-factory lookup, not a fake.
+    // Real GStreamer is present in this environment (`STREAMBOAT_GST_SINK=fakesink`
+    // is set for audio tests; `flacdec` ships in the `gstreamer1.0-plugins-good`
+    // package CI installs), so this exercises the actual element-factory lookup,
+    // not a fake.
     #[cfg(feature = "gstreamer")]
     #[test]
     fn probe_gstreamer_finds_the_installed_flac_decoder() {
         let s = probe_gstreamer();
         assert!(
             s.lossless,
-            "flacdec must be found in this environment (see the task brief)"
+            "flacdec must be found in this environment (gstreamer1.0-plugins-good must be installed)"
         );
         assert_eq!(s.lossless, s.hi_res_lossless);
     }

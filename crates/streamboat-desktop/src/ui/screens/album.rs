@@ -1,12 +1,12 @@
-//! The Album entity page (task item 1): art, title, artists, year, track
+//! The Album entity page: art, title, artists, year, track
 //! count and duration, explicit/quality badges, a track list with per-row
 //! actions, play-all/shuffle, a favourite toggle, a similar-albums row, and
 //! the editorial review text when TIDAL returns one
 //! (`tidal-client-features` library-playlists-collections.md §4).
 //!
 //! [`view_with_highlight`] is what [`crate::ui::screens::track`] reuses to
-//! show a standalone track's album with that one row highlighted, per task
-//! item 1's "Track opens its album with the track highlighted."
+//! show a standalone track's album with that one row highlighted — the
+//! mechanism behind "Track opens its album with the track highlighted."
 
 use std::collections::HashSet;
 

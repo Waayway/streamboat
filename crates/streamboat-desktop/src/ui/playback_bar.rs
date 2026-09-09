@@ -1,4 +1,4 @@
-//! The persistent bottom playback bar (task item 1/3): art, title, artist,
+//! The persistent bottom playback bar: art, title, artist,
 //! previous/play-pause/next, seek with elapsed/remaining, a volume slider
 //! disabled-by-tooltip while an exclusive output is active (D-017), a
 //! quality badge, and the two toggle buttons for the queue list and the
@@ -26,7 +26,7 @@ pub enum Message {
     VolumeChanged(f32),
     ToggleQueue,
     ToggleSignalPath,
-    /// Open/close the floating mini-player window (D-036, task item 1).
+    /// Open/close the floating mini-player window (D-036).
     ToggleMiniPlayer,
 }
 

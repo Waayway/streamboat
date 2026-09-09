@@ -1,7 +1,7 @@
 //! Integration tests for the pinned, encrypted offline cache (D-022),
 //! through the public API only — mirrors `tests/player.rs`'s style (a real
 //! wiremock TIDAL, a real `ApiClient`), with a `MemoryKeySlot` standing in
-//! for the OS keyring per the task's request.
+//! for the OS keyring.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

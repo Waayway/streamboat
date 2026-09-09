@@ -1,4 +1,4 @@
-//! The Artist entity page (task item 1): picture header, follow toggle
+//! The Artist entity page: picture header, follow toggle
 //! (D-039 — "follow" is a documented alias over favouriting the artist),
 //! top tracks, Albums / EPs & Singles / Compilations via the documented
 //! `artists/{id}/albums?filter=` values, similar artists, bio, and "play
