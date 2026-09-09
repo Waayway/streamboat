@@ -899,6 +899,13 @@ impl App {
                 self.link.send(Command::TogglePlayPause);
             }
             Shortcut::FocusSearch => self.nav.go_to(Screen::Search),
+            // Task item 3: escape closes the add-to-playlist overlay first,
+            // rather than navigating the screen underneath it — the modal
+            // has no other keyboard dismissal and this is the one place
+            // `Shortcut::Back` is already wired globally.
+            Shortcut::Back if self.add_to_playlist.is_some() => {
+                self.add_to_playlist = None;
+            }
             Shortcut::Back => {
                 let _ = self.nav.back();
             }
