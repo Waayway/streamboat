@@ -39,6 +39,7 @@ sha2 = "0.10"
 hex = "0.4"
 gstreamer = "0.24"
 gstreamer-audio = "0.24"
+libmpv2 = { version = "6", default-features = false }
 wiremock = "0.6"
 tempfile = "3"
 

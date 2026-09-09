@@ -10,6 +10,8 @@
 pub mod engine;
 #[cfg(feature = "gstreamer")]
 pub mod gst;
+#[cfg(feature = "mpv")]
+pub mod mpv;
 pub mod player;
 
 pub use engine::{Engine, EngineEvent, LoadItem};
@@ -17,3 +19,5 @@ pub use player::{Player, PlayerConfig, PlayerHandle};
 
 #[cfg(feature = "gstreamer")]
 pub use gst::GstEngine;
+#[cfg(feature = "mpv")]
+pub use mpv::MpvEngine;
