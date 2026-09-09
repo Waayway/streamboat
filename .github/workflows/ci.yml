@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Run on demand against any branch (Actions → CI → Run workflow).
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
