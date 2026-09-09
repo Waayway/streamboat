@@ -11,6 +11,10 @@ use crate::token_store::{EncryptedFileStore, KeySlot, KeyStorage, NoKeySlot};
 /// The keyring service name: the permanent app identity (D-007).
 pub const KEYRING_SERVICE: &str = "io.github.waayway.streamboat";
 pub const KEYRING_USER: &str = "master-key";
+/// The offline cache's own keyring entry (D-022): deliberately separate
+/// from `KEYRING_USER` so the token-store master key and the offline-cache
+/// key can be rotated, migrated or wiped independently.
+pub const OFFLINE_KEYRING_USER: &str = "offline-key";
 
 pub struct Context {
     pub dirs: AppDirs,
@@ -20,22 +24,28 @@ pub struct Context {
     pub store: Arc<EncryptedFileStore>,
 }
 
-/// The OS keyring when compiled in and not disabled by settings.
-pub fn key_slot(storage: KeyStorage) -> Arc<dyn KeySlot> {
+/// The OS keyring when compiled in and not disabled by settings, holding
+/// the entry named `user` under the permanent app identity. Additive
+/// generalisation of [`key_slot`] (same mechanism, a different keyring
+/// entry) so other secrets — the offline cache's file key (D-022) — get
+/// their own entry instead of sharing `master-key`.
+pub fn key_slot_named(storage: KeyStorage, user: &str) -> Arc<dyn KeySlot> {
     if storage == KeyStorage::File {
         return Arc::new(NoKeySlot);
     }
     #[cfg(feature = "keyring")]
     {
-        Arc::new(crate::token_store::OsKeyring::new(
-            KEYRING_SERVICE,
-            KEYRING_USER,
-        ))
+        Arc::new(crate::token_store::OsKeyring::new(KEYRING_SERVICE, user))
     }
     #[cfg(not(feature = "keyring"))]
     {
         Arc::new(NoKeySlot)
     }
+}
+
+/// The OS keyring when compiled in and not disabled by settings.
+pub fn key_slot(storage: KeyStorage) -> Arc<dyn KeySlot> {
+    key_slot_named(storage, KEYRING_USER)
 }
 
 impl Context {

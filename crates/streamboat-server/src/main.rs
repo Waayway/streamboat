@@ -96,6 +96,23 @@ async fn main() -> anyhow::Result<()> {
         Some(Arc::new(ScrobbleHub::new(scrobble_backends)))
     };
 
+    // The pinned, encrypted offline cache (D-022): unavailable (e.g. no
+    // keyring reachable and `key_storage = keyring`) means stream-only,
+    // logged and never fatal to starting the daemon.
+    let offline = match streamboat_player::offline::OfflineCache::open(
+        &ctx.dirs,
+        &ctx.settings,
+        &ctx.device.client_unique_key,
+    )
+    .await
+    {
+        Ok(cache) => Some(cache),
+        Err(e) => {
+            tracing::warn!(%e, "offline cache unavailable; streaming only");
+            None
+        }
+    };
+
     // Streaming privileges ("Pushkin", D-033): a headless daemon needs this
     // from day one (`headless-and-tidal-connect` daemon-architecture.md
     // §6) — with no user watching, a silent revocation is unrecoverable.
@@ -113,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
             privileges_events: Some(privileges_events),
             reporter: Some(reporter),
             scrobbler,
+            offline,
         },
     );
     let mut events = handle.subscribe();

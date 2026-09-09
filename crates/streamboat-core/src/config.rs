@@ -69,6 +69,11 @@ impl AppDirs {
     pub fn token_path(&self) -> PathBuf {
         self.data.join("tokens.bin")
     }
+    /// The pinned, encrypted offline cache's directory (D-022), before any
+    /// `Settings::offline_dir` override.
+    pub fn offline_dir(&self) -> PathBuf {
+        self.data.join("offline")
+    }
 }
 
 /// User-editable settings. Secrets in here are the user's own choice
@@ -104,6 +109,17 @@ pub struct Settings {
     /// Scrobbling to Last.fm and ListenBrainz (D-037), each backend off
     /// until its credentials are supplied.
     pub scrobble: crate::scrobble::ScrobbleSettings,
+    /// Overrides `AppDirs::offline_dir()` for the pinned, encrypted offline
+    /// cache (D-022). `None` uses `<data_dir>/offline`.
+    pub offline_dir: Option<PathBuf>,
+    /// Days a pin stays valid before the account must be revalidated online
+    /// (a successful `ApiClient::session()` call) before it is served for
+    /// playback again (D-022). Mirrors TIDAL's own offline validity window.
+    pub offline_validity_days: u32,
+    /// Refuse a new pin that would push the cache over this many bytes.
+    /// `None` disables the cap, which is not recommended for an
+    /// automatically-growing cache — `Some` is the default.
+    pub offline_max_bytes: Option<u64>,
 }
 
 impl Default for Settings {
@@ -122,6 +138,12 @@ impl Default for Settings {
             // D-027: on by default, unlike every other opt-in field here.
             play_reporting: true,
             scrobble: crate::scrobble::ScrobbleSettings::default(),
+            offline_dir: None,
+            offline_validity_days: 30,
+            // 20 GiB: generous enough for a handful of hi-res albums,
+            // small enough that "refuse over the cap" is reachable in
+            // practice rather than a number nobody hits (D-022).
+            offline_max_bytes: Some(20 * 1024 * 1024 * 1024),
         }
     }
 }

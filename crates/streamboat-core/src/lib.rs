@@ -20,7 +20,7 @@ pub mod bootstrap;
 pub mod config;
 pub mod credentials;
 pub mod error;
-mod fsutil;
+pub mod fsutil;
 pub mod http;
 pub mod manifest;
 pub mod models;

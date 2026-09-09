@@ -10,9 +10,11 @@
 pub mod engine;
 #[cfg(feature = "gstreamer")]
 pub mod gst;
+pub mod offline;
 pub mod player;
 
 pub use engine::{Engine, EngineEvent, LoadItem};
+pub use offline::{OfflineCache, OfflineError, PinInfo};
 pub use player::{Player, PlayerConfig, PlayerDeps, PlayerHandle};
 
 #[cfg(feature = "gstreamer")]

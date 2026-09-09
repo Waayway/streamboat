@@ -44,6 +44,49 @@ pub enum Command {
     ClearQueue,
     GetState,
     Shutdown,
+    /// Pin an album/playlist/track for offline playback (D-022). Explicit
+    /// and user-initiated only — never issued automatically by streamboat
+    /// itself.
+    Pin {
+        kind: PinKind,
+        id: String,
+    },
+    /// Remove a pin and delete its chunks.
+    Unpin {
+        kind: PinKind,
+        id: String,
+    },
+    /// Ask a remote control surface to refresh its pin list; front ends in
+    /// the same process (the CLI) query the offline cache directly instead
+    /// of round-tripping through this protocol.
+    ListPins,
+}
+
+/// What a pin is made of. `Playlist` ids are TIDAL UUIDs, `Album`/`Track`
+/// ids are numeric — both carried as `String` on [`Command::Pin`] so one
+/// field shape covers all three (D-022).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PinKind {
+    Album,
+    Playlist,
+    Track,
+}
+
+impl PinKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PinKind::Album => "album",
+            PinKind::Playlist => "playlist",
+            PinKind::Track => "track",
+        }
+    }
+}
+
+impl std::fmt::Display for PinKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,4 +247,27 @@ pub enum Event {
     },
     EndOfQueue,
     Stopped,
+    /// Progress on a pin in flight (D-022): `completed` of `total` member
+    /// tracks downloaded so far.
+    PinProgress {
+        kind: PinKind,
+        id: String,
+        completed: u32,
+        total: u32,
+    },
+    /// A pin finished and every member track is cached and playable.
+    PinReady {
+        kind: PinKind,
+        id: String,
+    },
+    /// A pin could not be completed (refused preview/encrypted manifest,
+    /// network failure, over the size cap, ...); nothing partial was kept.
+    PinFailed {
+        kind: PinKind,
+        id: String,
+        message: String,
+    },
+    /// The pin set changed (pinned, unpinned, or wiped) — front ends
+    /// should re-fetch the pin list.
+    PinsChanged,
 }

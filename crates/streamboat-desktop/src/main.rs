@@ -11,8 +11,9 @@ use gstreamer::prelude::*;
 use streamboat_core::auth::device_code::{start_device_flow, wait_for_device_token};
 use streamboat_core::auth::pkce::{PkceSession, capture_code_loopback, code_from_redirect};
 use streamboat_core::bootstrap::Context;
-use streamboat_core::proto::{Command, Event, OutputConfig, PlayItem};
+use streamboat_core::proto::{Command, Event, OutputConfig, PinKind, PlayItem};
 use streamboat_core::{AudioQuality, StreamSource};
+use streamboat_player::offline::OfflineCache;
 use streamboat_player::{GstEngine, Player, PlayerConfig, PlayerDeps};
 
 #[derive(Parser)]
@@ -91,6 +92,35 @@ enum Cmd {
     Devices,
     /// Show where settings, tokens and caches live.
     Paths,
+    /// Pin an album, playlist or track for offline playback (D-022): an
+    /// encrypted, device-bound cache for this logged-in subscriber, never
+    /// an export or a download that outlives the subscription.
+    Pin {
+        kind: PinKindArg,
+        /// A numeric album/track id, or a playlist UUID.
+        id: String,
+    },
+    /// Remove a pin and delete its chunks.
+    Unpin { kind: PinKindArg, id: String },
+    /// List pinned albums/playlists/tracks and their validity.
+    Pins,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PinKindArg {
+    Album,
+    Playlist,
+    Track,
+}
+
+impl From<PinKindArg> for PinKind {
+    fn from(k: PinKindArg) -> PinKind {
+        match k {
+            PinKindArg::Album => PinKind::Album,
+            PinKindArg::Playlist => PinKind::Playlist,
+            PinKindArg::Track => PinKind::Track,
+        }
+    }
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -262,7 +292,26 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Logout => {
             let ctx = Context::load()?;
             ctx.api.logout().await?;
-            println!("Tokens removed from {}.", ctx.dirs.token_path().display());
+            // D-022: the offline cache is a subscriber feature, never a
+            // downloader — wipe it on logout rather than leaving pinned
+            // audio behind for an account nobody is signed into any more.
+            // No `OfflineCache` needs to be open (or its key resolved)
+            // just to delete the directory.
+            let offline_dir = ctx
+                .settings
+                .offline_dir
+                .clone()
+                .unwrap_or_else(|| ctx.dirs.offline_dir());
+            match OfflineCache::wipe_dir(&offline_dir) {
+                Ok(()) => println!(
+                    "Tokens removed from {}. Offline cache wiped.",
+                    ctx.dirs.token_path().display()
+                ),
+                Err(e) => {
+                    println!("Tokens removed from {}.", ctx.dirs.token_path().display());
+                    eprintln!("warning: could not wipe the offline cache: {e}");
+                }
+            }
             Ok(())
         }
         Cmd::Whoami => {
@@ -373,16 +422,34 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
                 output,
                 volume,
             };
+            // The offline cache (D-022): `play` uses it automatically —
+            // a pinned, valid track is served from it instead of the live
+            // stream. Unavailable (no keyring reachable, `key_storage =
+            // keyring`) means stream-only, not a fatal error.
+            let offline =
+                match OfflineCache::open(&ctx.dirs, &ctx.settings, &ctx.device.client_unique_key)
+                    .await
+                {
+                    Ok(cache) => Some(cache),
+                    Err(e) => {
+                        tracing::warn!(%e, "offline cache unavailable; streaming only");
+                        None
+                    }
+                };
             // Streaming privileges, play reporting and scrobbling are not
             // yet wired into the CLI spike (D-033, D-027, D-037 are built
             // but not yet plumbed through `Context`); every dependency here
-            // is `None`, which is exactly what makes them optional.
+            // besides `offline` is `None`, which is exactly what makes them
+            // optional.
             let handle = Player::spawn(
                 ctx.api.clone(),
                 Box::new(engine),
                 rx,
                 cfg,
-                PlayerDeps::default(),
+                PlayerDeps {
+                    offline,
+                    ..PlayerDeps::default()
+                },
             );
             let mut events = handle.subscribe();
             handle.send(Command::Play {
@@ -473,6 +540,74 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        Cmd::Pin { kind, id } => {
+            let ctx = Context::load()?;
+            let cache = OfflineCache::open(&ctx.dirs, &ctx.settings, &ctx.device.client_unique_key)
+                .await
+                .context("opening the offline cache")?;
+            let ceiling = ctx.settings.quality_ceiling();
+            let mut last_len = 0usize;
+            let result = cache
+                .pin(&ctx.api, kind.into(), id.clone(), ceiling, |done, total| {
+                    let line = format!("pinning {done}/{total} tracks...");
+                    eprint!("\r{:<width$}", line, width = last_len.max(line.len()));
+                    last_len = line.len();
+                    let _ = std::io::stderr().flush();
+                })
+                .await;
+            eprintln!();
+            match result {
+                Ok(()) => println!("Pinned {} {id} for offline playback.", kind_word(kind)),
+                Err(e) => bail!("could not pin {} {id}: {e}", kind_word(kind)),
+            }
+            Ok(())
+        }
+        Cmd::Unpin { kind, id } => {
+            let ctx = Context::load()?;
+            let cache = OfflineCache::open(&ctx.dirs, &ctx.settings, &ctx.device.client_unique_key)
+                .await
+                .context("opening the offline cache")?;
+            if cache.unpin(kind.into(), &id)? {
+                println!("Unpinned {} {id}.", kind_word(kind));
+            } else {
+                println!("{} {id} was not pinned.", kind_word(kind));
+            }
+            Ok(())
+        }
+        Cmd::Pins => {
+            let ctx = Context::load()?;
+            let cache = OfflineCache::open(&ctx.dirs, &ctx.settings, &ctx.device.client_unique_key)
+                .await
+                .context("opening the offline cache")?;
+            let pins = cache.list_pins();
+            if pins.is_empty() {
+                println!("Nothing pinned.");
+            }
+            for p in pins {
+                let mb = p.bytes as f64 / (1024.0 * 1024.0);
+                println!(
+                    "{:<8} {:<24} {:<40} {:>4} tracks  {mb:>8.1} MiB  {}",
+                    p.kind.as_str(),
+                    p.id,
+                    p.title,
+                    p.track_count,
+                    if p.valid {
+                        "valid"
+                    } else {
+                        "needs revalidation (offline_validity_days elapsed)"
+                    }
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn kind_word(kind: PinKindArg) -> &'static str {
+    match kind {
+        PinKindArg::Album => "album",
+        PinKindArg::Playlist => "playlist",
+        PinKindArg::Track => "track",
     }
 }
 
