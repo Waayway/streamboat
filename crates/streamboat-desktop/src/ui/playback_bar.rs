@@ -26,6 +26,8 @@ pub enum Message {
     VolumeChanged(f32),
     ToggleQueue,
     ToggleSignalPath,
+    /// Open/close the floating mini-player window (D-036, task item 1).
+    ToggleMiniPlayer,
 }
 
 pub fn view<'a>(
@@ -34,6 +36,7 @@ pub fn view<'a>(
     art: Option<image::Handle>,
     queue_open: bool,
     signal_path_open: bool,
+    mini_player_open: bool,
 ) -> Element<'a, Message> {
     let art_widget: Element<'a, Message> = match art {
         Some(handle) => container(image(handle).width(52.0).height(52.0))
@@ -148,6 +151,12 @@ pub fn view<'a>(
             "Signal path",
             signal_path_open,
             Message::ToggleSignalPath,
+            tokens
+        ),
+        toggle_button(
+            "Mini player",
+            mini_player_open,
+            Message::ToggleMiniPlayer,
             tokens
         ),
     ]
@@ -278,7 +287,7 @@ mod tests {
             ..PlayerState::default()
         };
         let tokens = Tokens::dark();
-        let mut ui = simulator(view(tokens, &state, None, false, false));
+        let mut ui = simulator(view(tokens, &state, None, false, false, false));
         assert!(ui.find("SHARED").is_ok());
     }
 
@@ -291,7 +300,7 @@ mod tests {
             ..PlayerState::default()
         };
         let tokens = Tokens::dark();
-        let mut ui = simulator(view(tokens, &state, None, false, false));
+        let mut ui = simulator(view(tokens, &state, None, false, false, false));
         assert!(ui.find("EXCLUSIVE").is_ok());
     }
 }

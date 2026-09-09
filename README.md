@@ -22,10 +22,28 @@ iced 0.14 window — Login (device-code or PKCE), Home and Explore (TIDAL's own
 server-driven feed sections, with a graceful card for a section type this
 client doesn't recognise yet), Search, Now Playing with a reorderable queue,
 a persistent playback bar, the signal-path panel, and Settings. Every CLI
-subcommand keeps working exactly as before. Entity/album/artist/playlist
-pages, the mini-player and the tray are the next wave; the libmpv backend for
-Windows and macOS is being built alongside this. Everything that was decided
-about the product and the stack is in `docs/DECISIONS.md`.
+subcommand keeps working exactly as before.
+
+It is a multi-window app now (`iced::daemon`, D-036): the playback bar's
+"Mini player" button or Ctrl+M opens a small always-on-top window (art,
+title/artists, transport, a seek bar, the quality badge, a restore button)
+over the same playback state as the main window. Closing the main window
+hides it rather than quitting (D-014) — the lock and, once playing, the
+audio device stay held; a tray icon (StatusNotifierItem via `ksni` on Linux,
+`tray-icon` on Windows/macOS, the latter compile-checked only so far, no
+runner for it yet) offers Show/Hide/Play-Pause/Next/Previous/Quit and a
+"now playing" tooltip; Ctrl+Q or the tray's Quit item is the only way out,
+and it waits briefly for playback to actually stop first. Only one instance
+runs the engine at a time (D-010): a second `streamboat` either becomes a
+plain remote client of a `streamboatd` that is already running, or, if
+another `streamboat` window already holds the lock, just asks it to come to
+the front and exits. A startup decoder probe (D-003) checks which quality
+tiers this build can actually decode and caps the requested ceiling (with a
+warning) rather than failing mid-playback; greying out an unreachable tier
+in the Settings picker itself is still to come. Entity/album/artist/playlist
+pages are the next wave; the libmpv backend for Windows and macOS is being
+built alongside this. Everything that was decided about the product and the
+stack is in `docs/DECISIONS.md`.
 
 ## Build (Linux)
 
@@ -117,7 +135,8 @@ its path is printed at startup. `--listen 0.0.0.0:<port>` or `--lan` opts
 into exposing it beyond localhost (logged loudly); `streamboatd --stdio`
 keeps the original JSON-lines transport on stdin/stdout
 (`{"type":"play","items":[{"track_id":12345}]}`). On Linux, `streamboatd`
-also registers an MPRIS2 player (`org.mpris.MediaPlayer2.streamboat`) for
+(and, when it is the one running the engine, the `streamboat` desktop shell
+itself) registers an MPRIS2 player (`org.mpris.MediaPlayer2.streamboat`) for
 media keys and desktop "now playing" widgets, when a D-Bus session is
 reachable.
 

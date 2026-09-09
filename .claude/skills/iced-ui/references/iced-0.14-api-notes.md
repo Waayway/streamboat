@@ -222,7 +222,79 @@ impl<'a, Message, Theme, Renderer> Simulator<...> {
   of the wave-1 screens needed interaction-simulation to prove out, but the capability is there for
   a future test that needs it.
 
-## 8. Things that look like they should exist but don't (as of 0.14.2)
+## 8. Multi-window: `iced::daemon` and the `window` module (`iced-0.14.0/src/daemon.rs`, `iced_runtime-0.14.0/src/window.rs`, `iced_core-0.14.0/src/window/*.rs`)
+
+Verified for streamboat's D-036 mini-player wave (a second, always-on-top window over the same
+`App` state) by reading the pinned sources directly, the same way §1-§8 were.
+
+```rust
+pub fn daemon<State, Message, Theme, Renderer>(
+    boot: impl application::BootFn<State, Message>,
+    update: impl application::UpdateFn<State, Message>,
+    view: impl for<'a> daemon::ViewFn<'a, State, Message, Theme, Renderer>,
+) -> Daemon<impl Program<...>>
+```
+
+- **`iced::daemon(boot, update, view)` reuses `application::BootFn`/`UpdateFn` verbatim** (same
+  `boot() -> (State, Task<Message>)` shape as `application()`, §1) but its own `ViewFn`/`TitleFn`/
+  `ThemeFn` traits all carry an extra `window::Id` parameter: `view(&'a State, window::Id) ->
+  Widget`, `title(&State, window::Id) -> String`, `theme(&State, window::Id) -> impl Into<Option<Theme>>`.
+  Referencing `App::view`/`App::title`/`App::theme` as bare methods with matching signatures
+  satisfies these the same `Type::method` way §4 describes — just with one more parameter now.
+  `subscription`/`style` are unchanged (`Fn(&State) -> Subscription<Message>` /
+  `Fn(&State, &Theme) -> theme::Style`, no `window::Id`): one subscription for the whole daemon
+  across every window, not per-window.
+- **A `Daemon` opens no window on its own and never exits when its last window closes** — both
+  documented directly on `daemon()` itself (`Program::window()` returns `None` for a `Daemon`,
+  unconditionally, vs. `application()`'s builder-supplied `Settings`). This is what makes D-014's
+  "closing the window keeps playing app alive, quitting is explicit" trivial: the app simply never
+  auto-exits, no workaround needed. Verified by reading `iced_winit-0.14.0/src/lib.rs`'s handling of
+  `WindowEvent::Destroyed`: the "exit when `window_manager.is_empty()`" branch is itself gated
+  `if !is_daemon`, so a `Daemon`'s windows can all close without the process exiting — `application()`
+  (a non-daemon `Program`) does not get this for free.
+- **`window::open(settings: window::Settings) -> (window::Id, Task<window::Id>)`** returns the new
+  `Id` *synchronously* — `Id::unique()` is called immediately, before the window actually exists —
+  and separately a `Task` that performs the real open. Store the `Id` right away (e.g. in `App`
+  returned from `boot`); don't wait on the `Task` to know it. The `Task<window::Id>` needs
+  `.discard::<Message>()` (§2: `Task<T>::discard<O>(self) -> Task<O>`, generic over the discarded
+  type) to fold into a `Task<Message>` batch, since its own output type is `window::Id`, not
+  `Message`.
+- **`window::close::<T>(id) -> Task<T>`** closes one window by id — generic over the task's output
+  type, so `T` is inferred as `Message` at the call site with no explicit turbofish needed in
+  practice.
+- **Closing a window is intercepted through `exit_on_close_request`, not by racing the subscription.**
+  `window::Settings::exit_on_close_request` defaults to `true`; when the OS delivers a native
+  close-button press with that flag true, `iced_winit`'s shell runs `window::Action::Close` *itself*,
+  destroying the window, in addition to (not instead of) delivering the ordinary
+  `window::Event::CloseRequested` to the app. Verified in `iced_winit-0.14.0/src/conversion.rs`:
+  `conversion::window_event` maps `winit::event::WindowEvent::CloseRequested` to
+  `Some(Event::Window(window::Event::CloseRequested))` **unconditionally**, regardless of
+  `exit_on_close_request` — that special-cased auto-close is a separate, additional action layered on
+  top, not a gate on whether the app-visible event fires. So to actually *prevent* the close (D-014:
+  hide instead), `exit_on_close_request: false` is required on that window's `Settings`; only then
+  does `window::close_requests() -> Subscription<window::Id>` become the *only* thing that happens,
+  leaving `update` free to answer it with `window::set_mode(id, window::Mode::Hidden)` instead of
+  `window::close`.
+- **Hide/show a window through `window::Mode`, there is no dedicated `hide`/`show` action.**
+  `window::Mode` is `Windowed | Fullscreen | Hidden`; `window::set_mode::<T>(id, mode) -> Task<T>`
+  and its counterpart `window::mode(id) -> Task<Mode>` are the only way to toggle visibility from
+  application code (`iced_winit`'s handling of `Action::SetMode` maps `Mode` to
+  `window.raw.set_visible(...)` internally). `window::gain_focus::<T>(id) -> Task<T>` brings a
+  *visible* window to the front — its own doc comment says it "has no effect if ... not visible," so
+  un-hiding then focusing is `window::set_mode(id, Mode::Windowed).chain(window::gain_focus(id))`
+  (`Task::chain`, §2, runs the two in sequence — `Task::batch` would not guarantee the un-hide lands
+  first).
+- **`window::Level::AlwaysOnTop`** (alongside `Normal`, `AlwaysOnBottom`) on `window::Settings::level`
+  is the always-on-top flag a floating utility window (streamboat's mini-player) wants; set once at
+  `window::open` time via `Settings`, no separate action needed to turn it on afterward unless it
+  needs to change later (`window::set_level::<T>(id, level) -> Task<T>` exists for that).
+- **`window::close_requests() -> Subscription<window::Id>`**, **`close_events() -> Subscription<window::Id>`**,
+  **`open_events() -> Subscription<window::Id>`**, **`events() -> Subscription<(window::Id, window::Event)>`**
+  are the four ready-made subscriptions over `iced::event::listen_with` — each already filters to one
+  `window::Event` variant (or all of them, for `events()`) and unwraps the `window::Id` alongside it,
+  cheaper than writing the `listen_with` match arm by hand for these four common cases.
+
+## 9. Things that look like they should exist but don't (as of 0.14.2)
 
 - No module-level `text_input::focus(id)`/`Task`-returning focus helper was found in
   `iced_widget::text_input` — only an inherent `TextInput::focus(&mut self)` on the widget's internal

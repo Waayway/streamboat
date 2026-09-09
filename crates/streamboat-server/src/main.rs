@@ -73,6 +73,32 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let cli = Cli::parse();
     let ctx = Context::load()?;
+
+    // Single-instance lock (D-010, D-045): `streamboatd` and `streamboat`
+    // (the GUI) share one lock file so only one of them is ever "the
+    // instance" driving an engine at a time. Refuse to start rather than
+    // silently running two daemons against the same account/device.
+    let lock_path = ctx.dirs.instance_lock_path();
+    let _instance_lock = match streamboat_core::instance_lock::InstanceLock::try_acquire(&lock_path)
+    {
+        Ok(Some(lock)) => lock,
+        Ok(None) => {
+            let holder = streamboat_core::instance_lock::read_control_address(
+                &ctx.dirs.control_address_path(),
+            );
+            anyhow::bail!(
+                "another streamboat instance already holds {}{}; stop it first (or, if it's a \
+                 GUI, this is normal — a daemon and a GUI never run side by side against the \
+                 same account/device)",
+                lock_path.display(),
+                holder
+                    .map(|a| format!(" (control API at {a})"))
+                    .unwrap_or_default()
+            );
+        }
+        Err(e) => return Err(e.into()),
+    };
+
     let output = match (cli.device.clone(), cli.exclusive) {
         (Some(d), true) => OutputConfig::Exclusive { device: d },
         (d, _) => OutputConfig::Shared { device: d },
@@ -123,7 +149,21 @@ async fn main() -> anyhow::Result<()> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         // Log the address actually bound, not the requested one — they
         // differ whenever `--listen` asks for port 0.
-        tracing::info!(listen = %listener.local_addr()?, "control API listening");
+        let bound = listener.local_addr()?;
+        tracing::info!(listen = %bound, "control API listening");
+        // D-010's discovery half: a second process (typically the desktop
+        // GUI, per `ui::instance` in `streamboat-desktop`) that fails to
+        // take the instance lock reads this file to become a remote client
+        // of this control API instead of doing nothing useful.
+        let address_path = ctx.dirs.control_address_path();
+        if let Err(e) = streamboat_core::instance_lock::write_control_address(&address_path, bound)
+        {
+            tracing::warn!(
+                error = %e,
+                path = %address_path.display(),
+                "could not write the control-address file; a remote GUI client will not find this daemon"
+            );
+        }
         axum::serve(listener, app).await?;
         Ok(())
     }

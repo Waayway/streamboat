@@ -22,6 +22,7 @@ pub mod credentials;
 pub mod error;
 mod fsutil;
 pub mod http;
+pub mod instance_lock;
 pub mod manifest;
 pub mod models;
 pub mod privileges;

@@ -74,6 +74,25 @@ impl AppDirs {
     pub fn control_token_path(&self) -> PathBuf {
         self.data.join("control-token")
     }
+
+    /// The single-instance advisory lock (D-010, D-045) both `streamboat`
+    /// and `streamboatd` try to take at startup — see
+    /// `crate::instance_lock` for what holding it means.
+    pub fn instance_lock_path(&self) -> PathBuf {
+        self.runtime.join("instance.lock")
+    }
+
+    /// Where the lock holder records its control API's bind address, when
+    /// it hosts one (`crate::instance_lock::write_control_address`).
+    pub fn control_address_path(&self) -> PathBuf {
+        self.runtime.join("control-address")
+    }
+
+    /// The `Command`-free "please show your window" signal a second GUI
+    /// instance touches (`crate::instance_lock::request_show`).
+    pub fn show_request_path(&self) -> PathBuf {
+        self.runtime.join("show-request")
+    }
 }
 
 /// Load the control API's bearer token, generating one on first use: 32

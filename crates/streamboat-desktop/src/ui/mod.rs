@@ -1,18 +1,26 @@
-//! The iced desktop shell (task brief): app architecture, startup, screens,
-//! the persistent sidebar/playback bar, and the `PlayerLink` seam over
-//! `streamboat-player`'s `PlayerHandle`/`Player::spawn` (D-010).
+//! The iced desktop shell: app architecture, startup, screens, the
+//! persistent sidebar/playback bar, the mini-player window and tray
+//! (D-036, D-014), and the `PlayerLink` seam (D-010) two implementations
+//! sit behind — `player_link::InProcessLink` over `streamboat-player`'s
+//! `PlayerHandle`/`Player::spawn` when this process runs the engine, or
+//! `remote_link::RemoteLink` over the control API (D-030) when another
+//! process already does; `instance` decides which at startup.
 
 pub mod app;
 pub mod design;
 pub mod engine_select;
 pub mod format;
 pub mod images;
+pub mod instance;
+pub mod mini_player;
 pub mod nav;
 pub mod playback_bar;
 pub mod player_link;
+pub mod remote_link;
 pub mod screens;
 pub mod signal_path;
 pub mod stream_ext;
+pub mod tray;
 pub mod widgets;
 
 pub use app::run;

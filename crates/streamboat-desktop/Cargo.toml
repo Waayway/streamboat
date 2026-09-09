@@ -34,9 +34,28 @@ uuid.workspace = true
 gstreamer.workspace = true
 reqwest.workspace = true
 futures.workspace = true
+futures-util.workspace = true
 image.workspace = true
 thiserror.workspace = true
+tokio-tungstenite.workspace = true
 iced = { workspace = true, features = ["tokio", "image", "svg", "advanced", "debug"] }
+
+# System tray (task item 2, D-014). Linux uses ksni (StatusNotifierItem over
+# D-Bus, no GTK dependency — `mpris.rs` already takes the same "own
+# dedicated thread with a current-thread tokio runtime" shape for the same
+# reason). Windows/macOS use tray-icon, cfg-gated and compile-checked only:
+# there is no Windows/macOS CI runner or display here, see
+# `ui::tray`'s doc comment for exactly what is and isn't verified.
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = "0.3"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tray-icon = "0.24"
 
 [dev-dependencies]
 iced_test.workspace = true
+streamboat-server = { path = "../streamboat-server" }
+wiremock.workspace = true
+base64.workspace = true
+axum.workspace = true
+tempfile.workspace = true
