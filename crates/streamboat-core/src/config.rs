@@ -76,9 +76,19 @@ impl AppDirs {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
-    /// Overrides the environment / build-time client id (D-023).
+    /// Device-code client pair; overrides the environment / build-time value (D-023).
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
+    /// PKCE client pair (desktop login; hi-res is served to this pair).
+    pub pkce_client_id: Option<String>,
+    pub pkce_client_secret: Option<String>,
+    /// Redirect URI for the PKCE flow. The ecosystem PKCE client id only
+    /// accepts TIDAL's own `https://tidal.com/android/login/auth`; set this
+    /// only to try another capture mechanism with a client id that allows it.
+    pub pkce_redirect_uri: Option<String>,
+    /// Where the token-file master key lives: `auto` (keyring if reachable,
+    /// else a 0600 key file), `keyring` (fail if unreachable), `file`.
+    pub key_storage: crate::token_store::KeyStorage,
     /// Highest tier to request; the cascade descends from here.
     pub quality_ceiling: Option<AudioQuality>,
     pub output: Option<OutputConfig>,
@@ -123,8 +133,9 @@ impl DeviceIdentity {
         match std::fs::read(path) {
             Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // 16 hex chars, Sone's shape (python-tidal pads to 1-16).
                 let id = Self {
-                    client_unique_key: uuid::Uuid::new_v4().simple().to_string(),
+                    client_unique_key: format!("{:016x}", rand::random::<u64>()),
                 };
                 fsutil::atomic_write(path, &serde_json::to_vec_pretty(&id)?, 0o600)?;
                 Ok(id)

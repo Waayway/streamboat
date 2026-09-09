@@ -14,11 +14,12 @@ use url::Url;
 
 use crate::credentials::ClientCredentials;
 use crate::error::{ApiError, Error, Result};
-use crate::token_store::{TokenSet, TokenStore, now_secs};
+use crate::token_store::{AuthFlow, TokenSet, TokenStore, now_secs};
 use crate::{PROJECT_URL, VERSION};
 
 pub const DEFAULT_API_BASE: &str = "https://api.tidal.com/";
 pub const DEFAULT_AUTH_BASE: &str = "https://auth.tidal.com/";
+pub const DEFAULT_LOGIN_BASE: &str = "https://login.tidal.com/";
 /// TIDAL's own SDK refreshes 60 s before expiry against server time.
 const REFRESH_MARGIN_SECS: u64 = 60;
 
@@ -27,12 +28,17 @@ pub struct ApiClientBuilder {
     store: Arc<dyn TokenStore>,
     api_base: Url,
     auth_base: Url,
+    login_base: Url,
     user_agent: Option<String>,
     country_code: Option<String>,
     timeout: Duration,
 }
 
 impl ApiClientBuilder {
+    pub fn login_base(mut self, url: &str) -> Self {
+        self.login_base = Url::parse(url).expect("valid login base url");
+        self
+    }
     pub fn api_base(mut self, url: &str) -> Self {
         self.api_base = Url::parse(url).expect("valid api base url");
         self
@@ -69,6 +75,7 @@ impl ApiClientBuilder {
                 http,
                 api_base: self.api_base,
                 auth_base: self.auth_base,
+                login_base: self.login_base,
                 creds: self.creds,
                 store: self.store,
                 tokens: RwLock::new(tokens),
@@ -85,6 +92,7 @@ struct Inner {
     http: reqwest::Client,
     api_base: Url,
     auth_base: Url,
+    login_base: Url,
     creds: ClientCredentials,
     store: Arc<dyn TokenStore>,
     tokens: RwLock<Option<TokenSet>>,
@@ -112,7 +120,13 @@ pub(crate) struct TokenResponse {
 }
 
 impl TokenResponse {
-    pub(crate) fn into_token_set(self, client_id: &str, previous: Option<&TokenSet>) -> TokenSet {
+    pub(crate) fn into_token_set(
+        self,
+        client_id: &str,
+        flow: AuthFlow,
+        client_unique_key: Option<&str>,
+        previous: Option<&TokenSet>,
+    ) -> TokenSet {
         TokenSet {
             access_token: self.access_token,
             refresh_token: self
@@ -125,6 +139,10 @@ impl TokenResponse {
                 .or_else(|| previous.map(|p| p.scope.clone()))
                 .unwrap_or_default(),
             client_id: client_id.to_string(),
+            flow,
+            client_unique_key: client_unique_key
+                .map(str::to_string)
+                .or_else(|| previous.and_then(|p| p.client_unique_key.clone())),
             user_id: self
                 .user_id
                 .or(self.user.as_ref().and_then(|u| u.user_id))
@@ -230,6 +248,7 @@ impl ApiClient {
             store,
             api_base: Url::parse(DEFAULT_API_BASE).unwrap(),
             auth_base: Url::parse(DEFAULT_AUTH_BASE).unwrap(),
+            login_base: Url::parse(DEFAULT_LOGIN_BASE).unwrap(),
             user_agent: None,
             country_code: None,
             timeout: Duration::from_secs(30),
@@ -250,6 +269,22 @@ impl ApiClient {
 
     pub fn auth_base(&self) -> &Url {
         &self.inner.auth_base
+    }
+
+    pub fn login_base(&self) -> &Url {
+        &self.inner.login_base
+    }
+
+    /// The client id the current session was minted with (falls back to the
+    /// primary configured id before any login).
+    pub async fn session_client_id(&self) -> String {
+        self.inner
+            .tokens
+            .read()
+            .await
+            .as_ref()
+            .map(|t| t.client_id.clone())
+            .unwrap_or_else(|| self.inner.creds.primary_client_id().to_string())
     }
 
     pub async fn tokens(&self) -> Option<TokenSet> {
@@ -330,7 +365,10 @@ impl ApiClient {
     }
 
     /// Refresh unless the access token changed since the caller observed
-    /// `seen_access_token` (another waiter already refreshed).
+    /// `seen_access_token` (another waiter already refreshed). Runs under the
+    /// store's cross-process lock: if another process (the daemon, the CLI)
+    /// refreshed meanwhile, its tokens are adopted instead of refreshing
+    /// again, which would invalidate them (TIDAL rotates refresh tokens).
     async fn refresh_if_still(&self, seen_access_token: Option<&str>) -> Result<()> {
         let _guard = self.inner.refresh_lock.lock().await;
         let current = match self.inner.tokens.read().await.clone() {
@@ -342,18 +380,51 @@ impl ApiClient {
                 return Ok(());
             }
         }
+        let mut store_lock = self.inner.store.lock_exclusive()?;
+        let _file_guard = match store_lock.as_mut() {
+            Some(l) => Some(l.write()?),
+            None => None,
+        };
+        if let Some(stored) = self.inner.store.load()? {
+            if stored.access_token != current.access_token
+                && !stored.expires_within(REFRESH_MARGIN_SECS)
+            {
+                tracing::debug!("adopting tokens refreshed by another process");
+                *self.inner.tokens.write().await = Some(stored);
+                return Ok(());
+            }
+        }
         let refresh_token = current
             .refresh_token
             .clone()
             .ok_or_else(|| Error::Auth("no refresh token stored; log in again".into()))?;
+        let pair = self
+            .inner
+            .creds
+            .pair_for(&current.client_id)
+            .cloned()
+            .or_else(|| self.inner.creds.device_pair().cloned())
+            .ok_or(Error::NoCredentials)?;
+        if pair.id != current.client_id {
+            tracing::warn!(
+                minted_by = %current.client_id,
+                using = %pair.id,
+                "refreshing with a different client id than minted these tokens"
+            );
+        }
         let mut form: Vec<(&str, String)> = vec![
             ("grant_type", "refresh_token".into()),
             ("refresh_token", refresh_token),
-            ("client_id", self.inner.creds.client_id.clone()),
+            ("client_id", pair.id.clone()),
             ("scope", current.scope.clone()),
         ];
-        if let Some(secret) = &self.inner.creds.client_secret {
+        if let Some(secret) = &pair.secret {
             form.push(("client_secret", secret.clone()));
+        }
+        if current.flow == AuthFlow::Pkce {
+            if let Some(key) = &current.client_unique_key {
+                form.push(("client_unique_key", key.clone()));
+            }
         }
         let url = self.inner.auth_base.join("v1/oauth2/token").unwrap();
         let resp = match self.inner.http.post(url).form(&form).send().await {
@@ -365,7 +436,12 @@ impl ApiClient {
         let text = resp.text().await.unwrap_or_default();
         if status.is_success() {
             let parsed: TokenResponse = serde_json::from_str(&text)?;
-            let new = parsed.into_token_set(&self.inner.creds.client_id, Some(&current));
+            let new = parsed.into_token_set(
+                &pair.id,
+                current.flow,
+                current.client_unique_key.as_deref(),
+                Some(&current),
+            );
             self.inner.store.save(&new)?;
             *self.inner.tokens.write().await = Some(new);
             return Ok(());

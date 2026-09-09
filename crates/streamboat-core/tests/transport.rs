@@ -8,7 +8,7 @@ use base64::Engine;
 use serde_json::json;
 use streamboat_core::auth::device_code::{start_device_flow, wait_for_device_token};
 use streamboat_core::token_store::{MemoryTokenStore, TokenSet, TokenStore, now_secs};
-use streamboat_core::{ApiClient, AudioQuality, ClientCredentials, Error, StreamSource};
+use streamboat_core::{ApiClient, AudioQuality, AuthFlow, ClientCredentials, Error, StreamSource};
 use wiremock::matchers::{body_string_contains, header, method, path, query_param};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -24,12 +24,14 @@ fn tokens(expires_in: i64) -> TokenSet {
         expires_at: (now_secs() as i64 + expires_in) as u64,
         scope: "r_usr w_usr w_sub".into(),
         client_id: "cid".into(),
+        flow: AuthFlow::DeviceCode,
+        client_unique_key: None,
         user_id: Some(7),
         country_code: Some("NL".into()),
     }
 }
 
-fn client(server: &MockServer, store: Arc<MemoryTokenStore>, secret: bool) -> ApiClient {
+fn client(server: &MockServer, store: Arc<dyn TokenStore>, secret: bool) -> ApiClient {
     ApiClient::builder(creds(secret), store)
         .api_base(&format!("{}/", server.uri()))
         .auth_base(&format!("{}/", server.uri()))
@@ -551,4 +553,176 @@ async fn track_and_search_tolerate_missing_fields() {
     assert!(t.has_hires_master());
     let page = c.search_tracks("song", 5).await.unwrap();
     assert_eq!(page.items.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// PKCE and multi-process behaviour
+
+fn pkce_creds() -> ClientCredentials {
+    ClientCredentials::new("dev-id", None).with_pkce("pkce-id", Some("pkce-secret".into()))
+}
+
+fn pkce_client(server: &MockServer, store: Arc<dyn TokenStore>) -> ApiClient {
+    ApiClient::builder(pkce_creds(), store)
+        .api_base(&format!("{}/", server.uri()))
+        .auth_base(&format!("{}/", server.uri()))
+        .login_base(&format!("{}/", server.uri()))
+        .build()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn pkce_authorize_url_and_exchange_carry_the_documented_parameters() {
+    use streamboat_core::auth::pkce::PkceSession;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/oauth2/token"))
+        .and(body_string_contains("grant_type=authorization_code"))
+        .and(body_string_contains("code=the-code"))
+        .and(body_string_contains("client_id=pkce-id"))
+        .and(body_string_contains("redirect_uri=https%3A%2F%2Ftidal.com%2Fandroid%2Flogin%2Fauth"))
+        // The literal '+' spelling, form-encoded as %2B (python-tidal and Sone send the same).
+        .and(body_string_contains("scope=r_usr%2Bw_usr%2Bw_sub"))
+        .and(body_string_contains("client_unique_key=0123456789abcdef"))
+        .and(body_string_contains("code_verifier="))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "AT", "refresh_token": "RT", "expires_in": 3600, "user": {"userId": 5, "countryCode": "DE"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let store = Arc::new(MemoryTokenStore::default());
+    let c = pkce_client(&server, store.clone());
+    let session = PkceSession::start(&c, "0123456789abcdef", None).unwrap();
+    let url = url::Url::parse(&session.authorize_url).unwrap();
+    assert_eq!(url.path(), "/authorize");
+    let q: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let keys: Vec<&str> = q.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(
+        keys,
+        [
+            "response_type",
+            "redirect_uri",
+            "client_id",
+            "lang",
+            "appMode",
+            "client_unique_key",
+            "code_challenge",
+            "code_challenge_method",
+            "restrict_signup"
+        ]
+    );
+    assert!(q.iter().any(|(k, v)| k == "client_id" && v == "pkce-id"));
+    assert!(
+        q.iter()
+            .any(|(k, v)| k == "code_challenge_method" && v == "S256")
+    );
+    assert!(
+        q.iter()
+            .any(|(k, v)| k == "redirect_uri" && v == "https://tidal.com/android/login/auth")
+    );
+
+    let t = session.exchange(&c, "the-code").await.unwrap();
+    assert_eq!(t.flow, AuthFlow::Pkce);
+    assert_eq!(t.client_id, "pkce-id");
+    assert_eq!(t.client_unique_key.as_deref(), Some("0123456789abcdef"));
+    assert_eq!(t.country_code.as_deref(), Some("DE"));
+    assert_eq!(store.load().unwrap().unwrap().access_token, "AT");
+}
+
+#[tokio::test]
+async fn pkce_session_refreshes_with_its_own_pair_and_unique_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/oauth2/token"))
+        .and(body_string_contains("grant_type=refresh_token"))
+        .and(body_string_contains("client_id=pkce-id"))
+        .and(body_string_contains("client_secret=pkce-secret"))
+        .and(body_string_contains("client_unique_key=0123456789abcdef"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"access_token": "fresh", "expires_in": 3600})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/sessions"))
+        .and(header("authorization", "Bearer fresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"countryCode": "DE"})))
+        .mount(&server)
+        .await;
+    let mut t = tokens(10);
+    t.client_id = "pkce-id".into();
+    t.flow = AuthFlow::Pkce;
+    t.client_unique_key = Some("0123456789abcdef".into());
+    let c = pkce_client(&server, Arc::new(MemoryTokenStore::with(t)));
+    c.session().await.unwrap();
+    let after = c.tokens().await.unwrap();
+    assert_eq!(after.flow, AuthFlow::Pkce);
+    assert_eq!(after.client_unique_key.as_deref(), Some("0123456789abcdef"));
+}
+
+#[tokio::test]
+async fn hires_is_skipped_on_a_secretless_session_even_if_another_pair_has_a_secret() {
+    let server = MockServer::start().await;
+    let mut t = tokens(3600);
+    t.client_id = "dev-id".into(); // device pair has no secret; PKCE pair does
+    let c = pkce_client(&server, Arc::new(MemoryTokenStore::with(t)));
+    let (tiers, warnings) = c.quality_ladder(AudioQuality::HiResLossless).await;
+    assert_eq!(
+        tiers,
+        vec![
+            AudioQuality::Lossless,
+            AudioQuality::High,
+            AudioQuality::Low
+        ]
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("no client secret")),
+        "{warnings:?}"
+    );
+    let mut t = tokens(3600);
+    t.client_id = "pkce-id".into();
+    t.flow = AuthFlow::Pkce;
+    let c = pkce_client(&server, Arc::new(MemoryTokenStore::with(t)));
+    let (tiers, warnings) = c.quality_ladder(AudioQuality::HiResLossless).await;
+    assert_eq!(tiers[0], AudioQuality::HiResLossless);
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[tokio::test]
+async fn second_process_adopts_tokens_refreshed_by_the_first() {
+    use streamboat_core::EncryptedFileStore;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/oauth2/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"access_token": "fresh", "refresh_token": "rt2", "expires_in": 3600}),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/sessions"))
+        .and(header("authorization", "Bearer fresh"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"countryCode": "NL"})))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let store_a = EncryptedFileStore::new(dir.path().join("t"), dir.path().join("k")).unwrap();
+    store_a.save(&tokens(10)).unwrap();
+    let store_b = EncryptedFileStore::new(dir.path().join("t"), dir.path().join("k")).unwrap();
+    // Two independent clients, as the CLI and the daemon would be.
+    let a = client(&server, Arc::new(store_a), false);
+    let b = client(&server, Arc::new(store_b), false);
+    a.session().await.unwrap();
+    // b still holds the stale token in memory; it must adopt a's refresh
+    // from the store rather than burn the rotated refresh token.
+    b.session().await.unwrap();
+    assert_eq!(b.tokens().await.unwrap().access_token, "fresh");
 }

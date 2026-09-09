@@ -28,11 +28,13 @@ pub mod proto;
 pub mod token_store;
 
 pub use api::{ResolvedStream, StreamSource};
-pub use credentials::ClientCredentials;
+pub use credentials::{ClientCredentials, ClientPair};
 pub use error::{Error, Result};
 pub use http::ApiClient;
 pub use models::AudioQuality;
-pub use token_store::{EncryptedFileStore, TokenSet, TokenStore};
+pub use token_store::{
+    AuthFlow, EncryptedFileStore, KeyLocation, KeyStorage, TokenSet, TokenStore,
+};
 
 /// Version string sent in the honest `User-Agent` and reported by `--version`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -6,13 +6,36 @@ use crate::config::{AppDirs, DeviceIdentity, Settings};
 use crate::credentials::ClientCredentials;
 use crate::error::Result;
 use crate::http::ApiClient;
-use crate::token_store::EncryptedFileStore;
+use crate::token_store::{EncryptedFileStore, KeySlot, KeyStorage, NoKeySlot};
+
+/// The keyring service name: the permanent app identity (D-007).
+pub const KEYRING_SERVICE: &str = "io.github.waayway.streamboat";
+pub const KEYRING_USER: &str = "master-key";
 
 pub struct Context {
     pub dirs: AppDirs,
     pub settings: Settings,
     pub device: DeviceIdentity,
     pub api: ApiClient,
+    pub store: Arc<EncryptedFileStore>,
+}
+
+/// The OS keyring when compiled in and not disabled by settings.
+pub fn key_slot(storage: KeyStorage) -> Arc<dyn KeySlot> {
+    if storage == KeyStorage::File {
+        return Arc::new(NoKeySlot);
+    }
+    #[cfg(feature = "keyring")]
+    {
+        Arc::new(crate::token_store::OsKeyring::new(
+            KEYRING_SERVICE,
+            KEYRING_USER,
+        ))
+    }
+    #[cfg(not(feature = "keyring"))]
+    {
+        Arc::new(NoKeySlot)
+    }
 }
 
 impl Context {
@@ -24,8 +47,13 @@ impl Context {
         let settings = Settings::load(&dirs.settings_path())?;
         let device = DeviceIdentity::load_or_create(&dirs.device_path())?;
         let creds = ClientCredentials::resolve(&settings)?;
-        let store = EncryptedFileStore::new(dirs.token_path(), dirs.key_path());
-        let api = ApiClient::builder(creds, Arc::new(store))
+        let store = Arc::new(EncryptedFileStore::open(
+            dirs.token_path(),
+            dirs.key_path(),
+            key_slot(settings.key_storage),
+            settings.key_storage,
+        )?);
+        let api = ApiClient::builder(creds, store.clone())
             .user_agent_override(settings.user_agent_override.clone())
             .country_code(settings.country_code.clone())
             .build()?;
@@ -34,6 +62,7 @@ impl Context {
             settings,
             device,
             api,
+            store,
         })
     }
 }

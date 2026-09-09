@@ -10,7 +10,7 @@ use base64::Engine as _;
 use serde_json::json;
 use streamboat_core::proto::{Command, Event, OutputConfig, PlayItem, PlaybackStatus, SignalPath};
 use streamboat_core::token_store::{MemoryTokenStore, TokenSet, now_secs};
-use streamboat_core::{ApiClient, AudioQuality, ClientCredentials, StreamSource};
+use streamboat_core::{ApiClient, AudioQuality, AuthFlow, ClientCredentials, StreamSource};
 use streamboat_player::engine::{EngineError, EngineResult};
 use streamboat_player::{Engine, EngineEvent, LoadItem, Player, PlayerConfig};
 use wiremock::matchers::{method, path, query_param};
@@ -125,6 +125,8 @@ fn tokens() -> TokenSet {
         expires_at: now_secs() + 3600,
         scope: "r_usr w_usr w_sub".into(),
         client_id: "cid".into(),
+        flow: AuthFlow::DeviceCode,
+        client_unique_key: None,
         user_id: Some(1),
         country_code: Some("NL".into()),
     }

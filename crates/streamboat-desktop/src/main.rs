@@ -9,6 +9,7 @@ use anyhow::{Context as _, bail};
 use clap::{Parser, Subcommand};
 use gstreamer::prelude::*;
 use streamboat_core::auth::device_code::{start_device_flow, wait_for_device_token};
+use streamboat_core::auth::pkce::{PkceSession, capture_code_loopback, code_from_redirect};
 use streamboat_core::bootstrap::Context;
 use streamboat_core::proto::{Command, Event, OutputConfig, PlayItem};
 use streamboat_core::{AudioQuality, StreamSource};
@@ -27,8 +28,31 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Log in with the device-code flow (works on a headless box).
-    Login,
+    /// Log in. Device-code flow by default (works on a headless box);
+    /// --pkce uses the browser flow that unlocks hi-res.
+    Login {
+        /// Authorization-code flow with PKCE (desktop default per D-024).
+        #[arg(long)]
+        pkce: bool,
+        /// How to get the code back from the browser: paste the redirected
+        /// URL, or listen on 127.0.0.1:<port>/callback (needs a client id
+        /// that allows a loopback redirect; unverified for the ecosystem id).
+        #[arg(long, value_enum, default_value_t = Capture::Paste, requires = "pkce")]
+        capture: Capture,
+        #[arg(long, default_value_t = 17893, requires = "pkce")]
+        port: u16,
+        /// Override the redirect URI (default: TIDAL's own Android callback).
+        #[arg(long, requires = "pkce")]
+        redirect_uri: Option<String>,
+        /// Do not try to open the browser automatically.
+        #[arg(long)]
+        no_open: bool,
+    },
+    /// Where the token-file master key lives, and moving it.
+    Keyring {
+        #[command(subcommand)]
+        action: KeyringAction,
+    },
     /// Forget the stored tokens.
     Logout,
     /// Show the session TIDAL reports for the stored login.
@@ -69,6 +93,22 @@ enum Cmd {
     Paths,
 }
 
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Capture {
+    Paste,
+    Loopback,
+}
+
+#[derive(Subcommand)]
+enum KeyringAction {
+    /// Show where the master key is stored.
+    Status,
+    /// Move a file-held key into the OS keyring and delete the file.
+    Migrate,
+    /// Move a keyring-held key into a 0600 key file and delete the entry.
+    ToFile,
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -95,47 +135,128 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             println!("settings: {}", dirs.settings_path().display());
             println!("tokens:   {}", dirs.token_path().display());
             match ctx {
-                Ok(ctx) => println!(
-                    "client id: {} (from {:?})",
-                    ctx.api.credentials().client_id,
-                    ctx.api.credentials().source
-                ),
+                Ok(ctx) => {
+                    let c = ctx.api.credentials();
+                    println!(
+                        "client ids: device {} / pkce {} (from {:?})",
+                        c.device.as_ref().map(|p| p.id.as_str()).unwrap_or("-"),
+                        c.pkce.as_ref().map(|p| p.id.as_str()).unwrap_or("-"),
+                        c.source
+                    );
+                    println!("master key: {}", ctx.store.key_location());
+                }
                 Err(e) => println!("credentials: {e}"),
             }
             Ok(())
         }
-        Cmd::Login => {
+        Cmd::Login {
+            pkce,
+            capture,
+            port,
+            redirect_uri,
+            no_open,
+        } => {
             let ctx = Context::load()?;
             if ctx.api.is_logged_in().await {
                 if let Ok(s) = ctx.api.session().await {
                     println!(
-                        "already logged in (user {}, country {})",
+                        "already logged in (user {}, country {}); run `streamboat logout` first to switch",
                         s.user_id.unwrap_or(0),
                         s.country_code
                     );
                     return Ok(());
                 }
             }
-            let auth = start_device_flow(&ctx.api).await?;
-            println!("Open this URL and enter the code to log in:\n");
-            println!("    {}", auth.verification_url());
-            println!("    code: {}\n", auth.user_code);
-            println!(
-                "Waiting for you to finish in the browser (expires in {} s)...",
-                auth.expires_in
-            );
-            let tokens = wait_for_device_token(&ctx.api, &auth, || true).await?;
+            let tokens = if pkce {
+                let redirect = match (capture, redirect_uri.as_deref()) {
+                    (_, Some(r)) => Some(r.to_string()),
+                    (Capture::Loopback, None) => Some(format!("http://127.0.0.1:{port}/callback")),
+                    (Capture::Paste, None) => ctx.settings.pkce_redirect_uri.clone(),
+                };
+                let session = PkceSession::start(
+                    &ctx.api,
+                    &ctx.device.client_unique_key,
+                    redirect.as_deref(),
+                )?;
+                println!("Open this URL in a browser and log in to TIDAL:\n");
+                println!("    {}\n", session.authorize_url);
+                if !no_open {
+                    open_browser(&session.authorize_url);
+                }
+                let code = match capture {
+                    Capture::Paste => {
+                        println!(
+                            "After logging in the browser lands on a TIDAL page that says \"Oops\" at\n    {}\nCopy the full URL from the address bar and paste it here:",
+                            session.redirect_uri
+                        );
+                        let line = read_line().await?;
+                        code_from_redirect(&line)?
+                    }
+                    Capture::Loopback => {
+                        println!(
+                            "Waiting for the browser to come back to 127.0.0.1:{port}/callback ..."
+                        );
+                        capture_code_loopback(
+                            ([127, 0, 0, 1], port).into(),
+                            "/callback",
+                            Duration::from_secs(600),
+                        )
+                        .await?
+                    }
+                };
+                session.exchange(&ctx.api, &code).await?
+            } else {
+                let auth = start_device_flow(&ctx.api).await?;
+                println!("Open this URL and enter the code to log in:\n");
+                println!("    {}", auth.verification_url());
+                println!("    code: {}\n", auth.user_code);
+                if !no_open {
+                    open_browser(&auth.verification_url());
+                }
+                println!(
+                    "Waiting for you to finish in the browser (expires in {} s)...",
+                    auth.expires_in
+                );
+                wait_for_device_token(&ctx.api, &auth, || true).await?
+            };
             let s = ctx.api.session().await.ok();
             println!(
-                "Logged in as user {} ({}).",
+                "Logged in as user {} ({}) with the {} flow; tokens in {}, key in {}.",
                 tokens
                     .user_id
                     .or(s.as_ref().and_then(|s| s.user_id))
                     .unwrap_or(0),
                 s.map(|s| s.country_code)
                     .or(tokens.country_code)
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                match tokens.flow {
+                    streamboat_core::AuthFlow::Pkce => "PKCE",
+                    streamboat_core::AuthFlow::DeviceCode => "device-code",
+                },
+                ctx.dirs.token_path().display(),
+                ctx.store.key_location()
             );
+            Ok(())
+        }
+        Cmd::Keyring { action } => {
+            let ctx = Context::load()?;
+            match action {
+                KeyringAction::Status => {
+                    println!("key location: {}", ctx.store.key_location());
+                    println!(
+                        "key_storage:  {:?} (settings.json)",
+                        ctx.settings.key_storage
+                    );
+                }
+                KeyringAction::Migrate => {
+                    let loc = ctx.store.migrate_key_to_keyring()?;
+                    println!("key now in {loc}");
+                }
+                KeyringAction::ToFile => {
+                    let loc = ctx.store.migrate_key_to_file()?;
+                    println!("key now in {loc}");
+                }
+            }
             Ok(())
         }
         Cmd::Logout => {
@@ -154,6 +275,10 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
                 println!("client:      {} (id {})", c.name, c.id.unwrap_or(0));
             }
             println!("user agent:  {}", ctx.api.user_agent());
+            if let Some(t) = ctx.api.tokens().await {
+                println!("login flow:  {:?} (client id {})", t.flow, t.client_id);
+            }
+            println!("master key:  {}", ctx.store.key_location());
             Ok(())
         }
         Cmd::Search { query, limit } => {
@@ -339,6 +464,33 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let cmd = ("open", vec![url]);
+    #[cfg(target_os = "windows")]
+    let cmd = ("cmd", vec!["/C", "start", "", url]);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let cmd = ("xdg-open", vec![url]);
+    match std::process::Command::new(cmd.0)
+        .args(&cmd.1)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(_) => {}
+        Err(_) => eprintln!("(could not open a browser automatically; open the URL yourself)"),
+    }
+}
+
+async fn read_line() -> anyhow::Result<String> {
+    use tokio::io::AsyncBufReadExt;
+    let mut line = String::new();
+    tokio::io::BufReader::new(tokio::io::stdin())
+        .read_line(&mut line)
+        .await?;
+    Ok(line)
 }
 
 fn mmss(ms: u64) -> String {

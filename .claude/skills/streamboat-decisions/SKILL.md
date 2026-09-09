@@ -150,10 +150,11 @@ Keep these in mind so you do not "fix" them back:
 
 ## Status of delivery
 
-The playable spike (D-044) exists for Linux: see `docs/architecture.md` for the crate contents,
-the implementation choices it fixed (seek flags, DASH feeding, `dashdemux2` demotion, token file
-format, protocol version) and the not-yet-built list in decision order. The libmpv backend, the
-ALSA writer, PKCE, keyring storage, the control API and the iced shell are next.
+The playable spike (D-044) exists for Linux, and both login flows (D-024) and keyring-backed token
+storage (D-026) are built: see `docs/architecture.md` for the crate contents, the implementation
+choices fixed along the way (seek flags, DASH feeding, `dashdemux2` demotion, token file format,
+master-key resolution order, PKCE capture mechanisms, protocol version) and the not-yet-built list
+in decision order. The libmpv backend, the ALSA writer, the control API and the iced shell are next.
 
 ## Still open (implementation-time calls, not owner decisions)
 

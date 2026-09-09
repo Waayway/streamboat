@@ -38,18 +38,38 @@ pinned GStreamer (D-020).
 
 ## Client credentials
 
-No client id ships in this repository (D-023). streamboat presents the
-client id you give it, in this order:
+No client id ships in this repository (D-023). Two pairs exist in the
+open-source ecosystem: a **device-code** pair (headless/CLI login) and a
+**PKCE** pair (browser login; the only one TIDAL serves hi-res to in the
+clear). streamboat takes whichever you give it, in this order:
 
-1. `client_id` / `client_secret` in `settings.json` (see `streamboat paths`);
-2. `STREAMBOAT_CLIENT_ID` / `STREAMBOAT_CLIENT_SECRET` in the environment;
+1. `client_id` / `client_secret` and `pkce_client_id` / `pkce_client_secret`
+   in `settings.json` (see `streamboat paths`);
+2. `STREAMBOAT_CLIENT_ID` / `STREAMBOAT_CLIENT_SECRET` and
+   `STREAMBOAT_PKCE_CLIENT_ID` / `STREAMBOAT_PKCE_CLIENT_SECRET` in the
+   environment;
 3. the same variables set when the binary was built (an embedded default).
 
-The ids in use across the open-source TIDAL ecosystem were extracted from
-TIDAL's own applications; any id you embed in a binary is extractable, and
-TIDAL can revoke one at any time. Hi-res (`HI_RES_LOSSLESS`) is only served in
-the clear to a client id that has a secret; without one, streamboat drops the
-hi-res tiers from the cascade and says so.
+The ids in use across the ecosystem were extracted from TIDAL's own
+applications; any id you embed in a binary is extractable, and TIDAL can
+revoke one at any time. Hi-res (`HI_RES_LOSSLESS`) is only served in the clear
+to a client id that has a secret, on a PKCE session; otherwise streamboat drops
+the hi-res tiers from the cascade and says so.
+
+## Logging in
+
+```
+streamboat login                 # device-code flow: a link.tidal.com URL plus a code
+streamboat login --pkce          # browser flow; paste the URL you land on afterwards
+streamboat login --pkce --capture loopback --port 17893
+```
+
+`--pkce` opens `login.tidal.com`; after you log in, the browser lands on
+`https://tidal.com/android/login/auth?code=...`, a TIDAL page that says
+"Oops". Copy that URL from the address bar and paste it into the terminal.
+The loopback capture (`--capture loopback`) instead asks TIDAL to redirect to
+`http://127.0.0.1:<port>/callback`; whether TIDAL accepts that for the
+ecosystem PKCE client id is unverified, so paste is the default.
 
 ## Use
 
@@ -71,8 +91,14 @@ stdout for now (`streamboatd --device hw:1,0 --exclusive`, then
 `{"type":"play","items":[{"track_id":12345}]}`); the HTTP + WebSocket control
 API and MPRIS adapter follow.
 
-Tokens are stored encrypted (AES-256-GCM) in the data directory with a
-0600 key file beside them; OS-keyring storage comes with the desktop shell.
+Tokens are stored encrypted (AES-256-GCM) in the data directory. The 32-byte
+master key goes to the OS keyring (Secret Service, Credential Manager,
+Keychain) when one is reachable at first login, else to a 0600 key file in the
+config directory; `STREAMBOAT_MASTER_KEY` (hex or base64, 32 bytes) supplies it
+on a headless box. The key never moves on its own: `streamboat keyring status`
+shows where it is, `streamboat keyring migrate` moves a file key into the
+keyring, `streamboat keyring to-file` does the reverse. `key_storage` in
+`settings.json` (`auto`, `keyring`, `file`) fixes the policy.
 
 ## Layout
 

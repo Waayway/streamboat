@@ -22,6 +22,14 @@ aes-gcm = { workspace = true, features = ["std"] }
 rand.workspace = true
 zeroize.workspace = true
 roxmltree = "0.20"
+sha2.workspace = true
+hex.workspace = true
+fd-lock.workspace = true
+keyring = { workspace = true, optional = true }
+
+[features]
+default = ["keyring"]
+keyring = ["dep:keyring"]
 
 [dev-dependencies]
 wiremock.workspace = true

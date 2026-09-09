@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::SCOPES;
 use crate::error::{Error, Result};
 use crate::http::{ApiClient, TokenResponse, parse_error_body};
-use crate::token_store::TokenSet;
+use crate::token_store::{AuthFlow, TokenSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,12 +54,15 @@ pub enum PollOutcome {
 }
 
 pub async fn start_device_flow(client: &ApiClient) -> Result<DeviceAuthorization> {
-    let creds = client.credentials();
+    let pair = client
+        .credentials()
+        .device_pair()
+        .ok_or(Error::NoCredentials)?;
     let mut form = vec![
-        ("client_id", creds.client_id.clone()),
+        ("client_id", pair.id.clone()),
         ("scope", SCOPES.to_string()),
     ];
-    if let Some(secret) = &creds.client_secret {
+    if let Some(secret) = &pair.secret {
         form.push(("client_secret", secret.clone()));
     }
     let (status, text) = client
@@ -77,9 +80,12 @@ pub async fn poll_device_token_once(
     client: &ApiClient,
     auth: &DeviceAuthorization,
 ) -> Result<PollOutcome> {
-    let creds = client.credentials();
+    let pair = client
+        .credentials()
+        .device_pair()
+        .ok_or(Error::NoCredentials)?;
     let mut form = vec![
-        ("client_id", creds.client_id.clone()),
+        ("client_id", pair.id.clone()),
         ("device_code", auth.device_code.clone()),
         (
             "grant_type",
@@ -87,16 +93,19 @@ pub async fn poll_device_token_once(
         ),
         ("scope", SCOPES.to_string()),
     ];
-    if let Some(secret) = &creds.client_secret {
+    if let Some(secret) = &pair.secret {
         form.push(("client_secret", secret.clone()));
     }
     let (status, text) = client.post_auth_form("v1/oauth2/token", &form).await?;
     if status.is_success() {
         let resp: TokenResponse = serde_json::from_str(&text)
             .map_err(|e| Error::Auth(format!("unexpected token response: {e}")))?;
-        return Ok(PollOutcome::Authorized(
-            resp.into_token_set(&creds.client_id, None),
-        ));
+        return Ok(PollOutcome::Authorized(resp.into_token_set(
+            &pair.id,
+            AuthFlow::DeviceCode,
+            None,
+            None,
+        )));
     }
     let api = parse_error_body(status.as_u16(), &text);
     let msg = api.message.to_ascii_lowercase();

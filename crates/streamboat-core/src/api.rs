@@ -6,6 +6,7 @@ use crate::http::ApiClient;
 use crate::manifest::{self, PlaybackInfo};
 use crate::models::{AudioMode, AudioQuality, Page, Session, Track};
 use crate::proto::StreamInfo;
+use crate::token_store::AuthFlow;
 
 pub use crate::manifest::StreamSource;
 
@@ -87,7 +88,7 @@ impl ApiClient {
                 ("countryCode", cc),
             ],
             &[
-                ("x-tidal-token", self.credentials().client_id.clone()),
+                ("x-tidal-token", self.session_client_id().await),
                 (
                     "x-tidal-streamingsessionid",
                     streaming_session_id.to_string(),
@@ -98,28 +99,43 @@ impl ApiClient {
     }
 
     /// The tiers to try for a ceiling, highest first. Hi-res tiers are
-    /// dropped pre-emptively when the client id has no secret (D-023).
-    pub fn quality_ladder(&self, ceiling: AudioQuality) -> (Vec<AudioQuality>, Option<String>) {
-        let mut warning = None;
-        let has_secret = self.credentials().has_secret();
+    /// dropped pre-emptively when the client id that minted the session has
+    /// no secret (D-023, Sone's rule); a device-code session gets a warning
+    /// because python-tidal documents PKCE as the only route to hi-res.
+    pub async fn quality_ladder(&self, ceiling: AudioQuality) -> (Vec<AudioQuality>, Vec<String>) {
+        let mut warnings = Vec::new();
+        let tokens = self.tokens().await;
+        let client_id = tokens
+            .as_ref()
+            .map(|t| t.client_id.clone())
+            .unwrap_or_else(|| self.credentials().primary_client_id().to_string());
+        let has_secret = self
+            .credentials()
+            .pair_for(&client_id)
+            .map(|p| p.has_secret())
+            .unwrap_or(false);
+        let flow = tokens.as_ref().map(|t| t.flow).unwrap_or_default();
+        let wants_hires = ceiling.is_hi_res();
+        if wants_hires && !has_secret {
+            warnings.push(
+                "hi-res tiers skipped: the client id this session uses has no client secret, and \
+                 TIDAL only serves cleartext HI_RES_LOSSLESS to a client id with one"
+                    .to_string(),
+            );
+        } else if wants_hires && flow == AuthFlow::DeviceCode {
+            warnings.push(
+                "hi-res requested on a device-code session; TIDAL normally serves HI_RES_LOSSLESS \
+                 only to PKCE sessions (`streamboat login --pkce`)"
+                    .to_string(),
+            );
+        }
         let tiers: Vec<AudioQuality> = AudioQuality::LADDER
             .iter()
             .copied()
             .filter(|q| q.rank() <= ceiling.rank())
-            .filter(|q| {
-                if q.is_hi_res() && !has_secret {
-                    warning.get_or_insert_with(|| {
-                        "hi-res tiers skipped: the configured client id has no client secret, and \
-                         TIDAL only serves cleartext HI_RES_LOSSLESS to a client id with one"
-                            .to_string()
-                    });
-                    false
-                } else {
-                    true
-                }
-            })
+            .filter(|q| !q.is_hi_res() || has_secret)
             .collect();
-        (tiers, warning)
+        (tiers, warnings)
     }
 
     /// The quality cascade (`tidal-api` playback §4): try each tier from the
@@ -132,8 +148,7 @@ impl ApiClient {
         ceiling: AudioQuality,
         streaming_session_id: &str,
     ) -> Result<ResolvedStream> {
-        let (tiers, ladder_warning) = self.quality_ladder(ceiling);
-        let mut warnings: Vec<String> = ladder_warning.into_iter().collect();
+        let (tiers, mut warnings) = self.quality_ladder(ceiling).await;
         let mut last_err: Option<Error> = None;
         for tier in tiers {
             let info = match self
