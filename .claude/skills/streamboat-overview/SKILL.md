@@ -251,8 +251,8 @@ produces `streamboat` (CLI) and `streamboatd` (stdio-protocol daemon); `streambo
 device-code flow, `streamboat resolve <id>` shows the cascade result, `streamboat play <id>…`
 plays through GStreamer with gapless hand-over and a selectable `hw:` device. `docs/architecture.md`
 records what exists, the implementation choices made along the way, and the ordered list of what is
-not built yet (PKCE, keyring, libmpv backend, ALSA writer, control API, iced shell). Read it before
-touching code.
+not built yet (libmpv backend, control API, iced shell — PKCE, keyring and the exclusive-mode ALSA
+writer are done). Read it before touching code.
 
 Topic skills still carry their pre-decision "Open decisions" sections, each now headed by a note
 pointing at the decision log; read them as the inputs that were considered, not as open questions.

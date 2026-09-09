@@ -8,8 +8,13 @@ description = "streamboat's audio engine: the Engine trait, the GStreamer and li
 repository.workspace = true
 
 [features]
-default = ["gstreamer"]
+default = ["gstreamer", "alsa-direct"]
 gstreamer = ["dep:gstreamer", "dep:gstreamer-audio"]
+# Exclusive-mode ALSA writer (D-017, D-018): a dedicated `snd_pcm_t` owned by
+# a writer thread, fed by a GStreamer appsink, instead of `alsasink`. Linux
+# only — the `alsa` crate links `libasound` via pkg-config, which does not
+# exist on Windows/macOS (those get libmpv's own exclusive output, D-016).
+alsa-direct = ["dep:alsa", "dep:libc", "gstreamer"]
 
 [dependencies]
 streamboat-core.workspace = true
@@ -22,6 +27,10 @@ base64.workspace = true
 uuid.workspace = true
 gstreamer = { workspace = true, optional = true }
 gstreamer-audio = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
 
 [dev-dependencies]
 wiremock.workspace = true

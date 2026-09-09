@@ -7,6 +7,8 @@
 //! Strawberry (all GPL-3.0) is licence-clean here and never lands in the
 //! Apache-2.0 core (D-009).
 
+#[cfg(feature = "alsa-direct")]
+pub mod alsa_writer;
 pub mod engine;
 #[cfg(feature = "gstreamer")]
 pub mod gst;
