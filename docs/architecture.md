@@ -420,17 +420,67 @@ reuses one id for both anyway, the cheapest safe move the reference names).
   `axum`, `tokio-tungstenite` and `mpris-server`/`zbus` are all pure Rust and
   link no system D-Bus or GUI library, so this still passes.
 
+## Packaging (D-041)
+
+`packaging/` holds every release artifact's source, and
+`crates/streamboat-desktop/Cargo.toml`/`crates/streamboat-server/Cargo.toml`
+carry `[package.metadata.deb]`/`[package.metadata.generate-rpm]` sections
+for their respective binaries — see `packaging/README.md` for the full
+per-artifact explanation, what was verified locally (both deb packages and
+both rpm packages were actually built and inspected in this repository's
+own dev environment; `dpkg-deb -c`/`rpm -qlp` confirm the file lists,
+`systemd-analyze verify` confirms both systemd units), and what could not
+be (no Windows or macOS machine exists in that environment; the WiX MSI,
+the DMG script and the winget manifests are validated as well-formed
+XML/YAML only).
+
+`.github/workflows/release.yml` builds all of it on a `vX.Y.Z` tag: Linux
+deb/rpm/AppImage/tarball on native x86_64 and aarch64 runners, a Windows
+MSI, a macOS DMG (arm64 and x86_64), and the `streamboatd` Docker image
+pushed to `ghcr.io`, all collected into one draft GitHub Release with a
+`SHA256SUMS` file. No code signing anywhere (D-042); no in-app updater
+(D-043); AUR/winget/Homebrew/Flathub submissions stay human-authored,
+outside CI (D-040, D-041) — see CONTRIBUTING.md's release checklist.
+
+**Load-bearing gap, not fixed by this packaging pass**: the Windows and
+macOS build steps in `release.yml` run
+`cargo build --no-default-features --features mpv`, but
+`crates/streamboat-desktop/src/main.rs` and
+`crates/streamboat-server/src/main.rs` both still construct `GstEngine`
+unconditionally — there is no `target_os`/feature-gated path to
+`MpvEngine` yet (the next bullet in "Not yet built" below), so that build
+step fails today on an unresolved import, not on anything packaging-side.
+`release.yml` marks those steps `continue-on-error: true` with a comment
+pointing back at `packaging/README.md`'s explanation, specifically so a
+real tag push produces a clearly-explained failure rather than a silently
+missing artifact.
+
+deb/rpm depend on the distro's own GStreamer packages for this first
+release rather than the `/opt/streamboat` vendored tree D-041 describes —
+`packaging/linux/vendor-gstreamer.sh` is the real, complete script for
+building that tree, just not wired into any job yet; `packaging/README.md`
+explains why, and the "Still open" list in `streamboat-decisions` still
+carries the question of whether that tree or the AppImage ends up the
+recommended Debian-stable install path.
+
 ## Not yet built (in decision order)
 
-the `streamboat://` handler for the desktop shell (D-024); the Flatpak Secret
+the `streamboat://` handler for the desktop shell (D-024, though its OS
+handler registration is written in `packaging/linux/`, `packaging/windows/wix/`
+and `packaging/macos/` — the shell itself still needs to open a URL its OS
+hands it, once it exists); the Flatpak Secret
 portal (D-026); wiring `MpvEngine` into `streamboat`/`streamboatd`'s engine
 selection for Windows and macOS (D-016 — the backend itself is built and
-tested on Linux, see above); the
+tested on Linux, see above; this is also what blocks a working Windows/macOS
+release build, see "Packaging" above); the
 `org.freedesktop.ReserveDevice1` device-reservation handshake for the ALSA
 writer (`output-backends.md` §2, explicitly optional — `EBUSY` on open is
 handled with a bounded retry regardless); SMTC/NowPlayingInfoCenter (MPRIS is
 done for Linux, D-030); streaming privileges, play reporting and scrobbling
 wired into the `streamboat` CLI/desktop shell rather than only `streamboatd`
 (D-033, D-027, D-037 — the modules and the daemon wiring exist; see the
-section above); the iced shell (D-013); the offline cache (D-022); packaging
-(D-041).
+section above); the iced shell (D-013); the offline cache (D-022); the
+`/opt/streamboat` vendored GStreamer tree actually wired into a deb/rpm job
+(the build script exists, see "Packaging" above); an AppUserModelID for
+Windows SMTC and a universal macOS build (both still-open packaging
+questions, see `streamboat-decisions`).

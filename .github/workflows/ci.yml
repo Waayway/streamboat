@@ -36,6 +36,57 @@ jobs:
       - run: cargo test -p streamboat-player --features mpv
       - run: cargo build --workspace --release
 
+  packaging-lint:
+    name: validate packaging metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packaging validators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            desktop-file-utils appstream
+      - name: Validate the desktop entry
+        run: desktop-file-validate packaging/linux/io.github.waayway.streamboat.desktop
+      - name: Validate the AppStream metainfo
+        run: appstreamcli validate --no-net packaging/linux/io.github.waayway.streamboat.metainfo.xml
+      - name: Verify the systemd system unit
+        run: systemd-analyze verify --recursive-errors=no packaging/linux/systemd/streamboatd.service
+      - name: Verify the systemd user unit
+        run: systemd-analyze verify --user --recursive-errors=no packaging/linux/systemd/user/streamboatd.service
+      - name: Shell-check the packaging scripts
+        run: |
+          sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck packaging/linux/vendor-gstreamer.sh
+          shellcheck packaging/macos/build-dmg.sh
+          shellcheck -s bash packaging/aur/PKGBUILD packaging/aur/PKGBUILD-bin
+      - name: Validate packaging YAML
+        run: |
+          python3 -c "import yaml; yaml.safe_load(open('packaging/docker/compose.yml'))"
+          python3 -c "import yaml; yaml.safe_load(open('packaging/appimage/AppImageBuilder.yml'))"
+          python3 -c "import yaml; [yaml.safe_load(open(f)) for f in __import__('glob').glob('packaging/windows/winget/*.yaml')]"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install GStreamer and ALSA development packages
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev \
+            libasound2-dev pkg-config
+      - name: Install cargo-deb and cargo-generate-rpm
+        run: |
+          cargo install --locked cargo-deb
+          cargo install --locked cargo-generate-rpm
+      - run: cargo build --release -p streamboat-desktop -p streamboat-server
+      - name: Dry-run the deb metadata (no packaging of a fresh build)
+        run: |
+          cargo deb -p streamboat-desktop --no-build --no-strip
+          cargo deb -p streamboat-server --no-build --no-strip
+      - name: Dry-run the rpm metadata
+        run: |
+          mkdir -p /tmp/rpm-lint
+          cargo generate-rpm -p crates/streamboat-desktop -o /tmp/rpm-lint/
+          cargo generate-rpm -p crates/streamboat-server -o /tmp/rpm-lint/
+
   headless-daemon:
     name: streamboatd links no GUI toolkit
     runs-on: ubuntu-24.04

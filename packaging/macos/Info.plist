@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  streamboat.app Info.plist template.
+
+  __VERSION__ is substituted by packaging/macos/build-dmg.sh at build time;
+  this file is not itself a build artifact. Not testable in this
+  environment (no macOS here); see packaging/README.md's macOS section for
+  what could and couldn't be verified locally.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>streamboat</string>
+  <key>CFBundleDisplayName</key>
+  <string>streamboat</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.github.waayway.streamboat</string>
+  <key>CFBundleVersion</key>
+  <string>__VERSION__</string>
+  <key>CFBundleShortVersionString</key>
+  <string>__VERSION__</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleExecutable</key>
+  <string>streamboat</string>
+  <key>CFBundleIconFile</key>
+  <string>streamboat.icns</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.music</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>streamboat contributors</string>
+
+  <!--
+    streamboat:// URL protocol (D-007, D-024): the PKCE login callback and
+    shareable deep links. Deliberately does not declare a `tidal://`
+    scheme: that one already belongs to TIDAL's own desktop app and to
+    other open-source clients, and macOS URL-scheme registration is
+    last-writer-wins, same as the Linux .desktop entry and the Windows
+    registry keys (see both for the identical rule). streamboat only ever
+    parses a pasted tidal://... link, never claims the scheme itself.
+  -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>streamboat protocol</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>streamboat</string>
+      </array>
+    </dict>
+  </array>
+
+  <!--
+    macOS 15 (Sequoia) extended iOS's Local Network privacy to the Mac:
+    any Bonjour/mDNS use or LAN connection needs this key with a real
+    purpose string, or discovery silently returns nothing (no error);
+    see the headless-and-tidal-connect daemon-architecture reference.
+    streamboat has no LAN discovery code today (the Snapcast multiroom
+    plugin, docs/DECISIONS.md, is still future work); the key is declared
+    now so shipping that feature later does not need a second Info.plist
+    and bundle-identity review.
+  -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>streamboat uses the local network to find Snapcast multiroom speakers, when that feature is turned on.</string>
+</dict>
+</plist>

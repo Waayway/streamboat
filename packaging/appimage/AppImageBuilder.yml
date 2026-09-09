@@ -1,0 +1,101 @@
+# AppImageBuilder recipe for streamboat (D-041).
+#
+# Build (from the repository root, after `cargo build --release`):
+#
+#   pip install appimage-builder
+#   VERSION=0.0.1 envsubst < packaging/appimage/AppImageBuilder.yml > /tmp/AppImageBuilder.yml
+#   appimage-builder --recipe /tmp/AppImageBuilder.yml --skip-test
+#
+# (appimage-builder's own recipe format has no first-class "substitute this
+# from an environment variable" story that survives `python3 -c "import
+# yaml"` validation cleanly across versions, so this file is templated with
+# a plain `${VERSION}` placeholder and substituted with `envsubst` before
+# the real tool ever reads it -- the same substitute-before-use approach
+# packaging/macos/Info.plist and the WiX `-d` variables use.)
+#
+# This recipe uses appimage-builder's `apt` bundling step to pull the exact
+# GStreamer plugin set D-020 names (base/good/bad for the DASH/fMP4 demux
+# path, libav for the LGPL avdec_aac decoder -- never fdk-aac -- and alsa
+# for the exclusive-mode writer's underlying device) plus their real
+# dependency closure, the same way packaging/docker/Dockerfile's runtime
+# stage does with `apt-get install`, rather than hand-copying `.so` files.
+#
+# Not run in this environment (appimage-builder needs a real, mounted apt
+# sandbox and FUSE, neither available in this sandbox); this file's YAML
+# syntax was validated with `python3 -c "import yaml"`, structurally
+# nothing more. See packaging/README.md's AppImage section.
+
+version: 1
+
+script:
+  - rm -rf AppDir || true
+  - mkdir -p AppDir/usr/bin
+  - mkdir -p AppDir/usr/share/applications
+  - mkdir -p AppDir/usr/share/metainfo
+  - mkdir -p AppDir/usr/share/icons/hicolor/scalable/apps
+  - cp ../../target/release/streamboat AppDir/usr/bin/streamboat
+  - cp ../../target/release/streamboatd AppDir/usr/bin/streamboatd
+  - cp ../linux/io.github.waayway.streamboat.desktop AppDir/usr/share/applications/
+  - cp ../linux/io.github.waayway.streamboat.metainfo.xml AppDir/usr/share/metainfo/
+  - cp ../linux/io.github.waayway.streamboat.svg AppDir/usr/share/icons/hicolor/scalable/apps/
+
+AppDir:
+  path: ./AppDir
+
+  app_info:
+    id: io.github.waayway.streamboat
+    name: streamboat
+    icon: io.github.waayway.streamboat
+    version: "${VERSION}"
+    exec: usr/bin/streamboat
+    exec_args: $@
+
+  apt:
+    arch:
+      - amd64
+    sources:
+      - sourceline: "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ noble main universe"
+      - sourceline: "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ noble-updates main universe"
+      - sourceline: "deb [arch=amd64] http://security.ubuntu.com/ubuntu/ noble-security main universe"
+
+    # D-020's plugin set, not "everything GStreamer ships" -- extend this
+    # deliberately, with a comment naming which TIDAL manifest shape needs
+    # the new element, same rule packaging/linux/vendor-gstreamer.sh's
+    # meson configuration follows.
+    include:
+      - libgstreamer1.0-0
+      - libgstreamer-plugins-base1.0-0
+      - gstreamer1.0-plugins-base
+      - gstreamer1.0-plugins-good
+      - gstreamer1.0-plugins-bad
+      - gstreamer1.0-libav
+      - gstreamer1.0-alsa
+      - libasound2t64
+
+    exclude: []
+
+  files:
+    exclude:
+      - usr/share/man
+      - usr/share/doc/*/README.*
+      - usr/share/doc/*/changelog.*
+      - usr/share/doc/*/NEWS.*
+
+  runtime:
+    env:
+      # Point GStreamer's plugin scanner at the bundle-relative path
+      # instead of the (absent, outside the AppImage) system location --
+      # the same "detect I am running from a bundle" problem
+      # packaging-and-distribution.md's macOS section describes
+      # Strawberry solving with `gststartup.cpp`; appimage-builder's
+      # runtime wrapper gives this to us as a plain env var instead.
+      GST_PLUGIN_SYSTEM_PATH_1_0: "$APPDIR/usr/lib/x86_64-linux-gnu/gstreamer-1.0"
+      GST_PLUGIN_SCANNER_1_0: "$APPDIR/usr/lib/x86_64-linux-gnu/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner"
+
+AppImage:
+  arch: x86_64
+  update-information: guess
+  # No code signing in v1 (D-042) -- AppImages support an optional
+  # zsync/GPG signature; explicitly opted out rather than left ambiguous.
+  sign-key: None
+  file_name: "streamboat-${VERSION}-x86_64.AppImage"

@@ -1,0 +1,48 @@
+# streamboatd, as a compose service. See packaging/docker/Dockerfile for the
+# image itself and packaging/README.md for the full explanation of the
+# defaults below.
+#
+#   docker compose -f packaging/docker/compose.yml up -d
+#
+# First run needs a login: `streamboat login` against the same
+# streamboat-data volume (e.g. `docker compose run --rm streamboatd
+# streamboat login` if the image ever ships the CLI too; today, run the
+# `streamboat` CLI on the host with STREAMBOAT_HOME pointed at the same
+# volume's mount point, or exec into the running container).
+
+services:
+  streamboatd:
+    build:
+      context: ../..
+      dockerfile: packaging/docker/Dockerfile
+    image: ghcr.io/waayway/streamboat:latest
+    container_name: streamboatd
+    restart: unless-stopped
+
+    # ALSA device access for the exclusive-mode writer (D-017/D-018). The
+    # container's own `streamboat` user has no fixed GID match for the
+    # host's `audio` group, so it is added explicitly here instead --
+    # `getent group audio` on the Docker host, not inside the container.
+    devices:
+      - /dev/snd
+    group_add:
+      - audio
+
+    volumes:
+      - streamboat-data:/var/lib/streamboat
+
+    # Loopback-only by default, matching streamboatd's own default bind
+    # address: reachable from the host, not the LAN. To expose the control
+    # API on the LAN, both of the following need to change together:
+    #   1. add `--lan` (or `--listen 0.0.0.0:4747`) to `command:` below
+    #   2. change this mapping to "4747:4747" (or a specific LAN address)
+    ports:
+      - "127.0.0.1:4747:4747"
+
+    environment:
+      - RUST_LOG=info
+
+    # command: ["--lan"]   # uncomment together with the port mapping above
+
+volumes:
+  streamboat-data:

@@ -19,6 +19,44 @@ hand-over to the next track and a selectable ALSA device. The desktop shell
 (iced) and the libmpv backend for Windows and macOS come next. Everything that
 was decided about the product and the stack is in `docs/DECISIONS.md`.
 
+## Install
+
+Packaged builds exist for the first release (D-041); see `packaging/README.md`
+for what each artifact is and what could and couldn't be verified without a
+Windows or macOS machine. No channel here auto-updates (D-043) and none of
+these binaries are code-signed (D-042) -- see the workaround note below.
+
+- **Linux**
+  - **AUR**: `streamboat` (builds from source against Arch's own system
+    GStreamer) or `streamboat-bin` (prebuilt) -- `packaging/aur/`.
+  - **deb/rpm**: built from `[package.metadata.deb]`/
+    `[package.metadata.generate-rpm]` in `crates/streamboat-desktop/Cargo.toml`
+    and `crates/streamboat-server/Cargo.toml`. This first release depends on
+    the distro's own GStreamer packages rather than a vendored copy; see
+    `packaging/README.md` for why and for the vendored-tree follow-up
+    (`packaging/linux/vendor-gstreamer.sh`).
+  - **AppImage**: a portable, distro-independent build (`packaging/appimage/`).
+  - **Docker** (`streamboatd` only): `ghcr.io/waayway/streamboat`, tagged
+    `latest` and per release. `packaging/docker/compose.yml` is a ready-made
+    compose service.
+  - Systemd units for both the daemon-as-a-service (`streamboatd.service`,
+    system) and per-user (`streamboatd.service`, `systemd --user`) cases ship
+    inside the deb/rpm packages and in `packaging/linux/systemd/`.
+- **Windows**: an MSI (`packaging/windows/wix/`) plus a
+  [winget](https://github.com/microsoft/winget-pkgs) manifest template
+  (`packaging/windows/winget/`). SmartScreen will warn on first run because
+  the installer is unsigned: click **More info**, then **Run anyway**.
+- **macOS**: a DMG (`packaging/macos/`), arm64 and x86_64. Gatekeeper will
+  refuse to open the unsigned, ad hoc-signed app: right-click (Control-click)
+  it and choose **Open**, or run
+  `xattr -d com.apple.quarantine /Applications/streamboat.app` once.
+  No Homebrew cask until notarization exists (D-041).
+- **GitHub Releases**: every tagged release publishes all of the above plus
+  a `SHA256SUMS` file, as a **draft** -- a person reviews and publishes it,
+  the release notes' human-authored parts included (D-040).
+- **Not planned for v1: Flathub.** D-041; revisit once the repository has
+  the tagged-release history Flathub's own submission requirements ask for.
+
 ## Build (Linux)
 
 ```

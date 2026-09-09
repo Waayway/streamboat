@@ -1,0 +1,104 @@
+# streamboat daemon (streamboatd) -- system-wide unit for a headless
+# deployment (Raspberry Pi, a server, a box with no interactive login).
+#
+# Install: /etc/systemd/system/streamboatd.service (or /usr/lib/systemd/system/
+# if a distro package installs it there). Enable with:
+#
+#   systemctl enable --now streamboatd
+#
+# streamboatd needs its own TIDAL login before it plays anything --
+# `streamboatd` has no interactive login flow of its own, so run
+# `streamboat login` once (as the same user/state directory, or with
+# STREAMBOAT_HOME pointed at /var/lib/streamboat) before or after starting
+# the unit; the control API and CLI both work against the same token store.
+#
+# D-011 (docs/DECISIONS.md): Linux gets a real daemon; Windows and macOS get
+# always-on playback through the desktop app's tray mode instead, not a
+# service -- there is no equivalent unit for those platforms.
+
+[Unit]
+Description=streamboat daemon (headless TIDAL playback)
+Documentation=https://github.com/Waayway/streamboat
+After=network-online.target sound.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/streamboatd
+Restart=on-failure
+RestartSec=5s
+
+# Graceful shutdown: streamboatd handles SIGTERM by dropping (not draining)
+# the ALSA buffer, releasing any device reservation, flushing queue state
+# and closing the Pushkin socket cleanly before it exits -- see
+# docs/architecture.md and the headless-and-tidal-connect daemon-architecture
+# reference's shutdown-sequencing note. Give it real headroom above that.
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+
+# --- Identity -------------------------------------------------------------
+# DynamicUser gives streamboatd its own throwaway UID/GID with no login
+# shell and no access outside the directories below. `audio` must be a real,
+# pre-existing system group (created by alsa-utils/udev on every mainstream
+# distro) for DynamicUser's SupplementaryGroups to attach to it.
+DynamicUser=yes
+SupplementaryGroups=audio
+
+# --- Directories (systemd creates and owns these; see systemd.exec(5)) ---
+RuntimeDirectory=streamboat
+RuntimeDirectoryMode=0700
+StateDirectory=streamboat
+StateDirectoryMode=0700
+CacheDirectory=streamboat
+CacheDirectoryMode=0700
+ConfigurationDirectory=streamboat
+ConfigurationDirectoryMode=0700
+
+# Point streamboat-core's directory resolution (config::AppDirs) at exactly
+# the systemd-managed tree above, rather than a per-UID XDG guess that does
+# not exist for a DynamicUser account.
+Environment=STREAMBOAT_HOME=/var/lib/streamboat
+
+# --- Hardening -------------------------------------------------------------
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# NOTE: if a future Snapcast multiroom setup needs the classic
+# /tmp/snapfifo pipe, PrivateTmp=yes hides the *host's* /tmp from this unit
+# (it gets its own private one) -- point Snapcast at a path under
+# RuntimeDirectory instead of relaxing this.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# liborc (GStreamer's SIMD JIT) compiles code at runtime, the same reason
+# macOS needs the com.apple.security.cs.allow-jit entitlement (see
+# packaging/README.md) -- do NOT turn this on.
+MemoryDenyWriteExecute=no
+
+# ALSA device access for the exclusive-mode writer (D-017/D-018). The
+# control-group audio device list, not a blanket PrivateDevices=yes (which
+# would also remove /dev/snd).
+DevicePolicy=closed
+DeviceAllow=/dev/snd rw
+PrivateDevices=no
+
+# The control API (127.0.0.1:4747 by default) and outbound TIDAL/Pushkin
+# traffic both need normal networking -- do not add IPAddressDeny=any here.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

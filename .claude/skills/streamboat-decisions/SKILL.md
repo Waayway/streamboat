@@ -157,6 +157,11 @@ implementation choices fixed along the way (seek flags, DASH feeding, `dashdemux
 file format, master-key resolution order, PKCE capture mechanisms, protocol version, the ALSA
 writer's format/rate/reopen rules, the control API's token and Host rules) and the not-yet-built
 list in decision order. The libmpv backend, SMTC/NowPlayingInfoCenter and the iced shell are next.
+Packaging (D-041) is also built: `packaging/` plus `[package.metadata.deb]`/`[package.metadata.
+generate-rpm]` in the two binary crates' `Cargo.toml`s cover deb/rpm/AUR/AppImage/Docker/systemd
+on Linux and templated MSI/winget/DMG for Windows/macOS (deb and rpm were built and inspected for
+real; Windows/macOS were not, and their release build fails today until D-016's engine-selection
+wiring lands — see `packaging/README.md`).
 
 ## Still open (implementation-time calls, not owner decisions)
 

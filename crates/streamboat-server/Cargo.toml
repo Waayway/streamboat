@@ -39,3 +39,76 @@ futures-util.workspace = true
 reqwest.workspace = true
 tokio-tungstenite.workspace = true
 wiremock.workspace = true
+
+# Packaging metadata (D-041). See streamboat-desktop/Cargo.toml's matching
+# section for why deb/rpm depend on the distro's GStreamer for now rather
+# than the vendored /opt/streamboat tree, and why the plugin packages below
+# are listed explicitly instead of relying on automatic dependency
+# discovery -- the same reasoning applies here since streamboatd links the
+# same streamboat-player engine by default.
+[package.metadata.deb]
+name = "streamboatd"
+maintainer = "streamboat contributors <streamboat@users.noreply.github.com>"
+copyright = "2026, streamboat contributors"
+section = "sound"
+priority = "optional"
+extended-description = """\
+streamboatd is the headless streamboat daemon: a control API (HTTP + \
+WebSocket on 127.0.0.1:4747 by default), MPRIS, streaming-privileges \
+handling and gapless playback, for a Raspberry Pi, a server, or any box \
+with no desktop session. It talks to the same unofficial TIDAL API the \
+streamboat desktop app does and needs your own active subscription -- see \
+streamboat's own package description for the same disclaimers."""
+depends = "$auto, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, gstreamer1.0-alsa"
+# cargo-deb only generates the enable/start postinst/prerm/postrm
+# maintainer scripts (below) when `maintainer-scripts` names a real
+# directory -- with it unset, [package.metadata.deb.systemd-units] still
+# finds and packages the unit file, but silently skips writing the
+# scripts that actually enable/start it. Point it at the same directory
+# `unit-scripts` below already uses; it holds no preinst/postinst/etc of
+# its own, so cargo-deb generates the whole scriptlet from scratch (see
+# https://lib.rs/crates/cargo-deb, "systemd.md").
+maintainer-scripts = "../../packaging/linux/systemd"
+assets = [
+    { source = "target/release/streamboatd", dest = "usr/bin/streamboatd", mode = "755" },
+    # Shipped, but not auto-enabled the way the system unit below is --
+    # `systemctl --user enable --now streamboatd` is a deliberate user
+    # action (packaging/linux/systemd/user/streamboatd.service's own
+    # header comment explains why).
+    { source = "../../packaging/linux/systemd/user/streamboatd.service", dest = "usr/lib/systemd/user/streamboatd.service", mode = "644" },
+]
+
+# cargo-deb's systemd integration (https://lib.rs/crates/cargo-deb,
+# "systemd.md") auto-installs and enables/starts the *system* unit that
+# matches this package's name -- packaging/linux/systemd/streamboatd.service
+# is named exactly `streamboatd.service` for that reason. It does not touch
+# the user unit above, which ships as a plain asset instead.
+[package.metadata.deb.systemd-units]
+unit-scripts = "../../packaging/linux/systemd"
+enable = true
+start = true
+
+[package.metadata.generate-rpm]
+name = "streamboatd"
+summary = "Headless streamboat daemon: control API, MPRIS, streaming privileges"
+assets = [
+    { source = "target/release/streamboatd", dest = "/usr/bin/streamboatd", mode = "755" },
+    { source = "../../packaging/linux/systemd/streamboatd.service", dest = "/usr/lib/systemd/system/streamboatd.service", mode = "644" },
+    { source = "../../packaging/linux/systemd/user/streamboatd.service", dest = "/usr/lib/systemd/user/streamboatd.service", mode = "644" },
+]
+# cargo-generate-rpm builds the package directly with the `rpm` crate
+# rather than driving rpmbuild, so the usual `%systemd_post`/`%systemd_preun`
+# spec-file macros are not available to expand here -- the scriptlets below
+# spell out the same three systemd calls those macros generate.
+post_install_script = "systemctl daemon-reload >/dev/null 2>&1 || :"
+pre_uninstall_script = "systemctl --no-reload disable --now streamboatd.service >/dev/null 2>&1 || :"
+post_uninstall_script = "systemctl daemon-reload >/dev/null 2>&1 || :"
+
+[package.metadata.generate-rpm.requires]
+gstreamer1 = "*"
+"gstreamer1-plugins-base" = "*"
+"gstreamer1-plugins-good" = "*"
+"gstreamer1-plugins-bad-free" = "*"
+"gstreamer1-libav" = "*"
+alsa-lib = "*"
+systemd = "*"

@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  streamboat MSI (WiX v4).
+
+  Not buildable or testable in this environment (no Windows here; see
+  packaging/README.md's Windows section for the exact `wix build` command,
+  where its `-d` file paths come from, and what could and couldn't be
+  verified locally).
+
+  Written and reviewed against the WiX v4 schema
+  (http://wixtoolset.org/schemas/v4/wxs) and v4's authoring style: a single
+  <Package> element (v3's separate <Product>/<Package> are merged),
+  <StandardDirectory> for the well-known folder IDs instead of hand-rolled
+  <Directory Id="TARGETDIR"> boilerplate, and MSI-native <Package Scope>
+  instead of a v3 "ALLUSERS" property dance.
+
+  Still-open items this file does NOT resolve (see the "Still open" list in
+  .claude/skills/streamboat-decisions/SKILL.md and the Windows section of
+  the streamboat-engineering-baseline packaging-and-distribution
+  reference): the AppUserModelID that SMTC transport controls need is not
+  set here or anywhere in the as-yet-unbuilt iced shell (D-013); there is
+  no reference implementation anywhere to copy, so this is named as
+  follow-up work, not silently skipped. The Scope below is a first cut
+  (per-user, no UAC prompt, matches winget's usual default for a desktop
+  app), not a decision recorded in docs/DECISIONS.md; revisit it together
+  with the AUMID work.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="streamboat"
+    Manufacturer="streamboat contributors"
+    Version="$(var.ProductVersion)"
+    UpgradeCode="6f9c5e0a-9d2b-4e77-9a2b-7c9a2c9d6e5b"
+    Scope="perUser"
+    Compressed="yes">
+
+    <SummaryInformation Description="streamboat -- play TIDAL with your own subscription" Manufacturer="streamboat contributors" />
+
+    <MajorUpgrade
+      DowngradeErrorMessage="A newer version of streamboat is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!--
+      No code signing in v1 (D-042). This installer runs unsigned:
+      SmartScreen's "More info -> Run anyway" is the documented workaround
+      (packaging/README.md), not an installer-side fix.
+    -->
+
+    <Icon Id="StreamboatIcon" SourceFile="$(var.StreamboatIco)" />
+    <Property Id="ARPPRODUCTICON" Value="StreamboatIcon" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/Waayway/streamboat/issues" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Waayway/streamboat" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="streamboat" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="streamboat" />
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="streamboat" Level="1" AllowAbsent="no">
+      <ComponentGroupRef Id="BinaryComponents" />
+      <ComponentGroupRef Id="ProtocolComponents" />
+      <ComponentGroupRef Id="ShortcutComponents" />
+    </Feature>
+
+    <!-- ================================================================
+         Binaries: both artifacts from D-045 (streamboat, streamboatd)
+         plus the vendored libmpv the Windows engine backend needs
+         (D-016: libmpv on Windows/macOS, bundled; GStreamer stays
+         Linux-only). The exact libmpv build/version is pinned by
+         .github/workflows/release.yml, not by this file.
+         ================================================================ -->
+    <ComponentGroup Id="BinaryComponents" Directory="INSTALLFOLDER">
+      <Component Id="StreamboatExe" Guid="1b6a1e0a-9a1e-4f3a-8b1e-1a2b3c4d5e6f">
+        <File Id="StreamboatExe" Source="$(var.StreamboatExe)" KeyPath="yes" />
+      </Component>
+      <Component Id="StreamboatdExe" Guid="2c7b2f1b-0b2f-5a4b-9c2f-2b3c4d5e6f70">
+        <File Id="StreamboatdExe" Source="$(var.StreamboatdExe)" KeyPath="yes" />
+      </Component>
+      <Component Id="LibmpvDll" Guid="3d8c3020-1c30-6b5c-ad30-3c4d5e6f7081">
+        <File Id="LibmpvDll" Source="$(var.LibmpvDll)" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- ================================================================
+         streamboat:// URL protocol (D-007, D-024): the PKCE login
+         callback and shareable deep links. Deliberately does NOT
+         register `tidal://`: that scheme already belongs to TIDAL's own
+         desktop app and to other open-source clients, and Windows
+         protocol registration is last-writer-wins; see the desktop
+         .desktop entry's comment and docs/DECISIONS.md D-007 for the
+         same rule on Linux. `tidal://` links are only ever parsed, never
+         claimed, by streamboat itself.
+
+         HKCU (not HKCR/HKLM) because Scope="perUser" above installs with
+         no admin elevation; a per-machine install would register under
+         HKLM\Software\Classes instead.
+         ================================================================ -->
+    <ComponentGroup Id="ProtocolComponents" Directory="INSTALLFOLDER">
+      <Component Id="ProtocolRegistration" Guid="4e9d4131-2d41-7c6d-be41-4d5e6f708192">
+        <RegistryKey Root="HKCU" Key="Software\Classes\streamboat">
+          <RegistryValue Type="string" Value="URL:streamboat protocol" />
+          <RegistryValue Name="URL Protocol" Type="string" Value="" />
+        </RegistryKey>
+        <RegistryKey Root="HKCU" Key="Software\Classes\streamboat\DefaultIcon">
+          <RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]streamboat.exe&quot;,0" />
+        </RegistryKey>
+        <RegistryKey Root="HKCU" Key="Software\Classes\streamboat\shell\open\command">
+          <RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]streamboat.exe&quot; &quot;%1&quot;" />
+        </RegistryKey>
+        <RegistryKey Root="HKCU" Key="Software\streamboat">
+          <RegistryValue Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+        </RegistryKey>
+      </Component>
+    </ComponentGroup>
+
+    <!-- ================================================================
+         Start Menu shortcut.
+         ================================================================ -->
+    <ComponentGroup Id="ShortcutComponents" Directory="ApplicationProgramsFolder">
+      <Component Id="ApplicationShortcut" Guid="5faf5242-3e52-8d7e-cf52-5e6f70819203">
+        <Shortcut
+          Id="ApplicationStartMenuShortcut"
+          Name="streamboat"
+          Description="Play TIDAL with your own subscription"
+          Target="[INSTALLFOLDER]streamboat.exe"
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="StreamboatIcon" />
+        <RemoveFolder Id="CleanUpShortcut" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\streamboat"
+          Name="ShortcutInstalled"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Package>
+</Wix>
