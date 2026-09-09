@@ -8,7 +8,7 @@
 //! its own index and key files with the same crash-safety guarantee instead
 //! of duplicating this code under a different licence.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
@@ -39,7 +39,7 @@ pub fn atomic_write(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> 
     fs::rename(&tmp, path)?;
     #[cfg(unix)]
     {
-        if let Ok(d) = File::open(dir) {
+        if let Ok(d) = fs::File::open(dir) {
             let _ = d.sync_all();
         }
     }

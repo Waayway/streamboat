@@ -63,10 +63,6 @@ gstreamer = { workspace = true, optional = true }
 gstreamer-audio = { workspace = true, optional = true }
 libmpv2 = { workspace = true, optional = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-mpris-server = { version = "0.10", optional = true }
-alsa = { workspace = true, optional = true }
-libc = { workspace = true, optional = true }
 # Offline cache (D-022): fetching the cleartext stream to encrypt at rest,
 # a minimal SegmentTemplate DASH reader, key derivation and the per-process
 # loopback playback server.
@@ -78,6 +74,11 @@ sha2.workspace = true
 hex.workspace = true
 hkdf.workspace = true
 axum.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+mpris-server = { version = "0.10", optional = true }
+alsa = { workspace = true, optional = true }
+libc = { workspace = true, optional = true }
 
 # SMTC (D-030, `smtc.rs`): `Windows::Media::Playback::MediaPlayer` for its own
 # `SystemMediaTransportControls` (no `HWND` needed — see `smtc.rs`'s module

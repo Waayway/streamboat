@@ -71,6 +71,10 @@ jobs:
       - run: |
           cargo check -p streamboat-player --target x86_64-pc-windows-gnu \
             --no-default-features --features mpv,smtc
+      # The two binaries in their Windows shape (libmpv engine, SMTC, tray-icon).
+      - run: |
+          cargo check -p streamboat-desktop -p streamboat-server --target x86_64-pc-windows-gnu \
+            --no-default-features --features streamboat-desktop/mpv,streamboat-server/mpv
 
   packaging-lint:
     name: validate packaging metadata

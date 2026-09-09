@@ -522,7 +522,9 @@ against the actual 0.14 sources rather than memory (the API changed hard across 
   `current_thread` tokio runtime, the same shape `mpris.rs` already uses for its own D-Bus
   registration) with Show/Hide/Play-Pause/Next/Previous/Quit menu items and a "now playing" tooltip
   updated from `PlayerLink::events()`; Windows/macOS via `tray-icon = "0.24"` (resolved 0.24.1),
-  cfg-gated behind `#[cfg(not(target_os = "linux"))]` and **compile-checked only** — there is no
+  cfg-gated behind `#[cfg(not(target_os = "linux"))]`, its tooltip updated the same way through a
+  forwarding task, and **compile-checked only** (CI's `cross-check` job clippies both binaries in
+  their Windows shape) — there is no
   Windows/macOS runner or display here, and `tray-icon`'s own documentation requires the icon to be
   created on the same thread as a running native event loop (a win32 message loop on Windows, the
   main thread's loop on macOS), which this implementation's dedicated background thread does not

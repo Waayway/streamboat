@@ -233,15 +233,52 @@ mod other {
     use std::collections::HashMap;
     use std::sync::mpsc as std_mpsc;
 
-    use super::{MENU_ENTRIES, TrayEvent};
+    use super::{MENU_ENTRIES, TrayEvent, now_playing_text};
     use crate::ui::player_link::SharedLink;
     use crate::ui::stream_ext::BoxStream;
 
-    pub fn spawn(_link: SharedLink) -> BoxStream<TrayEvent> {
+    pub fn spawn(link: SharedLink) -> BoxStream<TrayEvent> {
         let (tx, rx) = std_mpsc::channel::<TrayEvent>();
+        // The tray thread cannot poll an async event stream itself (the
+        // `tray-icon` menu receiver is a blocking channel), so a small task
+        // on the shell's runtime forwards "now playing" text into a second
+        // blocking channel the tray thread polls between menu events.
+        let (np_tx, np_rx) = std_mpsc::channel::<String>();
+        let mut events = link.events();
+        let forward = async move {
+            use futures::StreamExt as _;
+            while let Some(ev) = events.next().await {
+                if let streamboat_core::proto::Event::TrackStarted { track, .. } = ev {
+                    let text = now_playing_text(Some(&track.title), Some(&track.artists));
+                    if np_tx.send(text).is_err() {
+                        break;
+                    }
+                }
+            }
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(forward);
+            }
+            Err(_) => {
+                // Called outside any runtime (a test, say): give the
+                // forwarder its own thread and runtime rather than panicking.
+                std::thread::Builder::new()
+                    .name("streamboat-tray-events".into())
+                    .spawn(move || {
+                        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                        {
+                            rt.block_on(forward);
+                        }
+                    })
+                    .expect("spawn streamboat-tray-events thread");
+            }
+        }
         std::thread::Builder::new()
             .name("streamboat-tray".into())
-            .spawn(move || run(tx))
+            .spawn(move || run(tx, np_rx))
             .expect("spawn streamboat-tray thread");
         Box::pin(futures::stream::unfold(rx, |rx| async move {
             // `std::sync::mpsc::Receiver::recv` blocks the *calling*
@@ -257,7 +294,7 @@ mod other {
         }))
     }
 
-    fn run(tx: std_mpsc::Sender<TrayEvent>) {
+    fn run(tx: std_mpsc::Sender<TrayEvent>, now_playing: std_mpsc::Receiver<String>) {
         let icon = match placeholder_icon() {
             Ok(icon) => icon,
             Err(e) => {
@@ -278,9 +315,9 @@ mod other {
 
         // Kept alive for as long as this function's loop runs below;
         // dropping it would remove the tray icon.
-        let _tray_icon = match tray_icon::TrayIconBuilder::new()
+        let tray_icon = match tray_icon::TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip("streamboat")
+            .with_tooltip(now_playing_text(None, None))
             .with_icon(icon)
             .build()
         {
@@ -293,7 +330,7 @@ mod other {
 
         let menu_events = tray_icon::menu::MenuEvent::receiver();
         loop {
-            match menu_events.recv() {
+            match menu_events.recv_timeout(std::time::Duration::from_millis(250)) {
                 Ok(ev) => {
                     if let Some(mapped) = by_id.get(ev.id()) {
                         if tx.send(*mapped).is_err() {
@@ -301,7 +338,29 @@ mod other {
                         }
                     }
                 }
+                // `MenuEvent::receiver()` is a crossbeam channel: match its
+                // error by shape rather than naming the type.
+                Err(e) if e.is_timeout() => {}
                 Err(_) => break,
+            }
+            // Only the newest "now playing" text matters for the tooltip.
+            let mut latest = None;
+            loop {
+                match now_playing.try_recv() {
+                    Ok(text) => latest = Some(text),
+                    Err(std_mpsc::TryRecvError::Empty) => break,
+                    Err(std_mpsc::TryRecvError::Disconnected) => {
+                        if latest.is_none() {
+                            return;
+                        }
+                        break;
+                    }
+                }
+            }
+            if let Some(text) = latest {
+                if let Err(e) = tray_icon.set_tooltip(Some(text)) {
+                    tracing::debug!(error = %e, "tray: could not update the tooltip");
+                }
             }
         }
     }
