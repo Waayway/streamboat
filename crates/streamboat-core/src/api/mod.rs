@@ -1,5 +1,17 @@
 //! The v1 endpoints the spike needs, plus the quality cascade that turns a
-//! track id into something an engine can open.
+//! track id into something an engine can open. The catalogue/library
+//! surface added on top of that spike (D-001, D-015, D-028, D-039) lives in
+//! the sibling modules below, each documented at its own endpoint's exact
+//! reference citation.
+
+pub mod catalog;
+pub mod images;
+pub mod library;
+pub mod lyrics;
+pub mod pages;
+pub mod pagination;
+pub mod playlists;
+pub mod search;
 
 use crate::error::{Error, Result};
 use crate::http::ApiClient;

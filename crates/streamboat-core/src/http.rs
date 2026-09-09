@@ -516,6 +516,132 @@ impl ApiClient {
         }
     }
 
+    /// The locale sent on every request that takes one: `en_US` in every
+    /// unofficial-API client this project's research cites (`tidal-api`
+    /// transport §3) — there is no per-account locale endpoint to fetch this
+    /// from, unlike `countryCode`. Kept as one method so every call site
+    /// agrees, and so a future settings-driven override has one place to
+    /// land.
+    pub fn locale(&self) -> String {
+        "en_US".to_string()
+    }
+
+    /// The account's numeric user id, from the current token set, else one
+    /// `GET /v1/sessions` call (cached in the token set afterwards by
+    /// whichever code path calls `session()`). Needed for every
+    /// `users/{id}/...` endpoint (favourites, playlists, folders).
+    pub async fn user_id(&self) -> Result<u64> {
+        if let Some(id) = self.tokens().await.and_then(|t| t.user_id) {
+            return Ok(id);
+        }
+        let s = self.session().await?;
+        s.user_id
+            .ok_or_else(|| Error::Config("TIDAL did not report a user id for this session".into()))
+    }
+
+    /// Authenticated request that returns the parsed body *and* the response
+    /// headers — the header is what the playlist-mutation ETag precondition
+    /// flow needs (`tidal-api` catalog-and-library.md §7,
+    /// `tidal-oss-landscape` sone-deep-dive.md §4b: "the etag here is a write
+    /// precondition, not a cache validator"). Shares the cooldown gate and
+    /// the single-retry-after-refresh behaviour of [`ApiClient::get_json`];
+    /// `form` is form-urlencoded when present (POST/PUT bodies), otherwise
+    /// the request carries no body (GET/DELETE).
+    pub async fn request_json<T: DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        query: &[(&str, String)],
+        form: Option<&[(&str, String)]>,
+        headers: &[(&str, String)],
+    ) -> Result<(T, reqwest::header::HeaderMap)> {
+        let (resp_headers, text) = self.request_raw(method, path, query, form, headers).await?;
+        let value = serde_json::from_str::<T>(&text)
+            .map_err(|e| Error::Manifest(format!("unexpected response shape from {path}: {e}")))?;
+        Ok((value, resp_headers))
+    }
+
+    /// Authenticated request whose response body is not parsed (many
+    /// mutation endpoints reply with an empty or undocumented body) — only
+    /// the headers are returned, and only success/failure matters to the
+    /// caller. See [`ApiClient::request_json`] for the shared behaviour.
+    pub async fn request_empty(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        query: &[(&str, String)],
+        form: Option<&[(&str, String)]>,
+        headers: &[(&str, String)],
+    ) -> Result<reqwest::header::HeaderMap> {
+        let (resp_headers, _text) = self.request_raw(method, path, query, form, headers).await?;
+        Ok(resp_headers)
+    }
+
+    /// The shared loop behind [`ApiClient::request_json`] and
+    /// [`ApiClient::request_empty`]: the cooldown gate, a bearer token
+    /// (refreshed once on a genuine auth 401 and retried), and both error
+    /// body shapes. Mirrors [`ApiClient::get_json`]'s loop; kept as a
+    /// separate method rather than a refactor of it so `get_json`'s tested
+    /// behaviour is untouched.
+    async fn request_raw(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        query: &[(&str, String)],
+        form: Option<&[(&str, String)]>,
+        headers: &[(&str, String)],
+    ) -> Result<(reqwest::header::HeaderMap, String)> {
+        let url = self
+            .inner
+            .api_base
+            .join(path.trim_start_matches('/'))
+            .map_err(|e| Error::Config(format!("bad path {path:?}: {e}")))?;
+        let mut refreshed = false;
+        loop {
+            self.wait_rate_gate().await;
+            let token = self.access_token().await?;
+            let mut req = self
+                .inner
+                .http
+                .request(method.clone(), url.clone())
+                .query(query)
+                .bearer_auth(&token);
+            if let Some(f) = form {
+                req = req.form(f);
+            }
+            for (k, v) in headers {
+                req = req.header(*k, v);
+            }
+            let resp = req.send().await?;
+            let status = resp.status();
+            if status.is_success() {
+                let resp_headers = resp.headers().clone();
+                let text = resp.text().await?;
+                return Ok((resp_headers, text));
+            }
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                let secs = retry_after_secs(resp.headers());
+                self.arm_rate_gate(secs);
+                return Err(Error::RateLimited {
+                    retry_after_secs: secs,
+                });
+            }
+            let text = resp.text().await.unwrap_or_default();
+            let api = parse_error_body(status.as_u16(), &text);
+            if status == StatusCode::UNAUTHORIZED && !api.is_playback_sub_status() && !refreshed {
+                refreshed = true;
+                self.refresh_if_still(Some(&token)).await?;
+                continue;
+            }
+            if api.is_auth_sub_status() && !refreshed {
+                refreshed = true;
+                self.refresh_if_still(Some(&token)).await?;
+                continue;
+            }
+            return Err(Error::Api(api));
+        }
+    }
+
     /// Unauthenticated POST of a form to the auth host (device flow, refresh).
     pub(crate) async fn post_auth_form(
         &self,
