@@ -111,8 +111,8 @@ enum Cmd {
     Unpin { kind: PinKindArg, id: String },
     /// List pinned albums/playlists/tracks and their validity.
     Pins,
-    /// Open a TIDAL/streamboat content link in the desktop shell (task item
-    /// 5) — `tidal.com`, `listen.tidal.com`, `tidal://` or `streamboat://`.
+    /// Open a TIDAL/streamboat content link in the desktop shell —
+    /// `tidal.com`, `listen.tidal.com`, `tidal://` or `streamboat://`.
     /// A bare link as `streamboat`'s only argument is rewritten into this
     /// subcommand by [`main`] before `clap` ever sees it, so both `streamboat
     /// open <url>` and `streamboat <url>` work.
@@ -200,7 +200,7 @@ fn main() -> anyhow::Result<()> {
             None
         }
     };
-    // Task item 5: `streamboat <url>` (no subcommand) is sugar for
+    // `streamboat <url>` (no subcommand) is sugar for
     // `streamboat open <url>` — rewritten here, before `clap` parses
     // anything, so a bare link doesn't need to match a subcommand name.
     let mut args: Vec<String> = std::env::args().collect();

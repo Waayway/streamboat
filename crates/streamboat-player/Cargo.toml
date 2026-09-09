@@ -83,7 +83,7 @@ axum.workspace = true
 # `SystemMediaTransportControls` (no `HWND` needed — see `smtc.rs`'s module
 # doc comment), plus `Win32_System_WinRT` for `RoInitialize`, which every
 # WinRT call from a plain background thread needs first. Pinned exact
-# (verified on crates.io) per this task's instructions, since `windows-rs`'
+# (verified on crates.io) since `windows-rs`'s
 # surface churns release to release.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", optional = true, features = [
