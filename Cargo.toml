@@ -39,8 +39,11 @@ sha2 = "0.10"
 hex = "0.4"
 gstreamer = "0.24"
 gstreamer-audio = "0.24"
+axum = { version = "0.8", features = ["ws"] }
 wiremock = "0.6"
 tempfile = "3"
+tokio-tungstenite = "0.29"
+futures-util = "0.3"
 
 [profile.release]
 lto = "thin"

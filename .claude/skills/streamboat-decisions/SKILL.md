@@ -154,7 +154,9 @@ The playable spike (D-044) exists for Linux, and both login flows (D-024) and ke
 storage (D-026) are built: see `docs/architecture.md` for the crate contents, the implementation
 choices fixed along the way (seek flags, DASH feeding, `dashdemux2` demotion, token file format,
 master-key resolution order, PKCE capture mechanisms, protocol version) and the not-yet-built list
-in decision order. The libmpv backend, the ALSA writer, the control API and the iced shell are next.
+in decision order. The control API (D-030, D-031) and the Linux MPRIS adapter are also built now
+(`streamboatd` hosts both by default; see `docs/architecture.md`'s "Control API" section). The
+libmpv backend, the ALSA writer, SMTC/NowPlayingInfoCenter, and the iced shell are next.
 
 ## Still open (implementation-time calls, not owner decisions)
 
