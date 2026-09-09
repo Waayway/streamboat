@@ -150,18 +150,22 @@ Keep these in mind so you do not "fix" them back:
 
 ## Status of delivery
 
-The playable spike (D-044) exists for Linux, and both login flows (D-024), keyring-backed token
-storage (D-026), the exclusive-mode ALSA writer (D-017, D-018), the control API (D-030, D-031) and
-the Linux MPRIS adapter are built: see `docs/architecture.md` for the crate contents, the
-implementation choices fixed along the way (seek flags, DASH feeding, `dashdemux2` demotion, token
-file format, master-key resolution order, PKCE capture mechanisms, protocol version, the ALSA
-writer's format/rate/reopen rules, the control API's token and Host rules) and the not-yet-built
-list in decision order. The libmpv backend, SMTC/NowPlayingInfoCenter and the iced shell are next.
-Packaging (D-041) is also built: `packaging/` plus `[package.metadata.deb]`/`[package.metadata.
-generate-rpm]` in the two binary crates' `Cargo.toml`s cover deb/rpm/AUR/AppImage/Docker/systemd
-on Linux and templated MSI/winget/DMG for Windows/macOS (deb and rpm were built and inspected for
-real; Windows/macOS were not, and their release build fails today until D-016's engine-selection
-wiring lands — see `packaging/README.md`).
+Every item of the decided first release (D-001, D-003, D-010 to D-047) has an implementation:
+the playable spike (D-044); both login flows (D-024) and keyring-backed token storage (D-026);
+GStreamer on Linux and libmpv on Windows/macOS behind one `Engine` trait with `default_engine`
+picking the compiled-in backend (D-016); exclusive output through the ALSA writer and libmpv's
+WASAPI/CoreAudio AOs (D-017, D-018); ReplayGain modes (D-019); the decoder probe (D-003); the
+control API (D-030, D-031); MPRIS, SMTC and NowPlaying adapters (D-030); streaming privileges
+(D-033), play reporting (D-027) and scrobbling (D-037); the pinned encrypted offline cache
+(D-022); Snapcast output, plugin and discovery (D-034); local crash reports and the debug bundle
+(D-029); the iced shell with every decided screen, the mini-player, the tray and the
+single-instance/remote-client model (D-010, D-013 to D-015, D-036, D-038, D-039); packaging and
+the release workflow for every decided channel (D-040 to D-043); the test posture (D-046, D-047).
+`docs/architecture.md` is the inventory, with the implementation choices fixed along the way and
+the "not yet built" list — which now names only what this build environment could not verify
+(Windows/macOS runtime behaviour, a real DAC, a session bus, a snapserver, the display) plus a
+handful of small follow-ups (vendored GStreamer wired into deb/rpm, a Snapcast toggle in
+Settings, handing a deep link to a running instance).
 
 ## Still open (implementation-time calls, not owner decisions)
 

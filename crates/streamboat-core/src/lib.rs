@@ -19,6 +19,7 @@ pub mod auth;
 pub mod bootstrap;
 pub mod config;
 pub mod credentials;
+pub mod diagnostics;
 pub mod error;
 pub mod fsutil;
 pub mod http;

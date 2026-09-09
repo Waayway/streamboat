@@ -1519,6 +1519,7 @@ fn run_as_local_instance(
         quality_ceiling: effective,
         output,
         volume: 1.0,
+        replay_gain_mode: ctx.settings.replay_gain_mode,
     };
 
     // Keeps the Player's background task alive for the whole run; dropped

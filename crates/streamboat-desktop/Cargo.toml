@@ -38,6 +38,11 @@ image.workspace = true
 thiserror.workspace = true
 tokio-tungstenite.workspace = true
 iced = { workspace = true, features = ["tokio", "image", "svg", "advanced", "debug"] }
+# `streamboat snapcast-plugin` bridges to a running daemon's control API
+# (D-034) over the same HTTP+WebSocket protocol `streamboat-server`'s own
+# tests use (tokio-tungstenite/futures-util above); `snapcast-discover`
+# finds a snapserver via mDNS.
+mdns-sd = "0.21.3"
 
 # System tray (task item 2, D-014). Linux uses ksni (StatusNotifierItem over
 # D-Bus, no GTK dependency — `mpris.rs` already takes the same "own

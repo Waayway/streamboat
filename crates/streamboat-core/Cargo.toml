@@ -31,6 +31,18 @@ futures-util.workspace = true
 async-trait.workspace = true
 md-5.workspace = true
 httpdate.workspace = true
+tracing-subscriber.workspace = true
+# Log/crash-report redaction (D-029): masking bearer tokens, session ids and
+# similar patterns in a structured log line or a captured panic message.
+regex = "1"
+# Rotates `<data dir>/logs/streamboat.log` at a fixed byte size, keeping a
+# bounded number of numbered backups (D-029) — `tracing-appender`'s own
+# `RollingFileAppender` only rotates on a time interval, not a size, so it
+# does not fit this requirement.
+file-rotate = "0.8"
+# The debug bundle (D-029) is a single archive format via a single crate,
+# deflate only (no need for the encryption/other-codec feature surface).
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [features]
 default = ["keyring"]

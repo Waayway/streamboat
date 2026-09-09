@@ -226,6 +226,33 @@ pub fn enumerate_output_devices() -> Vec<OutputDevice> {
     Vec::new()
 }
 
+/// A one-line description of the compiled-in engine and its library
+/// version, for diagnostics (`streamboat debug-bundle`, D-029): GStreamer's
+/// own version string where the GStreamer backend is the one that runs, the
+/// libmpv client API version otherwise. Never fails; a backend that cannot
+/// initialise reports that instead of a version.
+pub fn engine_version() -> String {
+    #[cfg(all(target_os = "linux", feature = "gstreamer"))]
+    {
+        match crate::gst::ensure_init() {
+            Ok(()) => format!("gstreamer {}", gstreamer::version_string()),
+            Err(e) => format!("gstreamer (failed to initialise: {e})"),
+        }
+    }
+    #[cfg(all(not(all(target_os = "linux", feature = "gstreamer")), feature = "mpv"))]
+    {
+        format!(
+            "libmpv (client API {}.{})",
+            libmpv2::MPV_CLIENT_API_MAJOR,
+            libmpv2::MPV_CLIENT_API_MINOR
+        )
+    }
+    #[cfg(not(any(feature = "gstreamer", feature = "mpv")))]
+    {
+        String::from("no audio engine compiled in")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

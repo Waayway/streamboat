@@ -408,6 +408,30 @@ impl GstEngine {
                     .map_err(|e| EngineError::Output(format!("autoaudiosink: {e}")))?;
                 (sink, "audio+soft-volume", "autoaudiosink".into())
             }
+            // D-034: an explicit, fixed-format output feeding a running
+            // snapserver's `tcp://...&mode=server` stream source —
+            // streamboat connects out as the TCP *client* (`crate::snapcast`'s
+            // module doc has the matching `snapserver.conf` line). Resamples
+            // in-bin rather than relying on playbin's own audio-sink
+            // negotiation, so the caps downstream of `tcpclientsink` are
+            // always exactly `crate::snapcast`'s fixed format regardless of
+            // the source's own rate/depth — mutually exclusive with
+            // bit-perfect by construction (a different enum variant, not a
+            // flag combinable with `Exclusive`).
+            (None, OutputConfig::Snapcast { host, port }) => {
+                use crate::snapcast::{CHANNELS, GST_FORMAT, SAMPLE_RATE};
+                let desc = format!(
+                    "audioconvert ! audioresample ! audio/x-raw,rate={SAMPLE_RATE},format={GST_FORMAT},channels={CHANNELS} ! tcpclientsink host={host} port={port}"
+                );
+                let sink = gst::parse::bin_from_description(&desc, true)
+                    .map(|b| b.upcast::<gst::Element>())
+                    .map_err(|e| EngineError::Output(format!("snapcast sink: {e}")))?;
+                (
+                    sink,
+                    "audio+soft-volume",
+                    format!("snapcast tcp://{host}:{port}"),
+                )
+            }
         };
         self.playbin.set_property("audio-sink", &sink);
         self.playbin.set_property_from_str("flags", flags);
@@ -688,6 +712,7 @@ impl Engine for GstEngine {
                 converted: sink.converted_description(),
                 volume_applied: false,
                 replaygain_applied: false,
+                replaygain_mode: String::new(),
                 bit_perfect: sink.bit_perfect(),
             });
         }
@@ -721,10 +746,16 @@ impl Engine for GstEngine {
             | OutputConfig::Shared {
                 device: Some(device),
             } => Some(device.clone()),
+            OutputConfig::Snapcast { host, port } => Some(format!("snapcast tcp://{host}:{port}")),
             _ => None,
         };
         let converted = if exclusive {
             None
+        } else if self.output.is_snapcast() {
+            use crate::snapcast::{CHANNELS, GST_FORMAT, SAMPLE_RATE};
+            Some(format!(
+                "resampled to the fixed Snapcast format {GST_FORMAT} {SAMPLE_RATE} Hz {CHANNELS}ch (D-034)"
+            ))
         } else {
             Some("shared mode: the system mixer may resample and mix".to_string())
         };
@@ -750,6 +781,7 @@ impl Engine for GstEngine {
             converted,
             volume_applied: !exclusive && (self.volume - 1.0).abs() > 1e-6,
             replaygain_applied: !exclusive && self.replaygain_applied,
+            replaygain_mode: String::new(),
             bit_perfect,
         })
     }

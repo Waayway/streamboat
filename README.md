@@ -12,43 +12,41 @@ and never produces a playable file that outlives your subscription.
 
 ## Status
 
-The first milestone is in: a **playable spike** from the command line. It logs
-in with the device-code flow, resolves a track's manifest through the quality
-cascade, and plays it to the end through GStreamer on Linux, with gapless
-hand-over to the next track and a selectable ALSA device.
+**Everything in the decided first release (D-001) is built, on Linux end to
+end and on Windows/macOS as compiled-but-unrun code** — see
+`docs/architecture.md` for the full inventory and the honest list of what
+could not be verified without a display, a DAC, a session bus, a snapserver,
+or a Windows/macOS machine.
 
-The desktop shell now exists too: `streamboat` with no subcommand opens an
-iced 0.14 window — Login (device-code or PKCE), Home and Explore (TIDAL's own
-server-driven feed sections, with a graceful card for a section type this
-client doesn't recognise yet), Search, Album/Artist/Playlist/Mix/Track/Video
-entity pages, My Collection (favourites, playlists and folders), synced
-lyrics, Now Playing with a reorderable queue, a persistent playback bar, the
-signal-path panel, a notification banner for warnings/errors/playback
-takeovers, and Settings. A shared per-track action row (play now/next,
-queue, favourite, add to playlist, go to album/artist) appears on every
-track list. Pasting a `tidal.com`/`listen.tidal.com`/`tidal://`/
-`streamboat://` link into Search — or running `streamboat open <url>` or
-`streamboat <url>` — opens the linked page directly (a shared playlist link
-opens and starts playing it). Every CLI subcommand keeps working exactly as
-before.
+- **Playback**: login (device code or PKCE), the quality cascade over all four
+  tiers, gapless playback through GStreamer on Linux and libmpv on
+  Windows/macOS behind one engine trait, exclusive/bit-perfect output (the
+  project's own ALSA writer on Linux; WASAPI/CoreAudio through libmpv), a
+  startup decoder probe that caps unreachable tiers, ReplayGain off/album/
+  track, and a signal-path panel that reports only what the engine observes.
+- **Desktop shell** (`streamboat` with no subcommand): an iced 0.14
+  multi-window app — Login, Home and Explore rendered from TIDAL's own
+  server-driven feed, Search, Album/Artist/Playlist/Mix/Track/Video pages,
+  My Collection (favourites, playlists, folders), playlist editing with ETag
+  preconditions, synced lyrics, Now Playing with a reorderable queue, a
+  persistent playback bar, a per-track action row, a notification banner, a
+  floating mini-player, a tray icon (close hides, Quit is explicit), Settings,
+  and deep links (`tidal.com`/`listen.tidal.com`/`tidal://`/`streamboat://`
+  pasted into Search, `streamboat open <url>`, or `streamboat <url>`). Only
+  one instance runs the engine: a second `streamboat` becomes a remote client
+  of a running `streamboatd`, or asks the running window to come forward.
+- **Daemon** (`streamboatd`): the HTTP + WebSocket control API on
+  `127.0.0.1:4747` with a generated token and Host allowlist (`--stdio` keeps
+  the JSON-lines transport), MPRIS on Linux (SMTC/NowPlaying adapters on
+  Windows/macOS), streaming privileges, play reporting and scrobbling
+  (Last.fm, ListenBrainz), the pinned encrypted offline cache, Snapcast
+  output with `streamboat snapcast-plugin`/`snapcast-discover`, systemd units
+  and a Docker image.
+- **Ops**: redacted rotating logs, local crash reports, `streamboat
+  debug-bundle`, and packaging for every decided channel (`packaging/`).
 
-It is a multi-window app (`iced::daemon`, D-036): the playback bar's
-"Mini player" button or Ctrl+M opens a small always-on-top window (art,
-title/artists, transport, a seek bar, the quality badge, a restore button)
-over the same playback state as the main window. Closing the main window
-hides it rather than quitting (D-014) — the lock and, once playing, the
-audio device stay held; a tray icon (StatusNotifierItem via `ksni` on Linux,
-`tray-icon` on Windows/macOS, the latter compile-checked only so far, no
-runner for it yet) offers Show/Hide/Play-Pause/Next/Previous/Quit and a
-"now playing" tooltip; Ctrl+Q or the tray's Quit item is the only way out,
-and it waits briefly for playback to actually stop first. Only one instance
-runs the engine at a time (D-010): a second `streamboat` either becomes a
-plain remote client of a `streamboatd` that is already running, or, if
-another `streamboat` window already holds the lock, just asks it to come to
-the front and exits. A startup decoder probe (D-003) checks which quality
-tiers this build can actually decode and caps the requested ceiling (with a
-warning) rather than failing mid-playback. Everything that was decided about
-the product and the stack is in `docs/DECISIONS.md`.
+Everything that was decided about the product and the stack is in
+`docs/DECISIONS.md`.
 
 ## Install
 
@@ -251,6 +249,52 @@ TIDAL's subscription sub-status says the account itself can no longer
 stream. `offline_dir` and `offline_max_bytes` in `settings.json` override
 where it lives and how big it may grow. See
 `crates/streamboat-player/src/offline.rs` for the exact format.
+
+## Multiroom with Snapcast
+
+`OutputConfig::Snapcast { host, port }` (D-034) is a fourth, explicit output
+mode alongside Shared and Exclusive — mutually exclusive with bit-perfect
+by construction, since it resamples every track to one fixed PCM format
+(48000 Hz, 16-bit, stereo) and connects out, as a plain TCP client, to a
+running `snapserver`'s stream source. Point snapserver's config at
+whatever port streamboat is told to connect to:
+
+```
+stream = tcp://0.0.0.0:4953?name=streamboat&mode=server&sampleformat=48000:16:2
+```
+
+(`mode=server` is snapserver's own name for "I hold the socket open, the
+source dials in" — the direction streamboat expects; `4953` is only this
+example's port number, any free one works as long as both sides agree on
+it.) Run `streamboat snapcast-discover` to find a snapserver on the LAN via
+mDNS instead of hand-typing an address, and add
+`controlscript=streamboat snapcast-plugin` to the same stream's config so
+Snapweb and every Snapcast client show real title/artist/artwork and get
+real play/pause/skip/seek controls instead of an anonymous PCM feed —
+`snapcast-plugin` bridges Snapcast's own stream-plugin JSON-RPC protocol to
+a running `streamboatd`'s control API. See `docs/architecture.md`'s
+"Multiroom: Snapcast output" section for exactly what is and is not
+implemented (the libmpv backend's Windows/macOS side is not, yet).
+
+## Privacy
+
+streamboat sends nothing about you anywhere except to TIDAL itself, to play
+what your subscription entitles you to — no telemetry, no analytics, no
+phone-home, no hosted crash-reporting service, ever (D-029). Play reporting
+(above) is the one deliberate exception, disclosed and toggleable. Logs and
+crash reports stay on this machine, in `<data dir>/logs/` and
+`<data dir>/crashes/`, with tokens, session ids and similar values masked
+before a line ever reaches disk (`streamboat paths` prints exactly where).
+
+### Debug bundle
+
+`streamboat debug-bundle [--out path]` writes one zip with everything a bug
+report needs and nothing it must not have: the redacted logs and crash
+reports above, your settings with every credential reduced to whether it is
+set at all (never the value), and basic environment info (resolved
+directories, OS/architecture, the linked GStreamer version). It never
+includes the token file, the offline cache, or anything from the OS
+keyring — attach it to an issue exactly as it comes out.
 
 ## Legal
 

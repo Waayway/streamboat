@@ -39,6 +39,7 @@ impl DecoderSupport {
 
     /// Nothing reachable — used when GStreamer itself fails to initialise,
     /// which would also fail every other engine operation.
+    #[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]
     const fn none() -> Self {
         Self {
             low: false,

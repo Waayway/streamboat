@@ -18,6 +18,8 @@ use streamboat_player::{
     Player, PlayerConfig, PlayerDeps, default_engine, enumerate_output_devices,
 };
 
+mod snapcast_discover;
+mod snapcast_plugin;
 mod ui;
 
 #[derive(Parser)]
@@ -115,6 +117,30 @@ enum Cmd {
     /// subcommand by [`main`] before `clap` ever sees it, so both `streamboat
     /// open <url>` and `streamboat <url>` work.
     Open { url: String },
+    /// Snapcast's stream-plugin protocol (D-034) over stdin/stdout, bridging
+    /// to a running `streamboatd`'s control API — run as snapserver's
+    /// `controlscript` for a `tcp://`/`pipe://` stream source, not
+    /// interactively.
+    SnapcastPlugin {
+        /// The control API's HTTP base, e.g. `http://127.0.0.1:4747/`.
+        #[arg(long, default_value = "http://127.0.0.1:4747/")]
+        api: String,
+        /// Overrides the token this box's own control-token file provides.
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Find a snapserver on the LAN via mDNS (D-034).
+    SnapcastDiscover {
+        #[arg(long, default_value_t = 5)]
+        timeout_secs: u64,
+    },
+    /// Write a redacted debug bundle (D-029): logs, crash reports, and
+    /// settings with secrets reduced to "is it set" — never the token
+    /// file, the offline cache, or the keyring.
+    DebugBundle {
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -151,12 +177,29 @@ enum KeyringAction {
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    // D-029: redacted, rotating file logging plus a panic hook writing to
+    // `<data dir>/crashes/` — installed before anything else can log or
+    // panic. Same stderr verbosity default ("warn") as before this existed.
+    // Falls back to the old stderr-only setup if `AppDirs` cannot resolve
+    // (no home directory), rather than starting with no logging at all.
+    let _diagnostics = match streamboat_core::config::AppDirs::resolve() {
+        Ok(dirs) => Some(streamboat_core::diagnostics::init(
+            &dirs.data,
+            "streamboat",
+            env!("CARGO_PKG_VERSION"),
+            "warn",
+        )),
+        Err(_) => {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "warn".into()),
+                )
+                .with_writer(std::io::stderr)
+                .try_init();
+            None
+        }
+    };
     // Task item 5: `streamboat <url>` (no subcommand) is sugar for
     // `streamboat open <url>` — rewritten here, before `clap` parses
     // anything, so a bare link doesn't need to match a subcommand name.
@@ -468,6 +511,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
                 quality_ceiling: quality.unwrap_or_else(|| ctx.settings.quality_ceiling()),
                 output,
                 volume,
+                replay_gain_mode: ctx.settings.replay_gain_mode,
             };
             let deps = PlayerDeps::for_context(&ctx)
                 .await
@@ -620,6 +664,75 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
                     }
                 );
             }
+            Ok(())
+        }
+        Cmd::SnapcastPlugin { api, token } => {
+            let token = match token {
+                Some(t) => t,
+                None => {
+                    let dirs = streamboat_core::config::AppDirs::resolve()?;
+                    std::fs::read_to_string(dirs.control_token_path())
+                        .context(
+                            "reading the control token; pass --token, or start streamboatd \
+                             first so it can create one",
+                        )?
+                        .trim()
+                        .to_string()
+                }
+            };
+            snapcast_plugin::run(api, token).await
+        }
+        Cmd::SnapcastDiscover { timeout_secs } => {
+            let found = snapcast_discover::discover(Duration::from_secs(timeout_secs)).await?;
+            if found.is_empty() {
+                println!("No snapserver found via mDNS in {timeout_secs}s.");
+            }
+            for d in found {
+                let addrs = d
+                    .addresses
+                    .iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!(
+                    "{}  {} ({addrs})  port {}",
+                    d.service_type, d.hostname, d.port
+                );
+            }
+            Ok(())
+        }
+        Cmd::DebugBundle { out } => {
+            let ctx = Context::load()?;
+            let out_path = out.unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_default().join(format!(
+                    "streamboat-debug-{}.zip",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0)
+                ))
+            });
+            let mut environment = String::new();
+            environment += &format!("streamboat {}\n", env!("CARGO_PKG_VERSION"));
+            environment += &format!(
+                "os: {} ({})\n",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+            environment += &format!("config:  {}\n", ctx.dirs.config.display());
+            environment += &format!("data:    {}\n", ctx.dirs.data.display());
+            environment += &format!("cache:   {}\n", ctx.dirs.cache.display());
+            environment += &format!("runtime: {}\n", ctx.dirs.runtime.display());
+            environment += &format!("engine: {}\n", streamboat_player::engine_version());
+            environment += &format!("decoders: {:?}\n", streamboat_player::probe::probe());
+            let settings_json = serde_json::to_string_pretty(&ctx.settings.to_redacted_json())?;
+            let input = streamboat_core::diagnostics::bundle::BundleInput {
+                environment: &environment,
+                redacted_settings_json: &settings_json,
+            };
+            streamboat_core::diagnostics::bundle::create(&ctx.dirs.data, &input, &out_path)
+                .context("writing the debug bundle")?;
+            println!("Debug bundle written to {}", out_path.display());
             Ok(())
         }
     }

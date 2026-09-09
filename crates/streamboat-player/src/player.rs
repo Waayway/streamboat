@@ -12,6 +12,7 @@ use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
 use streamboat_core::bootstrap::Context;
+use streamboat_core::config::ReplayGainMode;
 use streamboat_core::models::{Track, TrackSummary};
 use streamboat_core::privileges::{PrivilegesEvent, StreamingPrivileges, hostname_display_name};
 use streamboat_core::proto::{
@@ -118,6 +119,10 @@ pub struct PlayerConfig {
     pub quality_ceiling: AudioQuality,
     pub output: OutputConfig,
     pub volume: f32,
+    /// ReplayGain mode (D-019): off / album / track. `Command::SetReplayGainMode`
+    /// changes this live; see [`select_replay_gain`] for exactly how each
+    /// mode picks between TIDAL's album and track numbers.
+    pub replay_gain_mode: ReplayGainMode,
 }
 
 impl Default for PlayerConfig {
@@ -126,7 +131,34 @@ impl Default for PlayerConfig {
             quality_ceiling: AudioQuality::HiResLossless,
             output: OutputConfig::default(),
             volume: 1.0,
+            replay_gain_mode: ReplayGainMode::default(),
         }
+    }
+}
+
+/// Picks the ReplayGain (dB) and peak (linear) values [`load_item`] feeds
+/// into a [`LoadItem`], per `mode` (D-019, `tidal-api/references/playback.md`
+/// §8): `Off` applies neither (no gain stage is a valid, requested state);
+/// `Album` prefers TIDAL's album-context numbers, falling back to the track
+/// numbers only when TIDAL did not report an album value at all; `Track`
+/// always uses the track numbers, with no album fallback. The gain *formula*
+/// (`min(10^((rg+4)/20), 1/peak)`) is unchanged and stays in the engines
+/// (`gst.rs`'s `volume` filter, `mpv.rs`'s `volume` property) — this
+/// function only chooses which pair of numbers reaches it.
+pub(crate) fn select_replay_gain(
+    mode: ReplayGainMode,
+    info: &StreamInfo,
+) -> (Option<f64>, Option<f64>) {
+    match mode {
+        ReplayGainMode::Off => (None, None),
+        ReplayGainMode::Album => {
+            if info.album_replay_gain_db.is_some() {
+                (info.album_replay_gain_db, info.album_peak_amplitude)
+            } else {
+                (info.replay_gain_db, info.peak_amplitude)
+            }
+        }
+        ReplayGainMode::Track => (info.replay_gain_db, info.peak_amplitude),
     }
 }
 
@@ -175,6 +207,7 @@ pub struct Player {
     volume: f32,
     ceiling: AudioQuality,
     output: OutputConfig,
+    replay_gain_mode: ReplayGainMode,
     stream: Option<StreamInfo>,
     position_ms: u64,
     duration_ms: Option<u64>,
@@ -232,6 +265,7 @@ impl Player {
             volume: cfg.volume,
             ceiling: cfg.quality_ceiling,
             output: cfg.output,
+            replay_gain_mode: cfg.replay_gain_mode,
             stream: None,
             position_ms: 0,
             duration_ms: None,
@@ -407,6 +441,15 @@ impl Player {
             .index
             .and_then(|i| self.queue.get(i))
             .map(|e| e.summary.clone());
+        // The engines report *whether* ReplayGain was applied
+        // (`replaygain_applied`) from the numbers they were actually handed;
+        // only `Player` knows *which mode* chose those numbers (D-019), so
+        // it is stamped on here rather than threaded through the `Engine`
+        // trait.
+        let mut signal_path = self.engine.signal_path();
+        if let Some(sp) = signal_path.as_mut() {
+            sp.replaygain_mode = self.replay_gain_mode.as_str().to_string();
+        }
         PlayerState {
             status: self.status,
             current,
@@ -418,7 +461,7 @@ impl Player {
             quality_ceiling: self.ceiling,
             output: self.output.clone(),
             stream: self.stream.clone(),
-            signal_path: self.engine.signal_path(),
+            signal_path,
         }
     }
 
@@ -805,6 +848,51 @@ impl Player {
                 // variant).
                 self.emit(Event::PinsChanged);
             }
+            Command::SetReplayGainMode { mode } => {
+                self.replay_gain_mode = mode;
+                // The currently-playing entry keeps whatever gain its own
+                // `load()` already applied (the engines' documented
+                // once-per-load boundary, D-019) — but a prefetched
+                // successor is still just sitting in `engine.set_next`, so
+                // recompute and re-hand it over with the new mode, from the
+                // `ResolvedStream` already cached on the queue entry (no
+                // extra network round trip).
+                if let Some(i) = self.index {
+                    self.prefetched_for = None;
+                    self.engine.set_next(None);
+                    self.prefetch(i).await;
+                }
+                self.emit_state();
+            }
+            Command::Logout => {
+                self.note_play_ended().await;
+                let _ = self.engine.stop();
+                self.queue.clear();
+                self.index = None;
+                self.prefetched_for = None;
+                self.status = PlaybackStatus::Stopped;
+                self.position_ms = 0;
+                self.duration_ms = None;
+                self.stream = None;
+                if let Err(e) = self.api.logout().await {
+                    self.emit(Event::Warning {
+                        message: format!("logout: could not revoke the stored session: {e}"),
+                    });
+                }
+                // D-022: the offline cache is a subscriber feature, never a
+                // downloader — nothing pinned should outlive this session.
+                if let Some(cache) = self.offline.clone() {
+                    match cache.wipe_all() {
+                        Ok(()) => self.emit(Event::PinsChanged),
+                        Err(e) => tracing::warn!(%e, "logout: failed to wipe the offline cache"),
+                    }
+                }
+                self.emit(Event::Stopped);
+                self.emit(Event::Warning {
+                    message: "logged out".into(),
+                });
+                self.emit_state();
+            }
         }
     }
 
@@ -843,7 +931,7 @@ impl Player {
                     message: format!("{}: {w}", self.queue[i].summary.title),
                 });
             }
-            let item = load_item(item_id, &resolved);
+            let item = load_item(item_id, &resolved, self.replay_gain_mode);
             self.queue[i].resolved = Some(resolved.clone());
             self.index = Some(i);
             self.status = PlaybackStatus::Buffering;
@@ -896,7 +984,7 @@ impl Player {
                 }
             },
         };
-        let item = load_item(item_id, &resolved);
+        let item = load_item(item_id, &resolved, self.replay_gain_mode);
         if let Some(e) = self.queue.get_mut(i + 1) {
             e.resolved = Some(resolved);
         }
@@ -1064,12 +1152,13 @@ impl Player {
     }
 }
 
-fn load_item(item_id: u64, r: &ResolvedStream) -> LoadItem {
+fn load_item(item_id: u64, r: &ResolvedStream, replay_gain_mode: ReplayGainMode) -> LoadItem {
+    let (replay_gain_db, peak_amplitude) = select_replay_gain(replay_gain_mode, &r.info);
     LoadItem {
         id: item_id,
         source: r.source.clone(),
-        replay_gain_db: r.info.replay_gain_db,
-        peak_amplitude: r.info.peak_amplitude,
+        replay_gain_db,
+        peak_amplitude,
         codec: r.info.codec.clone(),
         sample_rate: r.info.sample_rate,
         bit_depth: r.info.bit_depth,

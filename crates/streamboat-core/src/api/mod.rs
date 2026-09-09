@@ -201,6 +201,8 @@ impl ApiClient {
                         bit_depth: parsed.bit_depth.or(info.bit_depth),
                         replay_gain_db: info.track_replay_gain,
                         peak_amplitude: info.track_peak_amplitude,
+                        album_replay_gain_db: info.album_replay_gain,
+                        album_peak_amplitude: info.album_peak_amplitude,
                         preview: info.is_preview(),
                     };
                     return Ok(ResolvedStream {

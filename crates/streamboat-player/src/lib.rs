@@ -33,10 +33,11 @@ pub mod player;
 pub mod probe;
 #[cfg(all(feature = "smtc", target_os = "windows"))]
 pub mod smtc;
+pub mod snapcast;
 
 pub use engine::{Engine, EngineEvent, LoadItem};
 pub use offline::{OfflineCache, OfflineError, PinInfo};
-pub use platform::{OutputDevice, default_engine, enumerate_output_devices};
+pub use platform::{OutputDevice, default_engine, engine_version, enumerate_output_devices};
 pub use player::{Player, PlayerConfig, PlayerDeps, PlayerHandle};
 pub use probe::DecoderSupport;
 

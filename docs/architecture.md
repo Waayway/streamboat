@@ -7,10 +7,10 @@ implementation choices made while building the first milestone (D-044).
 
 | Crate | Licence | Contents |
 | --- | --- | --- |
-| `streamboat-core` | Apache-2.0 | `http` (authenticated client, single-flight and cross-process refresh, 429 gate), `auth::device_code`, `auth::pkce`, `token_store` (AES-256-GCM file, `SBTK` header, keyring-held master key), `manifest` (BTS/EMU/DASH parsing, refusal rule), `api` (sessions, tracks, `playbackinfopostpaywall`, quality cascade, plus the catalogue/library surface below), `proto` (Command/Event), `config` (`AppDirs`, `Settings`, the control API's bearer-token file), `credentials` (device-code and PKCE pairs), `bootstrap`, `privileges` (the Pushkin streaming-privileges websocket, D-033), `reporting` (play reporting to `ec.tidal.com` and the server-anchored clock, D-027), `scrobble` (Last.fm/ListenBrainz, D-037) |
-| `streamboat-player` | GPL-3.0-only | `engine::Engine` trait, `gst::GstEngine` (playbin3, default feature), `mpv::MpvEngine` (libmpv2, `mpv` feature — D-016), `alsa_writer::ExclusiveSink` (exclusive-mode ALSA writer, Linux, `alsa-direct` feature, default on), `offline::OfflineCache` (pinned, encrypted offline cache, D-022), `player::Player` (queue, prefetch, Command→Event loop, `PlayerHandle::publish` for externally-sourced events, and the optional `PlayerDeps` wiring for the three modules above), `platform::default_engine`/`platform::enumerate_output_devices` (pick the compiled-in engine and list its output devices, see below), `media_controls::spawn` (picks the OS media-integration adapter below), `mpris` (Linux, feature `mpris`, default on: `org.mpris.MediaPlayer2.streamboat`), `smtc` (Windows, feature `smtc`, default on: SMTC via `MediaPlayer::SystemMediaTransportControls`), `nowplaying` (macOS, feature `nowplaying`, default on: `MPNowPlayingInfoCenter`/`MPRemoteCommandCenter`) |
+| `streamboat-core` | Apache-2.0 | `http` (authenticated client, single-flight and cross-process refresh, 429 gate), `auth::device_code`, `auth::pkce`, `token_store` (AES-256-GCM file, `SBTK` header, keyring-held master key), `manifest` (BTS/EMU/DASH parsing, refusal rule), `api` (sessions, tracks, `playbackinfopostpaywall`, quality cascade, plus the catalogue/library surface below), `proto` (Command/Event), `config` (`AppDirs`, `Settings`, the control API's bearer-token file), `credentials` (device-code and PKCE pairs), `bootstrap`, `privileges` (the Pushkin streaming-privileges websocket, D-033), `reporting` (play reporting to `ec.tidal.com` and the server-anchored clock, D-027), `scrobble` (Last.fm/ListenBrainz, D-037), `diagnostics` (redacted logging, crash dumps, the debug-bundle archiver, D-029) |
+| `streamboat-player` | GPL-3.0-only | `engine::Engine` trait, `gst::GstEngine` (playbin3, default feature), `mpv::MpvEngine` (libmpv2, `mpv` feature — D-016), `alsa_writer::ExclusiveSink` (exclusive-mode ALSA writer, Linux, `alsa-direct` feature, default on), `offline::OfflineCache` (pinned, encrypted offline cache, D-022), `player::Player` (queue, prefetch, Command→Event loop, `PlayerHandle::publish` for externally-sourced events, and the optional `PlayerDeps` wiring for the three modules above), `platform::default_engine`/`platform::enumerate_output_devices` (pick the compiled-in engine and list its output devices, see below), `media_controls::spawn` (picks the OS media-integration adapter below), `mpris` (Linux, feature `mpris`, default on: `org.mpris.MediaPlayer2.streamboat`), `smtc` (Windows, feature `smtc`, default on: SMTC via `MediaPlayer::SystemMediaTransportControls`), `nowplaying` (macOS, feature `nowplaying`, default on: `MPNowPlayingInfoCenter`/`MPRemoteCommandCenter`), `snapcast` (the fixed PCM format both engine backends target for `OutputConfig::Snapcast`, D-034) |
 | `streamboat-server` | GPL-3.0-only | `streamboatd`: `api` (the HTTP + WebSocket control API, see below) hosted by default; `--stdio` keeps the original JSON-lines transport; headless login as `auth_required`/`auth_ok` events on the same broadcast every front end reads; constructs the privileges socket, play reporter and scrobblers from `Settings` |
-| `streamboat-desktop` | GPL-3.0-only | `streamboat`: CLI subcommands (login [--pkce], logout, whoami, search, resolve, play, devices, keyring, paths) unchanged; running with no subcommand now launches the iced shell (`src/ui/`) — see §"Desktop shell (iced)" below |
+| `streamboat-desktop` | GPL-3.0-only | `streamboat`: CLI subcommands (login [--pkce], logout, whoami, search, resolve, play, devices, keyring, paths, pin/unpin/pins, snapcast-plugin, snapcast-discover, debug-bundle) unchanged/extended as noted below; running with no subcommand now launches the iced shell (`src/ui/`) — see §"Desktop shell (iced)" below |
 
 ## Control API (D-030, D-031)
 
@@ -262,11 +262,8 @@ place:
   invocation Windows/macOS builds need.
 - **`platform::enumerate_output_devices() -> Vec<OutputDevice>`**
   (`OutputDevice { id, name, exclusive_capable }`): GStreamer's
-  `DeviceMonitor` on Linux — moved here from `streamboat-desktop`'s
-  `devices` CLI subcommand, which still has its own copy of the same logic
-  inline (that CLI is another agent's in-flight work in this repository;
-  the desktop shell's `devices` command should call this function instead
-  once that lands, per the note below) — reading `api.alsa.path` or
+  `DeviceMonitor` on Linux — the single home of that logic, which the
+  `streamboat devices` CLI subcommand calls — reading `api.alsa.path` or
   `alsa.card`+`alsa.device` into an `hw:C,D` id
   (`os-integration.md` §1/§3's table); mpv's `audio-device-list` property
   on Windows/macOS, via a short-lived, otherwise-idle `Mpv` instance that
@@ -784,6 +781,250 @@ than being a bounded streaming pipeline; `streamboatd` builds an
 `OfflineCache` but has no `logout` command of its own yet to hook a wipe
 into.
 
+## ReplayGain modes (D-019)
+
+TIDAL's own formula (`min(10^((gain+4)/20), 1/peak)`) still lives only in
+the engines (`gst.rs`'s `volume` audio-filter, `mpv.rs`'s `volume`
+property) — this wave changed only *which numbers* feed it, in
+`streamboat-player::player`:
+
+- `StreamInfo` gained `album_replay_gain_db`/`album_peak_amplitude`
+  (additive; `replay_gain_db`/`peak_amplitude` are the pre-existing
+  *track*-context pair), populated in `streamboat-core::api::resolve_stream`
+  from `playbackinfopostpaywall`'s `albumReplayGain`/`albumPeakAmplitude`
+  (`tidal-api/references/playback.md` §8) and propagated through the
+  offline cache's `TrackEntry`/`ServedTrack` (D-022) the same way the track
+  pair already was.
+- `player::select_replay_gain(mode, &StreamInfo)` is the one place mode
+  selection happens: `Off` → neither number; `Album` → the album pair, or
+  the track pair when TIDAL reported no album value at all; `Track` →
+  always the track pair, even when an album value exists. `load_item`
+  calls it before building every `LoadItem`, so both engines keep receiving
+  exactly the two numbers they always have — nothing about their own
+  formula code changed.
+- `Command::SetReplayGainMode { mode }` (additive) switches live: the
+  currently-playing entry keeps whatever gain its own `load()` already
+  applied (both engines document ReplayGain as applied once per `load()`,
+  not re-applied at a gapless hand-over — this wave did not change that
+  boundary), but a successor already sitting in `engine.set_next()` is
+  recomputed from its cached `ResolvedStream` and re-handed over
+  immediately, with no extra network round trip.
+- `SignalPath` gained `replaygain_mode: String` (additive) — the engines
+  themselves only know the two numbers they were handed, not which mode
+  chose them, so `Player::state()` stamps `self.replay_gain_mode.as_str()`
+  onto the engine's own `signal_path()` report before it goes out.
+- Bypass in exclusive/bit-perfect output is unchanged and automatic: both
+  engines already skip the gain stage entirely whenever
+  `OutputConfig::is_exclusive()` (D-017, D-019), independent of the mode
+  setting above.
+
+Tested end to end against the `FakeEngine` (`crates/streamboat-player/tests/player.rs`):
+album mode preferring the album pair, album mode falling back to the track
+pair when TIDAL omitted the album value, track mode ignoring an album value
+that *is* present, off mode applying neither number, `SetReplayGainMode`
+recomputing an already-prefetched successor, and the command's JSON shape.
+Not tested here: an actual audible difference on real hardware (needs a DAC
+and a human listening, same caveat as the exclusive-mode ALSA writer above).
+
+## Multiroom: Snapcast output (D-034)
+
+An explicit output mode, `OutputConfig::Snapcast { host, port }`
+(`streamboat-core::proto`, additive) — mutually exclusive with bit-perfect
+by construction (a distinct enum variant, not a flag on `Exclusive`).
+`streamboat_player::snapcast` holds the one fixed format both backends
+target: **48000 Hz, S16LE, stereo** (`SAMPLE_RATE`/`BIT_DEPTH`/`CHANNELS`
+constants, unit-tested against the doc comment's own `sampleformat` string
+so the two cannot drift apart silently). The matching snapserver config
+line (a `tcp://` *server*-mode stream: snapserver listens, streamboat
+dials in as the TCP client — see the Snapcast plugin section below for the
+metadata/control half):
+
+```
+stream = tcp://0.0.0.0:4953?name=streamboat&mode=server&sampleformat=48000:16:2
+```
+
+(`4953` is not one of Snapcast's own fixed ports — those are 1704/1705/1780/1788,
+already spoken for — it is only this example's port number; any free one
+works as long as it matches what `OutputConfig::Snapcast.port` connects to.)
+
+- **GStreamer** (`gst.rs::apply_output`): the sink becomes `audioconvert !
+  audioresample ! audio/x-raw,rate=48000,format=S16LE,channels=2 !
+  tcpclientsink host=.. port=..`, built the same way the existing
+  `sink_override`/test-sink branch is (`gst::parse::bin_from_description`).
+  ReplayGain and user volume still apply (this is not exclusive mode) —
+  `signal_path()` reports the resampled format as a `converted` reason and
+  `device` as `snapcast tcp://host:port`.
+- **libmpv** (`mpv.rs::start_snapcast_pump`, Unix only — see below):
+  `--ao=pcm` with `ao-pcm-file=<fresh FIFO under runtime_dir>` and
+  `ao-pcm-waveheader=no` (headerless PCM), `audio-samplerate`/
+  `audio-channels`/`audio-format` forced to the fixed format ahead of the
+  AO (mpv's equivalent of `gst.rs`'s explicit `audioconvert`/
+  `audioresample` chain), plus a detached thread (`run_snapcast_pump`) that
+  opens the FIFO for read and copies its bytes onto a TCP connection to
+  `host:port` — the libmpv-side counterpart of `tcpclientsink`, since mpv
+  has no TCP-client sink of its own. **Windows/macOS are not implemented**:
+  `start_snapcast_pump` returns a clear `EngineError::Output` there rather
+  than silently doing nothing, because `mkfifo` (shelled out to, not linked
+  as a dependency) and Unix-domain blocking-open semantics are what the
+  unblock-on-drop logic relies on. The pump thread is deliberately not
+  joined on drop (only signalled and given a best-effort unblock) since it
+  may be blocked on mpv's own writer end, which this struct does not own —
+  joining there could hang a `set_output`/shutdown on mpv's own timing.
+- `streamboat snapcast-plugin` (`streamboat-desktop/src/snapcast_plugin.rs`):
+  Snapcast's stream-plugin protocol — newline-delimited JSON-RPC 2.0 over
+  stdin/stdout — bridging to a *running* `streamboatd`'s control API
+  (D-030) over plain HTTP (`POST /v1/commands`, `GET /v1/state`) and the
+  `/v1/events` WebSocket, so it works as a separate process the way
+  snapserver actually launches a `controlscript`. Methods implemented are
+  exactly what `headless-and-tidal-connect/references/mpd-and-multiroom.md`
+  §2 names explicitly (itself citing `badaix/snapcast`
+  `doc/json_rpc_api/stream_plugin.md`, not independently re-verified line
+  by line here): snapserver → plugin `Plugin.Stream.Player.Control`
+  (`play`/`pause`/`playPause`/`stop`/`next`/`previous`/`seek`/
+  `setPosition`), `Plugin.Stream.Player.SetProperty` (only `volume` maps to
+  anything streamboat can do; anything else is a typed JSON-RPC error, not
+  a silent no-op), `Plugin.Stream.Player.GetProperties`; plugin → snapserver
+  `Plugin.Stream.Player.Properties`, `Plugin.Stream.Log`, `Plugin.Stream.Ready`.
+  **Marked uncertain in the module doc comment, not asserted as fact**:
+  `Plugin.Stream.Log`'s exact parameter shape and whether `Plugin.Stream.Ready`
+  carries params at all — the cited reference names the method but not
+  those details. JSON-RPC framing itself (request/response/notification
+  shape, `id` echoing, the reserved `-327xx` error codes) is the JSON-RPC
+  2.0 specification, not a Snapcast invention.
+- `streamboat snapcast-discover` (`streamboat-desktop/src/snapcast_discover.rs`):
+  mDNS browse for `_snapcast._tcp` (what snapserver actually advertises,
+  per the cited reference) and `_snapcast-tcp._tcp` (not in that reference
+  at all — searched defensively anyway per this task's own brief; finding
+  nothing under it is expected, not a bug). `mdns-sd` 0.21.3, the version
+  current as of this writing and confirmed directly against crates.io
+  rather than trusted from memory.
+
+Tested: the fixed-format-over-TCP path end to end on GStreamer
+(`crates/streamboat-player/tests/gst_engine.rs`'s
+`snapcast_output_streams_the_fixed_format_pcm_over_tcp` — a real
+`TcpListener` standing in for snapserver, a generated WAV through the real
+`apply_output` branch, byte count checked against the WAV's known duration
+at the fixed format rather than decoding the stream); the JSON-RPC message
+shapes in isolation (request/response/notification encoding, `id`
+handling, the standard error codes, the `Control`/`SetProperty` → `Command`
+mapping, and `PlayerState` → `Plugin.Stream.Player.Properties`); the mDNS
+record-to-address parsing against a synthetic `ResolvedService` built
+through `mdns_sd::ServiceInfo::new(..).as_resolved_service()` (the type is
+`#[non_exhaustive]`, so this is the crate's own supported way to construct
+one off-network). **Not verified here — no snapserver in this
+environment**: an actual round trip against real `snapserver`/Snapweb (the
+stream showing up with metadata and working transport controls), the
+libmpv/FIFO pump path end to end (no test requires it — the task's own test
+list scopes the TCP-format test to the GStreamer path), and real-network
+mDNS discovery.
+
+## Crash dumps, logging and the debug bundle (D-029)
+
+`streamboat_core::diagnostics` (Apache-2.0 — generic enough to serve both
+GPL binaries without depending on either): both `streamboat` and
+`streamboatd` call `diagnostics::init(&dirs.data, app, version,
+default_filter)` once, as early in `main` as possible, replacing their
+previous bare `tracing_subscriber::fmt()...init()` call. `default_filter`
+keeps each binary's own previous `RUST_LOG` fallback (`"warn"` for the CLI,
+`"info"` for the daemon) — this is a redaction/rotation change, not a
+verbosity change. Falls back to the old stderr-only setup if `AppDirs`
+cannot resolve (no home directory), rather than starting with no logging
+at all.
+
+- **Redaction, by construction.** `diagnostics::redact` (regex-based,
+  tested directly with synthetic lines) masks `Authorization: Bearer …`
+  and bare `Bearer …`, `refreshToken`/`accessToken` fields, `sessionId`/
+  `streamingSessionId`/`x-tidal-streamingsessionid`, `userId`, the control
+  API's own bearer token by name, and — as a broad backstop — any bare
+  64-hex-char run (also catches `manifest_hash`, which is not secret;
+  over-redacting a hash costs nothing a debug session needs). The file log
+  layer routes every event through a custom `FormatEvent` wrapper
+  (`RedactingFormat`) that formats into a scratch buffer first and redacts
+  the *whole* line, not one field at a time, so a secret split across
+  fields still gets caught; the crash-report writer and the debug bundle
+  both call `redact` on their own text too, independently, so a token that
+  reaches a panic message or an already-written log file is still caught.
+- **Logging**: `<data dir>/logs/streamboat.log`, rotated via the
+  `file-rotate` crate (`ContentLimit::BytesSurpassed` at 5 MB,
+  `AppendCount` keeping 9 rotated files — Sone's own numbers, ~50 MB
+  ceiling) rather than `tracing-appender`'s `RollingFileAppender`, which
+  only rotates on a time interval, not a byte size. A `RingBufferLayer`
+  (200 lines, redacted before insertion) feeds the crash report below;
+  stderr keeps logging exactly as before (unredacted — the redaction scope
+  here is the file, matching D-029's own framing of "nothing leaves the
+  machine unprompted," not "nothing appears on screen").
+- **Crash dumps**: `diagnostics::crash::install_panic_hook` chains to
+  whatever hook was already installed (the panic still prints to stderr
+  normally) and then writes one JSON report per panic to
+  `<data dir>/crashes/crash-<unix_ms>.json`: timestamp (human `httpdate`
+  string plus the raw unix-ms), app/version/OS/arch, the panic message and
+  `Location` (both redacted), a backtrace *only* when `RUST_BACKTRACE` is
+  set (this hook honours that variable itself rather than always paying for
+  a capture), and the ring buffer's last-200-lines snapshot. Never writes
+  anywhere else.
+- **`streamboat debug-bundle [--out path]`** (`streamboat-desktop/src/main.rs`,
+  logic in `streamboat_core::diagnostics::bundle`): one zip (the `zip` crate,
+  pinned, `deflate`-only feature set — "one archive format, one crate," not
+  a `tar`+`flate2` pair) containing `environment.txt` (resolved
+  config/data/cache/runtime dirs, OS/arch, `gst::version_string()` — gathered
+  by the CLI itself, since `streamboat-core` cannot depend on GStreamer,
+  D-004; libmpv's version is not included yet, since the desktop crate's own
+  `mpv` feature is still a stub, see "Not yet built"), `settings.redacted.json`
+  (`Settings::to_redacted_json` — every credential field, including the
+  client ids themselves, reduced to an `_set: bool`; everything else, quality
+  ceiling, output config, ReplayGain mode, theme, play-reporting flag,
+  offline caps, kept as-is), and every file directly under `<data
+  dir>/logs/` and `<data dir>/crashes/`, each redacted again on the way in.
+  **Built by construction to exclude the token file, the offline cache and
+  the keyring**: the bundler only ever reads those two named subdirectories
+  of the data dir, never the data dir itself — it cannot pick up
+  `tokens.bin`, `control-token`, or `offline/` even by a future bug that
+  adds a new file next to them, only one that adds it *inside*
+  `logs/`/`crashes/`. `streamboat-core` never depends on the player crate,
+  so the engine version (`streamboat_player::engine_version`) and the
+  decoder-probe result (`streamboat_player::probe::probe`) are added to
+  `environment.txt` by the `streamboat debug-bundle` command itself.
+
+Tests: the redactor over synthetic lines (each known pattern masked, plain
+text and an already-redacted line both left alone); the crash-report writer
+(a real panic on a spawned thread, inspected for every field including a
+leaked-token message coming back redacted; the two tests that install a
+process-global panic hook are serialized against each other with a
+`Mutex`, since a global hook installed by one could otherwise catch the
+other's synthetic panic under `cargo test`'s default thread-parallel
+runner); the ring-buffer logging layer (a real `tracing` event, redacted,
+captured); the bundle's content list (logs/crashes/settings/environment
+present; a realistic data dir carrying `tokens.bin`/`control-token`/
+`offline/` alongside `logs/`/`crashes/` proves those three are absent from
+the archive, not merely "not tested for," and that a token inside a log
+line is redacted inside the archive too, not just excluded by name).
+
+## Two small hooks (D-022, D-046)
+
+- **`Command::Logout`** (additive, `streamboat-core::proto`): handled by
+  `Player` — calls `ApiClient::logout`, wipes the offline cache via
+  `OfflineCache::wipe_all` when one is configured, stops playback (clears
+  the queue, resets position/stream), and emits `Event::Stopped` plus
+  `Event::Warning("logged out")`. Exposed by `streamboatd`'s control API
+  through the ordinary `POST /v1/commands` route — no new route needed,
+  since that route already accepts any `Command` generically. The CLI's
+  pre-existing `streamboat logout` (direct `ApiClient::logout` + cache wipe,
+  no running `Player` to send a command to) is unchanged; this command is
+  for a remote control surface (or a future desktop-shell logout button)
+  talking to an already-running daemon/GUI.
+- **The opt-in live canary** (D-046): `crates/streamboat-core/tests/live_canary.rs`,
+  `#[ignore]`d tests gated additionally by `STREAMBOAT_LIVE_CANARY=1`,
+  against whatever token store `Context::load()` finds (an already
+  logged-in account — this suite mints no credentials of its own):
+  login-state check (`GET /v1/sessions` shape), one search, and one
+  `playbackinfopostpaywall` resolve through the ordinary `resolve_stream`
+  cascade — every assertion is on shape (a field exists, an enum member,
+  a rank comparison), never on specific catalogue content, and nothing is
+  ever printed that could leak a token or a signed CDN URL. Documented in
+  `CONTRIBUTING.md` as never wired into CI; no workflow in `.github/workflows/`
+  passes `--ignored`, so a bare `cargo test --workspace` (what CI runs)
+  reports these three as `ignored`, not run.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -796,6 +1037,7 @@ into.
 | `STREAMBOAT_GST_PLAYBIN` | `playbin` instead of `playbin3` |
 | `STREAMBOAT_MPV_AO` | Override mpv's `ao` (`mpv` feature only; `null` in CI) |
 | `RUST_LOG` | Log filter (`info` prints the signal path on track start); also mapped to mpv's `msg-level` when the `mpv` feature is built |
+| `STREAMBOAT_LIVE_CANARY` | `1` enables the opt-in live-canary tests (D-046) against an already-logged-in account; unset (the CI default) leaves them `ignored` |
 
 ## Tests
 
@@ -967,6 +1209,44 @@ into.
   target platform, which this environment does not have — a pre-existing gap
   unrelated to the tray work, not something this wave changed or attempted
   to fix.
+- `streamboat-core::diagnostics` (D-029): the redactor over synthetic lines
+  covering every pattern plus plain text and idempotence; a real panic on a
+  spawned thread producing a crash report with every field, including a
+  redacted leaked-token panic message; the ring-buffer logging layer over a
+  real `tracing` subscriber; the debug bundle's content list, including a
+  realistic data dir that carries `tokens.bin`/`control-token`/`offline/`
+  alongside `logs/`/`crashes/` to prove those three never reach the
+  archive, and that a token inside a bundled log line is redacted in the
+  archive, not merely excluded by filename. `Settings::to_redacted_json`
+  (`streamboat-core::config`) is covered separately: every credential field
+  reduced to a bool, non-secret fields untouched. The two crash-report
+  tests share a `Mutex` since `install_panic_hook` replaces process-global
+  state and `cargo test` runs this binary's tests on multiple threads by
+  default.
+- ReplayGain-mode selection (D-019, `crates/streamboat-player/tests/player.rs`):
+  album mode preferring the album pair and falling back to the track pair
+  when TIDAL reported none; track mode ignoring a present album value;
+  off mode applying neither number; `Command::SetReplayGainMode` recomputing
+  an already-prefetched successor live (polled with a timeout, since the
+  successor's *first* prefetch genuinely awaits the wiremock HTTP round
+  trip and can complete a moment after the `TrackStarted` event that
+  triggered it); the command's JSON shape.
+- Snapcast output (D-034): `crates/streamboat-player/tests/gst_engine.rs`'s
+  `snapcast_output_streams_the_fixed_format_pcm_over_tcp` plays a generated
+  WAV through the real `OutputConfig::Snapcast` branch into a local
+  `TcpListener` standing in for snapserver, and checks the byte count
+  against the WAV's own duration at the fixed format; `streamboat-desktop`'s
+  `snapcast_plugin`/`snapcast_discover` modules cover the JSON-RPC message
+  shapes (request/response/notification encoding, `id` handling, the
+  standard error codes, the `Control`/`SetProperty` → `Command` mapping)
+  and the mDNS record-to-address parsing against a synthetic
+  `ResolvedService`, both with no real network. **Not verified here — no
+  snapserver in this environment**: an actual round trip against real
+  `snapserver`/Snapweb, the libmpv/FIFO pump path (no test requires it —
+  see the Multiroom section above), and real-network mDNS discovery.
+- `crates/streamboat-core/tests/live_canary.rs` (D-046): `#[ignore]`d,
+  additionally gated by `STREAMBOAT_LIVE_CANARY=1`; never run by any CI
+  workflow (see `CONTRIBUTING.md`).
 - CI: fmt, clippy `-D warnings`, tests, release build; `cargo test -p
   streamboat-player --features mpv` on top of the default (GStreamer) build;
   a Debian container job builds `streamboatd` without GUI libraries and
@@ -1086,8 +1366,7 @@ navigate; what is missing is only the shell being launched by the OS with that
 URL through the single-instance path); the Flatpak Secret portal (D-026); the
 `org.freedesktop.ReserveDevice1` device-reservation handshake for the ALSA
 writer (`output-backends.md` §2, explicitly optional — `EBUSY` on open is
-handled with a bounded retry regardless); a `logout` command for `streamboatd`
-to hook the offline-cache wipe into (D-022, otherwise built — see above); the
+handled with a bounded retry regardless); the
 `/opt/streamboat` vendored GStreamer tree actually wired into a deb/rpm job
 (the build script exists, see "Packaging" above); an AppUserModelID for
 Windows SMTC and a universal macOS build (both still-open packaging
@@ -1098,7 +1377,18 @@ entity page itself is built, metadata-only, and says so); handing a
 verification of the Windows/macOS tray-icon path, the Linux tray's D-Bus
 registration and the multi-window loop (no display, no session bus here);
 the MPRIS-bus-name variant of D-010's single-instance lock (the portable
-lock-file branch the decision also names is what runs).
+lock-file branch the decision also names is what runs); a Snapcast output toggle in the Settings screen (D-034 — the
+`OutputConfig::Snapcast` variant and both engine backends exist, `Cmd`/CLI
+plumbing for it does too, but the UI's own output picker still offers only
+Shared/Exclusive, falling back to Shared when it round-trips a
+`Snapcast` value it did not create); the libmpv/FIFO Snapcast pump on
+Windows/macOS (D-034, Unix-only so far — `start_snapcast_pump` returns a
+clear error there rather than a silent no-op); a verified round trip
+against a real `snapserver`/Snapweb for both the Snapcast output and the
+`snapcast-plugin`/`snapcast-discover` subcommands (no snapserver in this
+environment); libmpv's own version string in `streamboat debug-bundle`'s
+`environment.txt` (D-029 — gated on the desktop crate's `mpv` feature
+actually linking `libmpv2`, which it does not yet, see above).
 
 `streamboat_player::default_engine`/`enumerate_output_devices`/
 `media_controls::spawn` (D-016, D-030 — see "Engine selection, device

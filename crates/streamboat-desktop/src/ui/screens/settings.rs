@@ -40,6 +40,9 @@ impl State {
         let (exclusive, device) = match settings.output.clone().unwrap_or_default() {
             OutputConfig::Exclusive { device } => (true, device),
             OutputConfig::Shared { device } => (false, device.unwrap_or_default()),
+            // Snapcast output (D-034) has no toggle in this screen yet; fall
+            // back to the shared-mode default rather than lose the setting.
+            OutputConfig::Snapcast { .. } => (false, String::new()),
         };
         Self {
             quality_ceiling: settings.quality_ceiling(),

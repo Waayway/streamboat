@@ -246,14 +246,16 @@ answer, with alternatives, rationale and consequences, is in `docs/DECISIONS.md`
 `D-047`, plus "the decided stack at a glance"), and the `streamboat-decisions` skill is its
 load-on-demand distillation.
 
-The first milestone (D-044), the playable CLI spike, is built for Linux: `cargo build --workspace`
-produces `streamboat` (CLI) and `streamboatd` (a daemon hosting the HTTP + WebSocket control API by
-default, `--stdio` for the original JSON-lines protocol); `streamboat login` runs the device-code
-flow, `streamboat resolve <id>` shows the cascade result, `streamboat play <id>…` plays through
-GStreamer with gapless hand-over and a selectable `hw:` device, exclusive through the project's own
-ALSA writer. `docs/architecture.md` records what exists, the implementation choices made along the
-way, and the ordered list of what is not built yet (libmpv backend, SMTC/NowPlayingInfoCenter, iced
-shell). Read it before touching code.
+**The first release's scope (D-001) is built**, on Linux end to end and on Windows/macOS as
+compiled-but-unrun code: `cargo build --workspace` produces `streamboat` (the iced 0.14 desktop
+shell with CLI subcommands: login, search, resolve, play, devices, pin/unpin/pins, open,
+snapcast-plugin, snapcast-discover, debug-bundle, keyring, paths) and `streamboatd` (the daemon
+hosting the HTTP + WebSocket control API, `--stdio` for the JSON-lines protocol). Both engines,
+exclusive output, the ALSA writer, MPRIS/SMTC/NowPlaying, privileges, play reporting, scrobbling,
+the offline cache, Snapcast, diagnostics and packaging exist. `docs/architecture.md` records what
+exists, the implementation choices made along the way, and the honest "not yet built / not
+verifiable here" list (no display, DAC, session bus, snapserver or Windows/macOS machine in the
+build environment). Read it before touching code; load `iced-ui` before touching the shell.
 
 Topic skills still carry their pre-decision "Open decisions" sections, each now headed by a note
 pointing at the decision log; read them as the inputs that were considered, not as open questions.
