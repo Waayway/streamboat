@@ -480,24 +480,35 @@ against the actual 0.14 sources rather than memory (the API changed hard across 
   blocking `.run()` call) — separate from iced's own internal tokio runtime (its `tokio` feature),
   which drives `Task`/`Subscription` futures instead; the same runtime backs `RemoteLink`'s
   `send` when there is no local `Player`.
-- **Single-instance lock and remote-client mode (D-010, D-045)**: `ui::instance::decide` is the one
-  call `ui::app::run` makes before anything else — `streamboat_core::instance_lock::InstanceLock`
+- **Single-instance lock and remote-client mode (D-010, D-024, D-045)**: `ui::instance::decide` is
+  the one call `ui::app::run` makes before anything else — `streamboat_core::instance_lock::InstanceLock`
   (a portable `fd-lock` file at `AppDirs::instance_lock_path()`, `<runtime dir>/instance.lock`) is
   tried first; holding it means this process becomes the instance and spawns its own engine
   (`ui::app::run_as_local_instance`). Failing to take it checks
   `AppDirs::control_address_path()` (`<runtime dir>/control-address`, written by whichever holder
   also hosts the control API — always `streamboatd`, per D-031's "only the daemon binds a
   listener," never a GUI): present means become a `RemoteLink` client
-  (`run_as_remote_client`); absent means the holder is another GUI instance, so this process
-  touches `AppDirs::show_request_path()` (`<runtime dir>/show-request`) and exits without opening
-  a window (`Decision::FocusedOther`). The holding GUI polls that file's mtime every 400ms
+  (`run_as_remote_client`) — a full shell of its own against the same daemon, so a deep link passed
+  on this invocation's command line needs no handoff at all, it just flows through the ordinary
+  `pending_open`/`apply_pending_open` path like a fresh login would; absent means the holder is
+  another GUI instance, so this process calls `instance_lock::request_open` (writing any deep-link
+  URL to `AppDirs::open_request_path()`, `<runtime dir>/open-request`, atomically) *before*
+  `instance_lock::request_show` (touching `AppDirs::show_request_path()`,
+  `<runtime dir>/show-request`) and exits without opening a window (`Decision::FocusedOther`). The
+  holding GUI polls the show-request file's mtime every 400ms
   (`ui::instance::show_request_events`, an `iced::Subscription::run_with` built only while
-  `Decision::Local`) and answers a touch the same way the tray's "Show" does — unhide and focus the
-  main window. Deliberately not built: the MPRIS-bus-name variant of D-010's lock (the decision
-  names two mechanisms; the code always takes the portable-lock-file branch, which D-010 already
-  permits on its own) and a `POST /v1/show` control-API route (rejected: it would
-  require the GUI to bind a listener, contradicting D-031 — the filesystem touch is the
-  `Command`-free alternative D-031 leaves room for).
+  `Decision::Local`, carrying both paths as one `Hash`-able `instance::SignalPaths`) and, on a
+  change, both answers it the same way the tray's "Show" does — unhide and focus the main window —
+  and takes whatever is waiting in the open-request file
+  (`instance_lock::take_open_request`, a one-shot read-and-delete, never re-delivered) into
+  `App::pending_open`, applying it immediately through the existing deep-link path
+  (`App::apply_pending_open`/`Screen::from_content_link`) if already logged in, or leaving it queued
+  for the next successful login otherwise — exactly the same queue `pending_open` already holds a
+  CLI-provided link in before the first login check resolves. Deliberately not built: the
+  MPRIS-bus-name variant of D-010's lock (the decision names two mechanisms; the code always takes
+  the portable-lock-file branch, which D-010 already permits on its own) and a `POST /v1/show`
+  control-API route (rejected: it would require the GUI to bind a listener, contradicting D-031 —
+  the filesystem touch is the `Command`-free alternative D-031 leaves room for).
 - **Multi-window and the mini-player (D-036)**: `App::boot` opens the main window itself via
   `window::open`, storing the `window::Id` it returns synchronously; `App::view`/`App::title`
   dispatch on the `window::Id` iced asks for (`Some(window) == self.mini_window` renders
@@ -638,7 +649,10 @@ against the actual 0.14 sources rather than memory (the API changed hard across 
   playback (D-039). The same path is reachable from the command line: `streamboat open <url>`, or a
   bare link as `streamboat`'s only argument (rewritten to `open <url>` by `main` before `clap` ever
   parses it) — the only change deep-link handling makes to `main.rs`/`ui::app::run` beyond the
-  screen-navigation logic itself, kept deliberately narrow to that one subcommand.
+  screen-navigation logic itself, kept deliberately narrow to that one subcommand. A second
+  `streamboat <url>` invocation while another GUI instance already holds the lock hands the URL to
+  that instance instead of failing silently — see "Single-instance lock and remote-client mode"
+  above for the open-request mechanism (D-024).
 - **Image cache**: `ui::images::ImageCache`, a hand-rolled insertion-order-bounded map (not a true
   read-touches-recency LRU — `peek`, the only read `view` code calls, deliberately never reorders,
   since `view` only ever holds `&ImageCache`; eviction order is "oldest inserted," which is
@@ -655,9 +669,10 @@ against the actual 0.14 sources rather than memory (the API changed hard across 
   Media keys are explicitly out of scope here (MPRIS, above).
 - **Additive core/player support for the single-instance lock and decoder probe**: `streamboat_core::instance_lock` (new
   module: `InstanceLock`, `write_control_address`/`read_control_address`, `request_show`/
-  `show_request_mtime`); three new `AppDirs` path methods (`instance_lock_path`,
-  `control_address_path`, `show_request_path`); `streamboat_player::probe` (new module,
-  `DecoderSupport`). All new items, no changed behaviour on anything that existed before.
+  `show_request_mtime`, `request_open`/`take_open_request` — the deep-link handoff, D-024); four new
+  `AppDirs` path methods (`instance_lock_path`, `control_address_path`, `show_request_path`,
+  `open_request_path`); `streamboat_player::probe` (new module, `DecoderSupport`). All new items, no
+  changed behaviour on anything that existed before.
 - **Additive core/player support for Settings, theming and queue management**: `Context:
   Clone`; `config::{ThemePreference, ReplayGainMode}` plus two new `Settings` fields (`theme`,
   `replay_gain_mode`) and one (`play_reporting_enabled`, default `true` per D-027) — all three
@@ -849,6 +864,21 @@ stream = tcp://0.0.0.0:4953?name=streamboat&mode=server&sampleformat=48000:16:2
 already spoken for — it is only this example's port number; any free one
 works as long as it matches what `OutputConfig::Snapcast.port` connects to.)
 
+- **Settings screen** (`ui::screens::settings`): an output-mode `pick_list`
+  (Shared/Exclusive/Snapcast) replaces what used to be an "Exclusive" checkbox
+  — `State::from_settings`/`apply_to` round-trip all three `OutputConfig`
+  variants, and a mode change is applied live through the same
+  `Command::SetOutput` path the exclusive toggle already used. Shared and
+  Exclusive still show the one device-string field; Snapcast shows a
+  snapserver host/port pair instead (defaulting to `127.0.0.1`/`4953`, this
+  screen's own constants — `streamboat_player::snapcast` holds the fixed
+  *audio* format, not a default address) plus a note that it resamples to
+  that fixed format and is mutually exclusive with bit-perfect output
+  (D-034). An invalid or blank port/host on save falls back to those same
+  defaults rather than persisting something unusable. The signal-path
+  panel needs no change: it already renders whatever the engine reports,
+  Snapcast included (the `converted`/`snapcast tcp://host:port` values
+  `gst.rs::apply_output` sets, described below).
 - **GStreamer** (`gst.rs::apply_output`): the sink becomes `audioconvert !
   audioresample ! audio/x-raw,rate=48000,format=S16LE,channels=2 !
   tcpclientsink host=.. port=..`, built the same way the existing
@@ -901,7 +931,13 @@ works as long as it matches what `OutputConfig::Snapcast.port` connects to.)
   current as of this writing and confirmed directly against crates.io
   rather than trusted from memory.
 
-Tested: the fixed-format-over-TCP path end to end on GStreamer
+Tested: the Settings screen's output-mode picker
+(`crates/streamboat-desktop/src/ui/screens/settings.rs`) — `from_settings`/
+`apply_to` round-tripping the `Snapcast` variant (including the
+blank/invalid-input fallback to the documented defaults) and an
+`iced_test` simulator check that the host/port fields render only in
+Snapcast mode, the device field only in Shared/Exclusive; the
+fixed-format-over-TCP path end to end on GStreamer
 (`crates/streamboat-player/tests/gst_engine.rs`'s
 `snapcast_output_streams_the_fixed_format_pcm_over_tcp` — a real
 `TcpListener` standing in for snapserver, a generated WAV through the real
@@ -1349,8 +1385,10 @@ recommended Debian-stable install path.
 the `streamboat://` handler registration per OS (D-024 — the OS-side
 registration files exist in `packaging/linux/`, `packaging/windows/wix/` and
 `packaging/macos/`, and `streamboat open <url>`/a bare-link argument parse and
-navigate; what is missing is only the shell being launched by the OS with that
-URL through the single-instance path); the Flatpak Secret portal (D-026); the
+navigate, plus the handoff to an already-running instance if the OS launches
+a second process with the URL; what is missing is only the OS actually being
+configured to launch `streamboat` with that URL in the first place); the
+Flatpak Secret portal (D-026); the
 `org.freedesktop.ReserveDevice1` device-reservation handshake for the ALSA
 writer (`output-backends.md` §2, explicitly optional — `EBUSY` on open is
 handled with a bounded retry regardless); the
@@ -1358,22 +1396,16 @@ handled with a bounded retry regardless); the
 (the build script exists, see "Packaging" above); an AppUserModelID for
 Windows SMTC and a universal macOS build (both still-open packaging
 questions, see `streamboat-decisions`); video *playback* (D-038 — the Video
-entity page itself is built, metadata-only, and says so); handing a
-`streamboat://` link to an already-running instance (a second `streamboat
-<url>` only asks the running window to come to the front today); real
+entity page itself is built, metadata-only, and says so); real
 verification of the Windows/macOS tray-icon path, the Linux tray's D-Bus
 registration and the multi-window loop (no display, no session bus here);
 the MPRIS-bus-name variant of D-010's single-instance lock (the portable
-lock-file branch the decision also names is what runs); a Snapcast output toggle in the Settings screen (D-034 — the
-`OutputConfig::Snapcast` variant and both engine backends exist, `Cmd`/CLI
-plumbing for it does too, but the UI's own output picker still offers only
-Shared/Exclusive, falling back to Shared when it round-trips a
-`Snapcast` value it did not create); the libmpv/FIFO Snapcast pump on
-Windows/macOS (D-034, Unix-only so far — `start_snapcast_pump` returns a
-clear error there rather than a silent no-op); a verified round trip
-against a real `snapserver`/Snapweb for both the Snapcast output and the
-`snapcast-plugin`/`snapcast-discover` subcommands (no snapserver in this
-environment).
+lock-file branch the decision also names is what runs); the libmpv/FIFO
+Snapcast pump on Windows/macOS (D-034, Unix-only so far —
+`start_snapcast_pump` returns a clear error there rather than a silent
+no-op); a verified round trip against a real `snapserver`/Snapweb for both
+the Snapcast output and the `snapcast-plugin`/`snapcast-discover`
+subcommands (no snapserver in this environment).
 
 `streamboat_player::default_engine`/`enumerate_output_devices`/
 `media_controls::spawn` (D-016, D-030 — see "Engine selection, device

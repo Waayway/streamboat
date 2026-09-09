@@ -37,7 +37,6 @@
 //! (briefly, with a timeout) for `Event::Stopped` before returning
 //! `iced::exit()`.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
@@ -203,11 +202,12 @@ pub struct App {
     /// `Some` only while the mini-player window is open;
     /// toggled by the playback bar and a keyboard shortcut.
     mini_window: Option<window::Id>,
-    /// The `show-request` file to poll for a second GUI instance asking to
-    /// be shown (`ui::instance`) — `None` when this process is a remote
+    /// The `show-request`/`open-request` paths to poll for a second GUI
+    /// instance asking to be shown, and any deep link it left behind
+    /// (`ui::instance`, D-010, D-024) — `None` when this process is a remote
     /// client rather than the lock holder, since nothing else would ever
-    /// touch that file expecting *this* process to react to it.
-    show_request_path: Option<PathBuf>,
+    /// touch those files expecting *this* process to react to them.
+    show_request_paths: Option<instance::SignalPaths>,
     /// The startup decoder probe result (D-003). Stored so a future
     /// Settings-screen change can grey out an unreachable quality tier from
     /// it; it is already used once, at startup, to cap the requested
@@ -297,8 +297,10 @@ pub enum Message {
     /// window disappearing by some path other than the toggle handler
     /// (e.g. a platform gesture this crate does not otherwise intercept).
     WindowClosed(window::Id),
-    /// A second GUI instance asked to be shown (`ui::instance`).
-    ShowRequested,
+    /// A second GUI instance asked to be shown (`ui::instance`), carrying a
+    /// deep-link URL if that second `streamboat <url>` invocation also left
+    /// one behind (D-010, D-024).
+    ShowRequested(Option<String>),
     /// `Command::Shutdown` was sent and either `Event::Stopped` arrived or
     /// the grace period elapsed — safe to call `iced::exit()` now.
     ReadyToExit,
@@ -341,7 +343,7 @@ impl App {
         link: SharedLink,
         open_url: Option<String>,
         decoder_support: DecoderSupport,
-        show_request_path: Option<PathBuf>,
+        show_request_paths: Option<instance::SignalPaths>,
     ) -> (Self, Task<Message>) {
         let http = reqwest::Client::builder()
             .user_agent(format!(
@@ -363,7 +365,7 @@ impl App {
             http,
             main_window,
             mini_window: None,
-            show_request_path,
+            show_request_paths,
             decoder_support,
             logged_in: false,
             nav: Nav::new(Screen::Login),
@@ -412,10 +414,10 @@ impl App {
             window::close_events().map(Message::WindowClosed),
             Subscription::run_with(LinkKey(self.link.clone()), tray_events).map(Message::Tray),
         ];
-        if let Some(path) = self.show_request_path.clone() {
+        if let Some(paths) = self.show_request_paths.clone() {
             subs.push(
-                Subscription::run_with(path, instance::show_request_events)
-                    .map(|()| Message::ShowRequested),
+                Subscription::run_with(paths, instance::show_request_events)
+                    .map(|ev| Message::ShowRequested(ev.open_url)),
             );
         }
         Subscription::batch(subs)
@@ -467,7 +469,7 @@ impl App {
                 }
                 Task::none()
             }
-            Message::ShowRequested => self.show_main_window(),
+            Message::ShowRequested(open_url) => self.handle_show_requested(open_url),
             Message::ReadyToExit => iced::exit(),
         }
     }
@@ -1009,6 +1011,25 @@ impl App {
             .chain(window::gain_focus(self.main_window))
     }
 
+    /// A second GUI instance asked to be shown, per `ui::instance`'s
+    /// show-request poll (D-010) — always raise the window, and if it also
+    /// left a deep link behind (`open-request`, D-024), queue it in
+    /// `pending_open` exactly the way a CLI-provided link sits there before
+    /// the first login check resolves (see `App::boot`'s own
+    /// `pending_open: open_url`), then apply it immediately since this
+    /// process is (unlike a fresh boot) already past that point whenever it
+    /// is already logged in.
+    fn handle_show_requested(&mut self, open_url: Option<String>) -> Task<Message> {
+        let show = self.show_main_window();
+        let Some(url) = open_url else { return show };
+        self.pending_open = Some(url);
+        if self.logged_in {
+            Task::batch([show, self.apply_pending_open()])
+        } else {
+            show
+        }
+    }
+
     fn toggle_mini_player(&mut self) -> Task<Message> {
         match self.mini_window.take() {
             Some(id) => window::close(id),
@@ -1481,12 +1502,14 @@ fn mini_window_settings() -> window::Settings {
 /// screen keeps working unchanged behind [`crate::ui::player_link::PlayerLink`].
 pub fn run(open_url: Option<String>) -> anyhow::Result<()> {
     let ctx = Context::load()?;
-    match instance::decide(&ctx.dirs)? {
+    match instance::decide(&ctx.dirs, open_url.as_deref())? {
         instance::Decision::FocusedOther => {
+            // `decide` already wrote `open_url` to the open-request file
+            // (if any) and touched show-request — the running instance's
+            // own poll (`ui::instance::show_request_events`) picks both up
+            // on its next tick; there is nothing left to do here.
             if let Some(url) = open_url {
-                // The running instance was asked to show itself; handing it
-                // the link is not built yet (see docs/architecture.md).
-                tracing::warn!(%url, "another streamboat instance is running; open the link there");
+                tracing::info!(%url, "another streamboat instance is running; handed the link to it");
             }
             Ok(())
         }
@@ -1549,14 +1572,14 @@ fn run_as_local_instance(
     streamboat_player::media_controls::spawn(handle.clone());
 
     let link: SharedLink = Arc::new(InProcessLink::new(handle));
-    let show_request_path = Some(ctx.dirs.show_request_path());
+    let show_request_paths = Some(instance::SignalPaths::new(&ctx.dirs));
 
     run_program(
         ctx,
         link,
         open_url,
         decoder_support,
-        show_request_path,
+        show_request_paths,
         bg_rt,
         Some(lock),
     )
@@ -1592,7 +1615,7 @@ fn run_program(
     link: SharedLink,
     open_url: Option<String>,
     decoder_support: DecoderSupport,
-    show_request_path: Option<PathBuf>,
+    show_request_paths: Option<instance::SignalPaths>,
     _bg_rt: tokio::runtime::Runtime,
     _lock: Option<InstanceLock>,
 ) -> anyhow::Result<()> {
@@ -1603,7 +1626,7 @@ fn run_program(
                 link.clone(),
                 open_url.clone(),
                 decoder_support,
-                show_request_path.clone(),
+                show_request_paths.clone(),
             )
         },
         App::update,
@@ -1614,4 +1637,118 @@ fn run_program(
     .subscription(App::subscription)
     .run()
     .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use streamboat_core::ClientCredentials;
+    use streamboat_core::config::{AppDirs, DeviceIdentity};
+    use streamboat_core::token_store::EncryptedFileStore;
+
+    /// A [`PlayerLink`] that does nothing: `App::boot` needs one, but these
+    /// tests only exercise pure state transitions in `App::update` and never
+    /// poll the events stream or check what was sent.
+    struct FakeLink;
+
+    impl crate::ui::player_link::PlayerLink for FakeLink {
+        fn send(&self, _cmd: Command) -> bool {
+            true
+        }
+
+        fn events(&self) -> crate::ui::stream_ext::BoxStream<Event> {
+            Box::pin(futures::stream::empty())
+        }
+    }
+
+    /// A `Context` built entirely from a tempdir with explicit, synthetic
+    /// credentials (`ClientCredentials::new`, `CredentialSource::Explicit`)
+    /// — no keyring, no network, no real TIDAL account, the same shape
+    /// every screen's own `test_api()` helper already uses.
+    fn test_context(dir: &std::path::Path) -> Context {
+        let dirs = AppDirs {
+            config: dir.join("config"),
+            data: dir.join("data"),
+            cache: dir.join("cache"),
+            runtime: dir.join("run"),
+        };
+        let store = Arc::new(EncryptedFileStore::new(dirs.token_path(), dirs.key_path()).unwrap());
+        let api =
+            streamboat_core::ApiClient::builder(ClientCredentials::new("cid", None), store.clone())
+                .build()
+                .unwrap();
+        Context {
+            dirs,
+            settings: streamboat_core::config::Settings::default(),
+            device: DeviceIdentity {
+                client_unique_key: "0123456789abcdef".into(),
+            },
+            api,
+            store,
+        }
+    }
+
+    /// D-010/D-024: a second `streamboat <url>` invocation hands its link to
+    /// the running instance through the open-request file, which surfaces
+    /// here as `Message::ShowRequested(Some(url))`. Before login, that must
+    /// queue the same way a CLI-provided link does at boot
+    /// (`App::boot`'s own `pending_open: open_url`) rather than try to
+    /// navigate before there is a session to navigate with.
+    #[test]
+    fn an_open_request_queues_navigation_the_same_way_pending_open_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_context(dir.path());
+        let link: SharedLink = Arc::new(FakeLink);
+        let (mut app, _boot_task) = App::boot(ctx, link, None, DecoderSupport::all(), None);
+
+        assert!(!app.logged_in);
+        assert_eq!(app.pending_open, None);
+
+        let _ = app.update(Message::ShowRequested(Some(
+            "https://tidal.com/track/123".to_string(),
+        )));
+
+        assert_eq!(
+            app.pending_open,
+            Some("https://tidal.com/track/123".to_string()),
+            "an open request must queue in `pending_open` exactly like a \
+             CLI-provided deep link does before the first login check resolves"
+        );
+    }
+
+    /// Once already logged in, the same message must apply the link right
+    /// away (through the ordinary `apply_pending_open` path) instead of
+    /// leaving it queued indefinitely — `pending_open` ends up consumed.
+    #[test]
+    fn an_open_request_applies_immediately_once_already_logged_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_context(dir.path());
+        let link: SharedLink = Arc::new(FakeLink);
+        let (mut app, _boot_task) = App::boot(ctx, link, None, DecoderSupport::all(), None);
+        app.logged_in = true;
+
+        let _ = app.update(Message::ShowRequested(Some(
+            "https://tidal.com/browse/track/123".to_string(),
+        )));
+
+        assert_eq!(app.pending_open, None, "the queued link must be consumed");
+        assert_eq!(
+            app.nav.current(),
+            &Screen::Entity(EntityRef::Track(123)),
+            "the link must have been navigated to"
+        );
+    }
+
+    /// A show-request with no accompanying link (the ordinary "just raise
+    /// the window" case) must not touch `pending_open` at all.
+    #[test]
+    fn a_show_request_with_no_url_does_not_touch_pending_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_context(dir.path());
+        let link: SharedLink = Arc::new(FakeLink);
+        let (mut app, _boot_task) = App::boot(ctx, link, None, DecoderSupport::all(), None);
+
+        let _ = app.update(Message::ShowRequested(None));
+        assert_eq!(app.pending_open, None);
+    }
 }

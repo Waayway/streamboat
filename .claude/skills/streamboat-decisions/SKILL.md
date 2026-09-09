@@ -164,8 +164,9 @@ the release workflow for every decided channel (D-040 to D-043); the test postur
 `docs/architecture.md` is the inventory, with the implementation choices fixed along the way and
 the "not yet built" list — which now names only what this build environment could not verify
 (Windows/macOS runtime behaviour, a real DAC, a session bus, a snapserver, the display) plus a
-handful of small follow-ups (vendored GStreamer wired into deb/rpm, a Snapcast toggle in
-Settings, handing a deep link to a running instance).
+handful of small follow-ups (vendored GStreamer wired into deb/rpm, the libmpv/FIFO Snapcast pump
+on Windows/macOS). The Settings screen's output-mode picker (Shared/Exclusive/Snapcast, D-034) and
+handing a deep link to an already-running instance (D-010, D-024) are both built now.
 
 ## Still open (implementation-time calls, not owner decisions)
 

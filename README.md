@@ -257,8 +257,11 @@ where it lives and how big it may grow. See
 mode alongside Shared and Exclusive — mutually exclusive with bit-perfect
 by construction, since it resamples every track to one fixed PCM format
 (48000 Hz, 16-bit, stereo) and connects out, as a plain TCP client, to a
-running `snapserver`'s stream source. Point snapserver's config at
-whatever port streamboat is told to connect to:
+running `snapserver`'s stream source. Pick it from the desktop shell's
+Settings screen (an output-mode picker alongside Shared and Exclusive,
+defaulting to `127.0.0.1:4953`) or set `output` in `settings.json`/pass
+`OutputConfig::Snapcast` directly. Point snapserver's config at whatever
+port streamboat is told to connect to:
 
 ```
 stream = tcp://0.0.0.0:4953?name=streamboat&mode=server&sampleformat=48000:16:2

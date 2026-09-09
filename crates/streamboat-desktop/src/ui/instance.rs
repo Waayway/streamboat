@@ -36,16 +36,26 @@ pub enum Decision {
     FocusedOther,
 }
 
-/// Makes the decision above. Touches the `show-request` file itself in the
-/// [`Decision::FocusedOther`] case, so the caller only needs to act on the
-/// result, not perform a separate step for it.
-pub fn decide(dirs: &AppDirs) -> streamboat_core::Result<Decision> {
+/// Makes the decision above. In the [`Decision::FocusedOther`] case, writes
+/// `open_url` (if any) to the `open-request` file *before* touching
+/// `show-request` (D-010, D-024) — so by the time the holder's poll notices
+/// the show-request touch, the link is already waiting for it — so the
+/// caller only needs to act on the result, not perform a separate step for
+/// either file. The [`Decision::Remote`] case needs no such handoff: that
+/// process becomes its own remote-client shell (`ui::app::run_as_remote_client`)
+/// and opens `open_url` itself through the ordinary `pending_open` path, the
+/// same as a fresh login — there is only ever one GUI window to hand a link
+/// to in the first place.
+pub fn decide(dirs: &AppDirs, open_url: Option<&str>) -> streamboat_core::Result<Decision> {
     let lock_path = dirs.instance_lock_path();
     match InstanceLock::try_acquire(&lock_path)? {
         Some(lock) => Ok(Decision::Local(lock)),
         None => match instance_lock::read_control_address(&dirs.control_address_path()) {
             Some(addr) => Ok(Decision::Remote(addr)),
             None => {
+                if let Some(url) = open_url {
+                    instance_lock::request_open(&dirs.open_request_path(), url)?;
+                }
                 instance_lock::request_show(&dirs.show_request_path())?;
                 Ok(Decision::FocusedOther)
             }
@@ -55,38 +65,59 @@ pub fn decide(dirs: &AppDirs) -> streamboat_core::Result<Decision> {
 
 const POLL_INTERVAL: Duration = Duration::from_millis(400);
 
-/// A stream that yields `()` every time the `show-request` file at `path`
+/// The `show-request` and `open-request` paths the polling subscription in
+/// [`show_request_events`] watches, bundled into one `Hash`-able value so
+/// `iced::Subscription::run_with` can carry both through its `D` parameter
+/// (a bare tuple or `&PathBuf` would work too, but a named struct reads
+/// better at every call site than a positional pair).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SignalPaths {
+    pub show_request: PathBuf,
+    pub open_request: PathBuf,
+}
+
+impl SignalPaths {
+    pub fn new(dirs: &AppDirs) -> Self {
+        Self {
+            show_request: dirs.show_request_path(),
+            open_request: dirs.open_request_path(),
+        }
+    }
+}
+
+/// What a `show-request` tick observed: always "raise the window," plus a
+/// deep-link URL when a second `streamboat <url>` invocation also wrote one
+/// to `open-request` (D-010, D-024) — consumed at most once via
+/// [`instance_lock::take_open_request`], never re-delivered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShowRequest {
+    pub open_url: Option<String>,
+}
+
+/// A stream that yields a [`ShowRequest`] every time the `show-request` file
 /// changes — the subscription `ui::app::App` runs only while it holds
 /// [`Decision::Local`], to know when a second GUI instance asked to be
-/// shown. `fn(&PathBuf) -> BoxStream<()>` matches
-/// `iced::Subscription::run_with`'s bare-`fn`-pointer builder shape
-/// directly (`PathBuf: Hash + 'static`), the same idiom
-/// `ui::app::player_events` uses for [`crate::ui::player_link::LinkKey`].
+/// shown (and, on the same tick, whether it also left a link to open).
 ///
-/// A 400ms poll of one `stat()` call is deliberately simple rather than a
-/// real filesystem-watch (inotify/FSEvents/ReadDirectoryChangesW): the
-/// signal is latency-insensitive (a human clicking the app icon a second
-/// time will not notice 400ms) and this avoids a new dependency and three
-/// more platform-specific code paths for a corner case.
-// The parameter must be exactly `&PathBuf`, not `&Path`:
-// `iced::Subscription::run_with`'s bare-fn-pointer builder is
-// `fn(&D) -> S` for `D = PathBuf` (the subscription's `data`), and
-// `fn(&Path) -> _` is a different function-pointer type that does not
-// satisfy it — there is no `D` to swap in to satisfy clippy's usual advice
-// here.
-#[allow(clippy::ptr_arg)]
-pub fn show_request_events(path: &PathBuf) -> BoxStream<()> {
-    let path = path.clone();
+/// A 400ms poll of two `stat()`/one-read-and-delete calls is deliberately
+/// simple rather than a real filesystem-watch (inotify/FSEvents/
+/// ReadDirectoryChangesW): the signal is latency-insensitive (a human
+/// clicking the app icon or a link a second time will not notice 400ms) and
+/// this avoids a new dependency and three more platform-specific code paths
+/// for a corner case.
+pub fn show_request_events(paths: &SignalPaths) -> BoxStream<ShowRequest> {
+    let paths = paths.clone();
     Box::pin(futures::stream::unfold(
         None::<SystemTime>,
         move |last_seen| {
-            let path = path.clone();
+            let paths = paths.clone();
             async move {
                 loop {
                     tokio::time::sleep(POLL_INTERVAL).await;
-                    if let Some(mtime) = instance_lock::show_request_mtime(&path) {
+                    if let Some(mtime) = instance_lock::show_request_mtime(&paths.show_request) {
                         if last_seen != Some(mtime) {
-                            return Some(((), Some(mtime)));
+                            let open_url = instance_lock::take_open_request(&paths.open_request);
+                            return Some((ShowRequest { open_url }, Some(mtime)));
                         }
                     }
                 }
@@ -125,7 +156,7 @@ mod tests {
             cache: dir.path().join("cache"),
             runtime: dir.path().join("run"),
         };
-        match decide(&dirs).unwrap() {
+        match decide(&dirs, None).unwrap() {
             Decision::Local(_lock) => {}
             _ => panic!("expected Local"),
         }
@@ -152,7 +183,7 @@ mod tests {
         let addr: std::net::SocketAddr = "127.0.0.1:4747".parse().unwrap();
         instance_lock::write_control_address(&dirs.control_address_path(), addr).unwrap();
 
-        match decide(&dirs).unwrap() {
+        match decide(&dirs, None).unwrap() {
             Decision::Remote(got) => assert_eq!(got, addr),
             other => panic!(
                 "expected Remote, got a different decision: {}",
@@ -177,7 +208,7 @@ mod tests {
         // No control-address file: the holder is a GUI, not a daemon.
         assert!(instance_lock::show_request_mtime(&dirs.show_request_path()).is_none());
 
-        match decide(&dirs).unwrap() {
+        match decide(&dirs, None).unwrap() {
             Decision::FocusedOther => {}
             other => panic!(
                 "expected FocusedOther, got a different decision: {}",
@@ -187,6 +218,59 @@ mod tests {
         assert!(
             instance_lock::show_request_mtime(&dirs.show_request_path()).is_some(),
             "deciding FocusedOther must touch the show-request file"
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn deciding_focused_other_with_a_url_writes_the_open_request_before_show_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs {
+            config: dir.path().join("config"),
+            data: dir.path().join("data"),
+            cache: dir.path().join("cache"),
+            runtime: dir.path().join("run"),
+        };
+        let held = InstanceLock::try_acquire(&dirs.instance_lock_path())
+            .unwrap()
+            .expect("first acquire must succeed");
+
+        match decide(&dirs, Some("streamboat://album/123")).unwrap() {
+            Decision::FocusedOther => {}
+            other => panic!(
+                "expected FocusedOther, got a different decision: {}",
+                debug_name(&other)
+            ),
+        }
+        assert!(
+            instance_lock::show_request_mtime(&dirs.show_request_path()).is_some(),
+            "deciding FocusedOther must still touch the show-request file"
+        );
+        assert_eq!(
+            instance_lock::take_open_request(&dirs.open_request_path()),
+            Some("streamboat://album/123".to_string()),
+            "the URL must be waiting for the holder's next show-request poll"
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn deciding_focused_other_with_no_url_leaves_no_open_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = AppDirs {
+            config: dir.path().join("config"),
+            data: dir.path().join("data"),
+            cache: dir.path().join("cache"),
+            runtime: dir.path().join("run"),
+        };
+        let held = InstanceLock::try_acquire(&dirs.instance_lock_path())
+            .unwrap()
+            .expect("first acquire must succeed");
+
+        decide(&dirs, None).unwrap();
+        assert_eq!(
+            instance_lock::take_open_request(&dirs.open_request_path()),
+            None
         );
         drop(held);
     }
