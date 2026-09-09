@@ -18,6 +18,7 @@ pub mod mpris;
 pub mod mpv;
 pub mod offline;
 pub mod player;
+pub mod snapcast;
 
 pub use engine::{Engine, EngineEvent, LoadItem};
 pub use offline::{OfflineCache, OfflineError, PinInfo};

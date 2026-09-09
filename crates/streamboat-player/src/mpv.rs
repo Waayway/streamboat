@@ -123,6 +123,45 @@ pub struct MpvEngine {
     /// Test-only `ao` override (`ao=null`); when set, `apply_output` never
     /// touches `ao`/`audio-device` itself, only the volume/ReplayGain policy.
     audio_override: Option<String>,
+    /// The FIFO-reading thread feeding a Snapcast TCP connection (D-034),
+    /// while `output` is [`OutputConfig::Snapcast`] on a Unix target. `None`
+    /// otherwise, including on a non-Unix target — see
+    /// [`Self::start_snapcast_pump`]'s doc comment for why that side is not
+    /// implemented yet.
+    snapcast_pump: Option<SnapcastPump>,
+}
+
+/// Owns the pump thread's FIFO file for [`OutputConfig::Snapcast`] on Unix
+/// (D-034): mpv's `pcm` AO (`ao=pcm`, `ao-pcm-file=<fifo>`,
+/// `ao-pcm-waveheader=no`) writes headerless PCM into the FIFO; a detached
+/// thread's only job is copying those bytes on to a TCP connection to
+/// snapserver's `tcp://...&mode=server` stream source (the same destination
+/// `gst.rs`'s `tcpclientsink` branch connects to). One-shot: it does not
+/// reconnect if the TCP connection drops. Deliberately not joined on drop
+/// (below) — it may be parked in a blocking read on mpv's own writer end,
+/// which this struct does not own, so joining here could hang a
+/// `set_output`/shutdown on mpv's timing instead of this struct's own. See
+/// the module doc's Snapcast section for what is unverified here (no
+/// snapserver in this environment).
+struct SnapcastPump {
+    fifo_path: PathBuf,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for SnapcastPump {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        // Best-effort unblock: opening the FIFO for write gives a pump
+        // thread parked in the initial blocking open a peer to match, and
+        // closes it again immediately (this `File` is not bound to a
+        // variable) so a thread already blocked in `read` sees EOF too, as
+        // long as mpv's own writer end is not still open — not guaranteed,
+        // which is exactly why this is best-effort and not joined.
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&self.fifo_path);
+        let _ = std::fs::remove_file(&self.fifo_path);
+    }
 }
 
 impl MpvEngine {
@@ -233,6 +272,7 @@ impl MpvEngine {
             temp_files: Vec::new(),
             runtime_dir,
             audio_override,
+            snapcast_pump: None,
         };
         engine.apply_output(&output)?;
         engine.event_thread = Some(
@@ -367,11 +407,79 @@ impl MpvEngine {
                 }
                 self.set_flag("audio-exclusive", false)?;
             }
+            OutputConfig::Snapcast { host, port } => {
+                self.set_flag("audio-exclusive", false)?;
+                self.snapcast_pump = Some(self.start_snapcast_pump(host, *port)?);
+            }
         }
         Ok(())
     }
 
+    /// D-034, Unix only (see the module doc comment's Snapcast section):
+    /// `--ao=pcm` writes headerless, fixed-format PCM into a fresh FIFO
+    /// under `runtime_dir`; a detached thread copies that FIFO's bytes on to
+    /// a TCP connection to snapserver's `tcp://...&mode=server` stream
+    /// source at `host:port` — the libmpv-backend equivalent of `gst.rs`'s
+    /// `tcpclientsink` branch, since mpv (unlike GStreamer) has no
+    /// TCP-client sink element to hand the resampled audio to directly.
+    /// `audio-samplerate`/`audio-channels`/`audio-format` force mpv's own
+    /// output to `crate::snapcast`'s fixed format ahead of the `pcm` AO, the
+    /// same role `gst.rs`'s explicit `audioconvert ! audioresample !
+    /// audio/x-raw,...` chain plays for GStreamer.
+    #[cfg(unix)]
+    fn start_snapcast_pump(&mut self, host: &str, port: u16) -> EngineResult<SnapcastPump> {
+        use crate::snapcast::{BIT_DEPTH, CHANNELS, SAMPLE_RATE};
+        std::fs::create_dir_all(&self.runtime_dir)
+            .map_err(|e| EngineError::Output(format!("runtime dir: {e}")))?;
+        let fifo_path = self
+            .runtime_dir
+            .join(format!("snapcast-{}.pcm", uuid::Uuid::new_v4().simple()));
+        let _ = std::fs::remove_file(&fifo_path);
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .map_err(|e| EngineError::Output(format!("mkfifo: {e}")))?;
+        if !status.success() {
+            return Err(EngineError::Output(format!(
+                "mkfifo {} exited with {status}",
+                fifo_path.display()
+            )));
+        }
+        self.set_ao("pcm")?;
+        self.set_str("ao-pcm-file", fifo_path.to_string_lossy().as_ref())?;
+        self.set_flag("ao-pcm-waveheader", false)?;
+        self.set_str("audio-samplerate", &SAMPLE_RATE.to_string())?;
+        self.set_str("audio-channels", "stereo")?;
+        self.set_str("audio-format", &format!("s{BIT_DEPTH}"))?;
+        let _ = CHANNELS; // documents the `stereo` literal above matches the constant
+        let stop = Arc::new(AtomicBool::new(false));
+        let pump = SnapcastPump {
+            fifo_path: fifo_path.clone(),
+            stop: stop.clone(),
+        };
+        let host = host.to_string();
+        std::thread::Builder::new()
+            .name("streamboat-snapcast-pump".into())
+            .spawn(move || run_snapcast_pump(fifo_path, host, port, stop))
+            .map_err(|e| EngineError::Output(format!("spawn snapcast pump thread: {e}")))?;
+        Ok(pump)
+    }
+
+    #[cfg(not(unix))]
+    fn start_snapcast_pump(&mut self, _host: &str, _port: u16) -> EngineResult<SnapcastPump> {
+        Err(EngineError::Output(
+            "Snapcast output via the libmpv backend needs a FIFO, which is only implemented on \
+             Unix targets so far (D-034); use OutputConfig::Shared/Exclusive on this OS, or the \
+             GStreamer backend on Linux"
+                .into(),
+        ))
+    }
+
     fn apply_output(&mut self, output: &OutputConfig) -> EngineResult<()> {
+        // Any previous Snapcast pump belongs to the output being replaced —
+        // drop it (stop + best-effort unblock, `SnapcastPump::drop`) before
+        // whatever comes next might start a new one.
+        self.snapcast_pump = None;
         if self.audio_override.is_none() {
             self.apply_ao_for_output(output)?;
         }
@@ -384,6 +492,53 @@ impl MpvEngine {
             self.push_volume();
         }
         Ok(())
+    }
+}
+
+/// The detached pump thread body (D-034): blocks opening `fifo_path` for
+/// read (mpv's `pcm` AO is the writer once it starts outputting audio),
+/// connects to `host:port` once, then copies bytes across in a small loop
+/// so `stop` is checked between reads instead of blocking forever in one
+/// `io::copy` call. Exits silently on any I/O error or `stop` — there is no
+/// `EngineEvent` for this path to report through (it is not one of the
+/// per-track events `Shared` carries), so a connection failure here is a
+/// silent output failure until D-034's Snapcast support grows its own
+/// error-reporting story; logged via `tracing` in the meantime.
+#[cfg(unix)]
+fn run_snapcast_pump(fifo_path: PathBuf, host: String, port: u16, stop: Arc<AtomicBool>) {
+    use std::io::Read;
+    let mut fifo = match std::fs::File::open(&fifo_path) {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!(%e, path = %fifo_path.display(), "snapcast: could not open the FIFO");
+            return;
+        }
+    };
+    let mut sock = match std::net::TcpStream::connect((host.as_str(), port)) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(%e, %host, port, "snapcast: could not connect to snapserver");
+            return;
+        }
+    };
+    let mut buf = [0u8; 8192];
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        match fifo.read(&mut buf) {
+            Ok(0) => return,
+            Ok(n) => {
+                use std::io::Write;
+                if sock.write_all(&buf[..n]).is_err() {
+                    return;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%e, "snapcast: FIFO read failed");
+                return;
+            }
+        }
     }
 }
 
@@ -536,6 +691,7 @@ impl Engine for MpvEngine {
                 device: Some(device),
             } => Some(device.clone()),
             OutputConfig::Shared { device: None } => None,
+            OutputConfig::Snapcast { host, port } => Some(format!("snapcast tcp://{host}:{port}")),
         };
         let converted = if exclusive {
             let source_params = self
@@ -547,6 +703,12 @@ impl Engine for MpvEngine {
                 (Some(s), Some(d)) if s != d => Some(format!("engine converted {s} to {d}")),
                 _ => None,
             }
+        } else if self.output.is_snapcast() {
+            use crate::snapcast::{CHANNELS, SAMPLE_RATE};
+            Some(format!(
+                "resampled to the fixed Snapcast format s{} {SAMPLE_RATE} Hz {CHANNELS}ch (D-034)",
+                crate::snapcast::BIT_DEPTH
+            ))
         } else {
             Some("shared mode: the system mixer may resample and mix".to_string())
         };
@@ -574,6 +736,7 @@ impl Engine for MpvEngine {
             converted,
             volume_applied: !exclusive && (self.volume - 1.0).abs() > 1e-6,
             replaygain_applied: !exclusive && self.replaygain_applied,
+            replaygain_mode: String::new(),
             bit_perfect,
         })
     }

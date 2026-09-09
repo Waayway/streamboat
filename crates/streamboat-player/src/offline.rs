@@ -179,6 +179,13 @@ struct TrackEntry {
     salt_hex: String,
     replay_gain_db: Option<f64>,
     peak_amplitude: Option<f64>,
+    /// Album ReplayGain/peak, when TIDAL reported one (D-019); `None` on a
+    /// pin written before this field existed, which `Player`'s album-mode
+    /// selection already falls back on to the track values above.
+    #[serde(default)]
+    album_replay_gain_db: Option<f64>,
+    #[serde(default)]
+    album_peak_amplitude: Option<f64>,
 }
 
 impl TrackEntry {
@@ -209,6 +216,8 @@ pub struct ServedTrack {
     pub bit_depth: Option<u32>,
     pub replay_gain_db: Option<f64>,
     pub peak_amplitude: Option<f64>,
+    pub album_replay_gain_db: Option<f64>,
+    pub album_peak_amplitude: Option<f64>,
 }
 
 impl ServedTrack {
@@ -228,6 +237,8 @@ impl ServedTrack {
                 bit_depth: self.bit_depth,
                 replay_gain_db: self.replay_gain_db,
                 peak_amplitude: self.peak_amplitude,
+                album_replay_gain_db: self.album_replay_gain_db,
+                album_peak_amplitude: self.album_peak_amplitude,
                 preview: false,
             },
             manifest_hash: self.manifest_hash,
@@ -799,6 +810,8 @@ impl OfflineCache {
             salt_hex: hex::encode(salt),
             replay_gain_db: resolved.info.replay_gain_db,
             peak_amplitude: resolved.info.peak_amplitude,
+            album_replay_gain_db: resolved.info.album_replay_gain_db,
+            album_peak_amplitude: resolved.info.album_peak_amplitude,
         })
     }
 
@@ -940,6 +953,8 @@ impl OfflineCache {
             bit_depth: entry.bit_depth,
             replay_gain_db: entry.replay_gain_db,
             peak_amplitude: entry.peak_amplitude,
+            album_replay_gain_db: entry.album_replay_gain_db,
+            album_peak_amplitude: entry.album_peak_amplitude,
         })
     }
 }

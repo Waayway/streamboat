@@ -65,12 +65,28 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    // D-029: redacted, rotating file logging plus a panic hook writing to
+    // `<data dir>/crashes/` — installed before anything else can log or
+    // panic. Same stderr verbosity default ("info") as before this existed;
+    // falls back to the old stderr-only setup if `AppDirs` cannot resolve.
+    let _diagnostics = match streamboat_core::config::AppDirs::resolve() {
+        Ok(dirs) => Some(streamboat_core::diagnostics::init(
+            &dirs.data,
+            "streamboatd",
+            env!("CARGO_PKG_VERSION"),
+            "info",
+        )),
+        Err(_) => {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "info".into()),
+                )
+                .with_writer(std::io::stderr)
+                .try_init();
+            None
+        }
+    };
     let cli = Cli::parse();
     let ctx = Context::load()?;
     let output = match (cli.device.clone(), cli.exclusive) {
@@ -85,6 +101,7 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_else(|| ctx.settings.quality_ceiling()),
         output,
         volume: cli.volume,
+        replay_gain_mode: ctx.settings.replay_gain_mode,
     };
     // Play reporting, scrobbling and streaming privileges (D-027, D-037,
     // D-033) — the same wiring the desktop shell uses. A headless daemon

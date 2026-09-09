@@ -37,6 +37,12 @@ futures.workspace = true
 image.workspace = true
 thiserror.workspace = true
 iced = { workspace = true, features = ["tokio", "image", "svg", "advanced", "debug"] }
+# `streamboat snapcast-plugin` bridges to a running daemon's control API
+# (D-034) over the same HTTP+WebSocket protocol `streamboat-server`'s own
+# tests use; `snapcast-discover` finds a snapserver via mDNS.
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+mdns-sd = "0.21.3"
 
 [dev-dependencies]
 iced_test.workspace = true

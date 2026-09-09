@@ -188,6 +188,52 @@ stream. `offline_dir` and `offline_max_bytes` in `settings.json` override
 where it lives and how big it may grow. See
 `crates/streamboat-player/src/offline.rs` for the exact format.
 
+## Multiroom with Snapcast
+
+`OutputConfig::Snapcast { host, port }` (D-034) is a fourth, explicit output
+mode alongside Shared and Exclusive — mutually exclusive with bit-perfect
+by construction, since it resamples every track to one fixed PCM format
+(48000 Hz, 16-bit, stereo) and connects out, as a plain TCP client, to a
+running `snapserver`'s stream source. Point snapserver's config at
+whatever port streamboat is told to connect to:
+
+```
+stream = tcp://0.0.0.0:4953?name=streamboat&mode=server&sampleformat=48000:16:2
+```
+
+(`mode=server` is snapserver's own name for "I hold the socket open, the
+source dials in" — the direction streamboat expects; `4953` is only this
+example's port number, any free one works as long as both sides agree on
+it.) Run `streamboat snapcast-discover` to find a snapserver on the LAN via
+mDNS instead of hand-typing an address, and add
+`controlscript=streamboat snapcast-plugin` to the same stream's config so
+Snapweb and every Snapcast client show real title/artist/artwork and get
+real play/pause/skip/seek controls instead of an anonymous PCM feed —
+`snapcast-plugin` bridges Snapcast's own stream-plugin JSON-RPC protocol to
+a running `streamboatd`'s control API. See `docs/architecture.md`'s
+"Multiroom: Snapcast output" section for exactly what is and is not
+implemented (the libmpv backend's Windows/macOS side is not, yet).
+
+## Privacy
+
+streamboat sends nothing about you anywhere except to TIDAL itself, to play
+what your subscription entitles you to — no telemetry, no analytics, no
+phone-home, no hosted crash-reporting service, ever (D-029). Play reporting
+(above) is the one deliberate exception, disclosed and toggleable. Logs and
+crash reports stay on this machine, in `<data dir>/logs/` and
+`<data dir>/crashes/`, with tokens, session ids and similar values masked
+before a line ever reaches disk (`streamboat paths` prints exactly where).
+
+### Debug bundle
+
+`streamboat debug-bundle [--out path]` writes one zip with everything a bug
+report needs and nothing it must not have: the redacted logs and crash
+reports above, your settings with every credential reduced to whether it is
+set at all (never the value), and basic environment info (resolved
+directories, OS/architecture, the linked GStreamer version). It never
+includes the token file, the offline cache, or anything from the OS
+keyring — attach it to an issue exactly as it comes out.
+
 ## Legal
 
 streamboat uses an API TIDAL does not document for third parties, under your

@@ -31,6 +31,13 @@ message your own, and review what you submit as if you had typed it.
 - `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings` and
   `cargo test --workspace` must pass. CI needs no secrets and no TIDAL account;
   keep it that way (fixtures are synthetic, D-047).
+- `crates/streamboat-core/tests/live_canary.rs` (D-046) is the one exception:
+  `#[ignore]`d tests against the developer's own TIDAL account, run by hand
+  with `STREAMBOAT_LIVE_CANARY=1 cargo test -p streamboat-core --test
+  live_canary -- --ignored` against a box that has already run `streamboat
+  login`. **Never wire this into CI or any workflow** — it needs a live
+  subscription and asserts shape only, on purpose, so it stays safe to run
+  against a real account by hand.
 - Never commit a client id, client secret, token, or a real subscriber's data.
 - Code adapted from Sone, High Tide or Strawberry (GPL-3.0) goes in the GPL
   crates only (`streamboat-player`, `streamboat-server`, `streamboat-desktop`),

@@ -633,6 +633,7 @@ pub fn run() -> anyhow::Result<()> {
         quality_ceiling: ctx.settings.quality_ceiling(),
         output,
         volume: 1.0,
+        replay_gain_mode: ctx.settings.replay_gain_mode,
     };
     // Keeps the Player's background task alive for the whole run; dropped
     // (and shut down) only when `run()` returns, i.e. at process exit.

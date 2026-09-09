@@ -276,6 +276,45 @@ impl Settings {
     pub fn quality_ceiling(&self) -> AudioQuality {
         self.quality_ceiling.unwrap_or(AudioQuality::HiResLossless)
     }
+
+    /// `Settings` with every secret/credential field replaced by whether it
+    /// is set at all — for `streamboat debug-bundle` (D-029): "redacted
+    /// settings (secrets and credentials removed — keep only whether each
+    /// is set)". Everything else (quality ceiling, output, ReplayGain mode,
+    /// theme, play-reporting flag, offline caps, which scrobble backends
+    /// are enabled) is not a secret and is kept as-is.
+    pub fn to_redacted_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "client_id_set": self.client_id.is_some(),
+            "client_secret_set": self.client_secret.is_some(),
+            "pkce_client_id_set": self.pkce_client_id.is_some(),
+            "pkce_client_secret_set": self.pkce_client_secret.is_some(),
+            "pkce_redirect_uri_set": self.pkce_redirect_uri.is_some(),
+            "key_storage": self.key_storage,
+            "quality_ceiling": self.quality_ceiling,
+            "output": self.output,
+            "user_agent_override": self.user_agent_override,
+            "country_code": self.country_code,
+            "play_reporting": self.play_reporting,
+            "scrobble": {
+                "lastfm": {
+                    "enabled": self.scrobble.lastfm.enabled,
+                    "api_key_set": self.scrobble.lastfm.api_key.is_some(),
+                    "api_secret_set": self.scrobble.lastfm.api_secret.is_some(),
+                    "session_key_set": self.scrobble.lastfm.session_key.is_some(),
+                },
+                "listenbrainz": {
+                    "enabled": self.scrobble.listenbrainz.enabled,
+                    "user_token_set": self.scrobble.listenbrainz.user_token.is_some(),
+                },
+            },
+            "theme": self.theme,
+            "replay_gain_mode": self.replay_gain_mode,
+            "offline_dir": self.offline_dir,
+            "offline_validity_days": self.offline_validity_days,
+            "offline_max_bytes": self.offline_max_bytes,
+        })
+    }
 }
 
 /// The device identity TIDAL keys authorized devices on (`clientUniqueKey`).
@@ -330,5 +369,30 @@ mod tests {
         let path = dir.path().join("control-token");
         std::fs::write(&path, b"").unwrap();
         assert!(load_or_create_control_token(&path).is_err());
+    }
+
+    #[test]
+    fn redacted_settings_json_never_contains_a_secret_value() {
+        let settings = Settings {
+            client_id: Some("plain-client-id".into()),
+            client_secret: Some("super-secret-client-secret".into()),
+            pkce_client_id: Some("pkce-id".into()),
+            pkce_client_secret: Some("pkce-secret".into()),
+            ..Settings::default()
+        };
+        let json = settings.to_redacted_json();
+        let text = json.to_string();
+        assert!(!text.contains("super-secret-client-secret"));
+        assert!(!text.contains("pkce-secret"));
+        // The client id itself is also a credential, so it is reduced to a
+        // bool too, not just the secret.
+        assert!(!text.contains("plain-client-id"));
+        assert!(!text.contains("pkce-id"));
+        assert_eq!(json["client_id_set"], true);
+        assert_eq!(json["client_secret_set"], true);
+        assert_eq!(json["pkce_client_id_set"], true);
+        assert_eq!(json["pkce_client_secret_set"], true);
+        // Non-secret fields survive untouched.
+        assert_eq!(json["play_reporting"], true);
     }
 }

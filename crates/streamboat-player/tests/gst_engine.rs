@@ -183,6 +183,104 @@ fn unreadable_source_reports_an_error() {
     );
 }
 
+/// D-034: `OutputConfig::Snapcast` resamples to the fixed
+/// `SAMPLE_RATE`/`BIT_DEPTH`/`CHANNELS` format and connects out, as a TCP
+/// client, to the address a snapserver `tcp://...&mode=server` stream
+/// source would be listening on. Stands in for snapserver with a plain
+/// `TcpListener` and checks the byte count against the WAV's own known
+/// duration, at the fixed format, rather than trying to decode the stream.
+#[test]
+fn snapcast_output_streams_the_fixed_format_pcm_over_tcp() {
+    use std::io::Read;
+    use std::net::TcpListener;
+    use streamboat_player::snapcast::{BIT_DEPTH, CHANNELS, SAMPLE_RATE};
+
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.wav");
+    // 44100 Hz source, 30 buffers of `audiotestsrc`'s default 1024 frames
+    // each: audiotestsrc's own duration, not the output format under test.
+    let buffers = 30u32;
+    make_wav(&a, buffers);
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let (tx, rx) = mpsc::channel();
+    // `GstEngine::new` reads `STREAMBOAT_GST_SINK` itself and, when set
+    // (CI, and this whole suite, set it to `fakesink` so audio tests never
+    // touch real ALSA), it silently *replaces* the real `Snapcast` sink
+    // branch with that override — exactly the branch this test exists to
+    // exercise. `with_sink_override(.., None)` bypasses that inherited
+    // environment override explicitly, regardless of how this test happens
+    // to be invoked.
+    let mut engine = GstEngine::with_sink_override(
+        tx,
+        OutputConfig::Snapcast {
+            host: "127.0.0.1".into(),
+            port,
+        },
+        dir.path().to_path_buf(),
+        None,
+    )
+    .unwrap();
+    engine.load(item(1, &a)).unwrap();
+
+    // A plain blocking `accept()` has no timeout of its own: if the sink
+    // ever fails to connect (a bug in this branch, or GStreamer element
+    // contention under a parallel test run), this must fail loudly rather
+    // than hang the whole test binary — `cargo test`'s default runner would
+    // otherwise wait on it forever.
+    listener.set_nonblocking(false).unwrap();
+    let (accept_tx, accept_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = accept_tx.send(listener.accept());
+    });
+    let mut stream = accept_rx
+        .recv_timeout(Duration::from_secs(15))
+        .expect("timed out waiting for the snapcast tcpclientsink to connect")
+        .expect("accept failed")
+        .0;
+    // The pipeline reaches EOS well within this; `tcpclientsink` does not
+    // necessarily close the TCP connection at EOS, so this timeout (not a
+    // read returning `Ok(0)`) is the loop's normal exit, not a failure mode.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let mut received = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => received.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(e) => panic!("reading the snapcast tcp stream: {e}"),
+        }
+    }
+    let _ = collect_until_eos(&rx, Duration::from_secs(10));
+
+    assert!(!received.is_empty(), "no PCM reached the tcp listener");
+    let bytes_per_frame = (BIT_DEPTH / 8) * CHANNELS;
+    assert_eq!(
+        received.len() % bytes_per_frame as usize,
+        0,
+        "stream length must be a whole number of {BIT_DEPTH}-bit {CHANNELS}ch frames"
+    );
+    // The source is 30 * 1024 frames at 44100 Hz; resampled to SAMPLE_RATE
+    // the frame count (and so the byte count) scales by that ratio. Allow a
+    // generous tolerance for resampler edge effects rather than pin an
+    // exact sample count.
+    let source_frames = f64::from(buffers) * 1024.0;
+    let expected_frames = source_frames * f64::from(SAMPLE_RATE) / 44100.0;
+    let got_frames = received.len() as f64 / f64::from(bytes_per_frame);
+    let ratio = got_frames / expected_frames;
+    assert!(
+        (0.5..=1.5).contains(&ratio),
+        "expected roughly {expected_frames} frames at {SAMPLE_RATE} Hz, got {got_frames} \
+         ({} bytes)",
+        received.len()
+    );
+}
+
 #[test]
 fn dash_manifest_is_fed_as_data_uri_or_temp_file() {
     // A minimal MPD pointing at a local WAV via BaseURL is "direct" per the

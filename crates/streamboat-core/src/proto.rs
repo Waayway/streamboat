@@ -73,6 +73,22 @@ pub enum Command {
     /// the same process (the CLI) query the offline cache directly instead
     /// of round-tripping through this protocol.
     ListPins,
+    /// Switch the ReplayGain mode live (D-019). Takes effect on the next
+    /// track loaded — the currently-playing track keeps whatever gain was
+    /// applied at its own `load()`, matching the documented "applied once
+    /// per load, not re-applied at a gapless hand-over" boundary both
+    /// engines already have — but a prefetched successor is recomputed with
+    /// the new mode immediately, from its already-resolved stream, with no
+    /// extra network round trip.
+    SetReplayGainMode {
+        mode: crate::config::ReplayGainMode,
+    },
+    /// Log the account out: revokes the stored tokens (`ApiClient::logout`),
+    /// wipes the pinned offline cache (D-022 — a subscriber feature, never
+    /// a downloader, so nothing pinned should outlive the session), and
+    /// stops playback. Exposed by `streamboatd`'s control API through the
+    /// ordinary `POST /v1/commands` route, no new route needed.
+    Logout,
 }
 
 /// What a pin is made of. `Playlist` ids are TIDAL UUIDs, `Album`/`Track`
@@ -117,6 +133,14 @@ pub struct PlayItem {
 /// Where audio goes. `Exclusive` opens the device directly (ALSA `hw:` on
 /// Linux, WASAPI exclusive on Windows, CoreAudio hog mode on macOS) and
 /// bypasses volume and ReplayGain, which the UI must say (D-017, D-019).
+///
+/// `Snapcast` (D-034) feeds a running `snapserver`'s TCP stream source at
+/// one fixed format (`crate::snapcast::{SAMPLE_RATE,CHANNELS}`, S16LE) —
+/// mutually exclusive with bit-perfect output by construction: it is a
+/// distinct variant, not a flag on `Exclusive`, so there is no state that
+/// claims to be both at once. `host`/`port` are snapserver's own listening
+/// address for that stream (the engine connects out as a TCP *client*; see
+/// `crate::snapcast`'s module doc for the matching `snapserver.conf` line).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum OutputConfig {
@@ -126,6 +150,10 @@ pub enum OutputConfig {
     },
     Exclusive {
         device: String,
+    },
+    Snapcast {
+        host: String,
+        port: u16,
     },
 }
 
@@ -138,6 +166,12 @@ impl Default for OutputConfig {
 impl OutputConfig {
     pub fn is_exclusive(&self) -> bool {
         matches!(self, OutputConfig::Exclusive { .. })
+    }
+
+    /// `true` for the fixed-format Snapcast output (D-034) — never also
+    /// [`Self::is_exclusive`]: the two are different enum variants.
+    pub fn is_snapcast(&self) -> bool {
+        matches!(self, OutputConfig::Snapcast { .. })
     }
 }
 
@@ -163,8 +197,18 @@ pub struct StreamInfo {
     pub codec: Option<String>,
     pub sample_rate: Option<u32>,
     pub bit_depth: Option<u32>,
+    /// TIDAL's per-*track* ReplayGain (dB) and peak (linear) —
+    /// `playbackinfopostpaywall`'s `trackReplayGain`/`trackPeakAmplitude`.
     pub replay_gain_db: Option<f64>,
     pub peak_amplitude: Option<f64>,
+    /// TIDAL's per-*album* ReplayGain (dB) and peak (linear) —
+    /// `albumReplayGain`/`albumPeakAmplitude`. `None` whenever TIDAL did not
+    /// report an album value (a single-only release, or an offline-cache
+    /// entry pinned before this field existed); `ReplayGainMode::Album`
+    /// falls back to the track values above when this is `None`
+    /// (`tidal-api/references/playback.md` §8, D-019).
+    pub album_replay_gain_db: Option<f64>,
+    pub album_peak_amplitude: Option<f64>,
     /// `true` when TIDAL served a preview instead of the full asset.
     pub preview: bool,
 }
@@ -184,6 +228,13 @@ pub struct SignalPath {
     pub converted: Option<String>,
     pub volume_applied: bool,
     pub replaygain_applied: bool,
+    /// Which [`crate::config::ReplayGainMode`] produced `replaygain_applied`
+    /// (D-019) — `""` when the engine hasn't reported a signal path yet.
+    /// Set by `Player::state` after the engine's own report, since the
+    /// engines themselves (`gst.rs`, `mpv.rs`) know only the *numbers* fed
+    /// to the formula, not which mode selected them.
+    #[serde(default)]
+    pub replaygain_mode: String,
     pub bit_perfect: Option<bool>,
 }
 
