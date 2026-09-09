@@ -31,7 +31,6 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
-gstreamer.workspace = true
 reqwest.workspace = true
 futures.workspace = true
 image.workspace = true

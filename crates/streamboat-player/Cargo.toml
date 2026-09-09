@@ -7,8 +7,27 @@ license = "GPL-3.0-only"
 description = "streamboat's audio engine: the Engine trait, the GStreamer and libmpv backends, queue and playback state"
 repository.workspace = true
 
+# Cargo has no per-target default-feature selection (see `platform.rs`'s
+# `default_engine`/`enumerate_output_devices`, which pick whichever engine
+# feature is actually compiled), so the default set below is the *Linux*
+# build and MUST be overridden on Windows and macOS:
+#
+#   Windows: cargo build -p streamboat-player --no-default-features \
+#              --features mpv,smtc
+#   macOS:   cargo build -p streamboat-player --no-default-features \
+#              --features mpv,nowplaying
+#
+# This is not merely a preference: `gstreamer`/`gstreamer-audio` (and, via
+# `alsa-direct`, `alsa`) are plain, target-independent optional dependencies
+# (unlike `mpris-server`/`windows`/`objc2*`, which live under a
+# `[target.'cfg(target_os = ...)']` table and are true no-ops elsewhere, the
+# same way `mpris`/`smtc`/`nowplaying` already document below) — building
+# with `gstreamer`/`alsa-direct` still on for a target with no system
+# GStreamer install fails at `pkg-config`, not silently. Drop `smtc`/
+# `nowplaying` from either command above only to deliberately ship without
+# OS media-key integration.
 [features]
-default = ["gstreamer", "mpris", "alsa-direct"]
+default = ["gstreamer", "mpris", "alsa-direct", "smtc", "nowplaying"]
 gstreamer = ["dep:gstreamer", "dep:gstreamer-audio"]
 # MPRIS2 (D-030): the dependency only exists for Linux (see the
 # target-specific table below), so this feature is a no-op elsewhere —
@@ -20,7 +39,16 @@ mpris = ["dep:mpris-server"]
 # only — the `alsa` crate links `libasound` via pkg-config, which does not
 # exist on Windows/macOS (those get libmpv's own exclusive output, D-016).
 alsa-direct = ["dep:alsa", "dep:libc", "gstreamer"]
+# libmpv backend (D-016): Windows and macOS in production; also built and
+# tested on Linux (see `mpv.rs`'s module doc comment).
 mpv = ["dep:libmpv2"]
+# SMTC (D-030): the dependency only exists for Windows (see the
+# target-specific table below), so — exactly like `mpris` above — this
+# feature is a no-op everywhere else; default-on everywhere is deliberate.
+smtc = ["dep:windows"]
+# MPNowPlayingInfoCenter/MPRemoteCommandCenter (D-030): macOS only, same
+# no-op-elsewhere reasoning as `smtc` and `mpris` above.
+nowplaying = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-media-player", "dep:block2"]
 
 [dependencies]
 streamboat-core.workspace = true
@@ -50,6 +78,33 @@ sha2.workspace = true
 hex.workspace = true
 hkdf.workspace = true
 axum.workspace = true
+
+# SMTC (D-030, `smtc.rs`): `Windows::Media::Playback::MediaPlayer` for its own
+# `SystemMediaTransportControls` (no `HWND` needed — see `smtc.rs`'s module
+# doc comment), plus `Win32_System_WinRT` for `RoInitialize`, which every
+# WinRT call from a plain background thread needs first. Pinned exact
+# (verified on crates.io) per this task's instructions, since `windows-rs`'
+# surface churns release to release.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", optional = true, features = [
+    "Media",
+    "Media_Playback",
+    "Foundation",
+    "Storage_Streams",
+    "Win32_System_WinRT",
+] }
+
+# MPNowPlayingInfoCenter/MPRemoteCommandCenter (D-030, `nowplaying.rs`).
+# Pinned exact (verified on crates.io), same reasoning as `windows` above.
+# Default features on every one of the four: `objc2-media-player`'s own
+# default set already includes MPNowPlayingInfoCenter, MPRemoteCommand(Center,
+# Event) and block2 (verified in its published Cargo.toml), so nothing extra
+# needs enabling here.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.3", optional = true }
+objc2-foundation = { version = "0.3.2", optional = true }
+objc2-media-player = { version = "0.3.2", optional = true }
+block2 = { version = "0.6.2", optional = true }
 
 [dev-dependencies]
 wiremock.workspace = true

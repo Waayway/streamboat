@@ -8,14 +8,15 @@ use std::time::Duration;
 
 use anyhow::{Context as _, bail};
 use clap::{Parser, Subcommand};
-use gstreamer::prelude::*;
 use streamboat_core::auth::device_code::{start_device_flow, wait_for_device_token};
 use streamboat_core::auth::pkce::{PkceSession, capture_code_loopback, code_from_redirect};
 use streamboat_core::bootstrap::Context;
 use streamboat_core::proto::{Command, Event, OutputConfig, PinKind, PlayItem};
 use streamboat_core::{AudioQuality, StreamSource};
 use streamboat_player::offline::OfflineCache;
-use streamboat_player::{GstEngine, Player, PlayerConfig, PlayerDeps};
+use streamboat_player::{
+    Player, PlayerConfig, PlayerDeps, default_engine, enumerate_output_devices,
+};
 
 mod ui;
 
@@ -422,7 +423,8 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
                 (None, true) => unreachable!("clap requires --device with --exclusive"),
             };
             let (tx, rx) = mpsc::channel();
-            let engine = GstEngine::new(tx, output.clone(), ctx.dirs.runtime.clone())
+            // `default_engine` picks the decided backend for this OS (D-016).
+            let engine = default_engine(tx, output.clone(), ctx.dirs.runtime.clone())
                 .context("starting the audio engine")?;
             let cfg = PlayerConfig {
                 quality_ceiling: quality.unwrap_or_else(|| ctx.settings.quality_ceiling()),
@@ -432,7 +434,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             let deps = PlayerDeps::for_context(&ctx)
                 .await
                 .context("wiring play reporting, scrobbling and streaming privileges")?;
-            let handle = Player::spawn(ctx.api.clone(), Box::new(engine), rx, cfg, deps);
+            let handle = Player::spawn(ctx.api.clone(), engine, rx, cfg, deps);
             let mut events = handle.subscribe();
             handle.send(Command::Play {
                 items: ids
@@ -495,24 +497,24 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Devices => {
-            gstreamer::init()?;
-            let monitor = gstreamer::DeviceMonitor::new();
-            monitor.add_filter(Some("Audio/Sink"), None);
-            monitor
-                .start()
-                .map_err(|e| anyhow::anyhow!("device monitor: {e}"))?;
-            for d in monitor.devices() {
-                let props = d.properties().map(|p| p.to_string()).unwrap_or_default();
+            let devices = enumerate_output_devices();
+            if devices.is_empty() {
+                println!("No output devices reported by the audio engine.");
+            }
+            for d in devices {
                 println!(
-                    "{}  [{}]\n    {}",
-                    d.display_name(),
-                    d.device_class(),
-                    props
+                    "{}  [{}]{}",
+                    d.name,
+                    d.id,
+                    if d.exclusive_capable {
+                        ""
+                    } else {
+                        "  (shared only: not a concrete device)"
+                    }
                 );
             }
-            monitor.stop();
             if let Ok(cards) = std::fs::read_to_string("/proc/asound/cards") {
-                println!("\nALSA cards (use hw:<n>,0 with --device):");
+                println!("\nALSA cards (use hw:<n>,0 with --device --exclusive):");
                 for line in cards
                     .lines()
                     .filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit()))

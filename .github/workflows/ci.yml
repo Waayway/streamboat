@@ -38,6 +38,32 @@ jobs:
       - run: cargo test -p streamboat-player --features mpv
       - run: cargo build --workspace --release
 
+  cross-check:
+    name: cross-target type-check (Windows)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install a Windows (mingw-w64) C toolchain
+        # Needed at `cargo check` time too, not only for a real build:
+        # `streamboat-core`'s `reqwest`/`tokio-tungstenite` pull in `ring`,
+        # whose build script compiles C regardless of target.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+      # D-016: the Windows/macOS backend and OS media-key adapters
+      # (`mpv.rs`, `smtc.rs`) — see `docs/architecture.md`'s "Cross-target
+      # type-checking" section for exactly what this does and does not
+      # prove, and why the macOS (aarch64-apple-darwin) counterpart from
+      # this task cannot run in CI at all (`ring`'s C build needs a real
+      # Apple SDK/cross-toolchain, not just a target added via rustup).
+      - run: |
+          cargo check -p streamboat-player --target x86_64-pc-windows-gnu \
+            --no-default-features --features mpv,smtc
+
   headless-daemon:
     name: streamboatd links no GUI toolkit
     runs-on: ubuntu-24.04
