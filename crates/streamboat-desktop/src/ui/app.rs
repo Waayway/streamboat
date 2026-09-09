@@ -377,6 +377,10 @@ impl App {
             | Event::PlaybackTakenOver { .. }
             | Event::AuthRequired { .. }
             | Event::AuthOk { .. }
+            | Event::PinProgress { .. }
+            | Event::PinReady { .. }
+            | Event::PinFailed { .. }
+            | Event::PinsChanged
             | Event::EndOfQueue
             | Event::Stopped => {}
         }
@@ -636,7 +640,7 @@ pub fn run() -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     let handle = player_rt.block_on(async {
-        let deps = PlayerDeps::for_context(&ctx).map_err(|e| {
+        let deps = PlayerDeps::for_context(&ctx).await.map_err(|e| {
             anyhow::anyhow!("wiring play reporting, scrobbling and streaming privileges: {e}")
         })?;
         Ok::<_, anyhow::Error>(Player::spawn(ctx.api.clone(), engine, erx, cfg, deps))

@@ -8,7 +8,7 @@ implementation choices made while building the first milestone (D-044).
 | Crate | Licence | Contents |
 | --- | --- | --- |
 | `streamboat-core` | Apache-2.0 | `http` (authenticated client, single-flight and cross-process refresh, 429 gate), `auth::device_code`, `auth::pkce`, `token_store` (AES-256-GCM file, `SBTK` header, keyring-held master key), `manifest` (BTS/EMU/DASH parsing, refusal rule), `api` (sessions, tracks, `playbackinfopostpaywall`, quality cascade, plus the catalogue/library surface below), `proto` (Command/Event), `config` (`AppDirs`, `Settings`, the control API's bearer-token file), `credentials` (device-code and PKCE pairs), `bootstrap`, `privileges` (the Pushkin streaming-privileges websocket, D-033), `reporting` (play reporting to `ec.tidal.com` and the server-anchored clock, D-027), `scrobble` (Last.fm/ListenBrainz, D-037) |
-| `streamboat-player` | GPL-3.0-only | `engine::Engine` trait, `gst::GstEngine` (playbin3, default feature), `mpv::MpvEngine` (libmpv2, `mpv` feature — D-016), `alsa_writer::ExclusiveSink` (exclusive-mode ALSA writer, Linux, `alsa-direct` feature, default on), `player::Player` (queue, prefetch, Command→Event loop, `PlayerHandle::publish` for externally-sourced events, and the optional `PlayerDeps` wiring for the three modules above), `mpris` (Linux, feature `mpris`, default on: `org.mpris.MediaPlayer2.streamboat`) |
+| `streamboat-player` | GPL-3.0-only | `engine::Engine` trait, `gst::GstEngine` (playbin3, default feature), `mpv::MpvEngine` (libmpv2, `mpv` feature — D-016), `alsa_writer::ExclusiveSink` (exclusive-mode ALSA writer, Linux, `alsa-direct` feature, default on), `offline::OfflineCache` (pinned, encrypted offline cache, D-022), `player::Player` (queue, prefetch, Command→Event loop, `PlayerHandle::publish` for externally-sourced events, and the optional `PlayerDeps` wiring for the three modules above), `mpris` (Linux, feature `mpris`, default on: `org.mpris.MediaPlayer2.streamboat`) |
 | `streamboat-server` | GPL-3.0-only | `streamboatd`: `api` (the HTTP + WebSocket control API, see below) hosted by default; `--stdio` keeps the original JSON-lines transport; headless login as `auth_required`/`auth_ok` events on the same broadcast every front end reads; constructs the privileges socket, play reporter and scrobblers from `Settings` |
 | `streamboat-desktop` | GPL-3.0-only | `streamboat`: CLI subcommands (login [--pkce], logout, whoami, search, resolve, play, devices, keyring, paths) unchanged; running with no subcommand now launches the iced shell (`src/ui/`) — see §"Desktop shell (iced)" below |
 
@@ -434,6 +434,114 @@ than memory (the API changed hard across 0.9-0.14, per D-013).
   variant's behaviour — every change is a new field, a new trait impl, or a new enum variant with a
   new match arm.
 
+## Offline cache (D-022)
+
+`streamboat-player::offline` (GPL-3.0-only; the file-format and crypto
+helpers have no player dependency but stayed in this crate rather than
+`streamboat-core`, since the task's own scope named this crate and nothing
+in them needs to be Apache-licensed on its own). Guardrails and how each is
+enforced:
+
+- **Explicit, user-initiated pins only.** The only entry points are
+  `OfflineCache::pin`/`unpin`, reached from `Command::Pin`/`Unpin` (additive
+  to `proto.rs`, alongside `Command::ListPins` and
+  `Event::{PinProgress,PinReady,PinFailed,PinsChanged}`) or the CLI's direct
+  calls (`streamboat pin/unpin/pins`) — nothing calls them on its own.
+  Artwork/metadata caching is out of scope here entirely.
+- **A transparent cache of the ordinary stream.** `OfflineCache::pin`
+  resolves through `ApiClient::resolve_stream` exactly as playback does
+  (`playbackmode=STREAM`, `assetpresentation=FULL`); it never constructs a
+  `playbackmode=OFFLINE`/`usage=DOWNLOAD` request. A `PREVIEW` asset is
+  refused (offline pinning's own check — ordinary playback still plays a
+  preview, it just isn't something to *pin*); an encrypted manifest never
+  reaches this module because `resolve_stream` already refused it
+  internally (`manifest::parse`'s existing rule, reused unchanged).
+- **On-disk format.** `<offline_dir>/index.json` (`fsutil::atomic_write`,
+  now `pub` in `streamboat-core` — an additive visibility change, no
+  behaviour change) records, per pin, its kind/id/title, member track ids,
+  and per-track metadata: quality actually stored, manifest hash,
+  container mime, byte length, `stored_at`, `validated_at`.
+  `<offline_dir>/chunks/` holds one AES-256-GCM ciphertext file per 1 MiB
+  (`CHUNK_SIZE`) of plaintext, named by `hex(SHA-256(salt || chunk_index))`
+  — a hash of the chunk's *position*, not its content, so no file list
+  needs to be stored — with no extension. For a DASH source the init
+  segment and every media segment are fetched in URL order (from a
+  minimal, deliberately narrow `SegmentTemplate`/`SegmentTimeline`
+  `$Number$` reader — no `$Time$`/`$Bandwidth$`/printf-width support,
+  refused loudly rather than mis-parsed) and concatenated into one
+  plaintext buffer before chunking; a BTS/EMU source is one direct GET.
+- **Key derivation.** A 32-byte "install secret" lives in the OS keyring
+  under its own entry (`bootstrap::OFFLINE_KEYRING_USER = "offline-key"`,
+  resolved through the same `KeySlot` mechanism as the token store, via the
+  new additive `bootstrap::key_slot_named` — `key_slot` itself is
+  unchanged), or a 0600 key file fallback exactly as D-024 describes,
+  deliberately separate from the token master key. The AES key actually
+  used per chunk is `HKDF-SHA256(ikm = install secret, info =
+  client_unique_key)` — device-bound: copying `offline/` to another
+  install carries neither the keyring entry/key file nor (unless
+  `device.json` is copied too, which nothing here relies on) the same
+  `client_unique_key`, so the derived key differs and every chunk fails to
+  decrypt. `OfflineCache::serve_track` proactively decrypts chunk 0 before
+  handing out a URL, specifically to catch this case rather than fail
+  mid-playback.
+- **No export path.** No method anywhere in this module or the CLI decrypts
+  to a file, opens the cache directory, or produces a shareable copy;
+  `serve_track` only ever returns a `127.0.0.1` URL.
+- **Playback without a written file.** `OfflineCache::open` starts one
+  `axum` server bound to `127.0.0.1:0` for the process's life, serving
+  `GET /<per-process-random-token>/<track_id>` — decrypts the requested
+  chunks on the fly, supports `Range`, checks `ConnectInfo`'s peer is
+  `is_loopback()`, and checks the path token, refusing otherwise (403).
+  `Player::resolve_track` (new, wraps the two `resolve_stream` call sites in
+  `start_from`/`prefetch`) tries `OfflineCache::serve_track` first when a
+  cache is configured (`PlayerDeps::offline`) and only falls back to a live
+  `resolve_stream` when it returns `None` (missing, stale-and-unrevalidatable,
+  or a decrypt failure) — logged, never a crash or a stuck queue.
+- **Revalidation and wipes.** `serve_track` checks
+  `now - validated_at >= offline_validity_days` (default 30, `Settings`);
+  if stale it calls `ApiClient::session()` once and bumps every pin's
+  `validated_at` on success, or returns `None` (stream instead) on failure.
+  `OfflineCache::wipe_all` (chunks + index, cache stays open) runs from
+  `streamboat` on `Cmd::Logout` (via the cheaper `OfflineCache::wipe_dir`,
+  which needs no key resolution at all) and from `Player::resolve_track`
+  when a live resolve fails with a subscription-flavoured terminal
+  sub-status (`offline::is_subscription_terminal`: 4030/4031/4032/4034/4035
+  — deliberately narrower than `ApiError::is_terminal_playback`'s wider set,
+  which also covers purely technical causes like a rotated client id that
+  say nothing about the subscription). `OfflineCache::unpin` deletes one
+  pin's chunks. `OfflineCache::open` garbage-collects any chunk file whose
+  index entry is gone, on every startup.
+- **Settings** (additive fields on `config::Settings`): `offline_dir`
+  (override), `offline_validity_days` (default 30),
+  `offline_max_bytes` (default 20 GiB) — `OfflineCache::pin` refuses a new
+  pin that would push the cache over it, before writing anything, and
+  cleans up any chunks the same pin attempt already wrote.
+- **CLI** (`streamboat pin/unpin/pins`, `streamboat-desktop/src/main.rs`):
+  call `OfflineCache`'s methods directly rather than round-tripping through
+  `Command`/`Event` — listing or mutating pins needs no engine, so nothing
+  here starts GStreamer. `streamboat play` builds an `OfflineCache` and
+  passes it through `PlayerDeps` unconditionally, so a pinned track is used
+  automatically; `streamboatd` does the same. `Command::Pin`/`Unpin` do
+  exist on the wire (a `Player` driven remotely — the future control API —
+  gets the same behaviour, running the download on its own `tokio::spawn`
+  so it never blocks the command loop) and `Command::ListPins` exists for
+  that same remote case, but it only ever emits `PinsChanged`: an in-process
+  front end (the CLI) reads `OfflineCache::list_pins()` directly instead of
+  waiting for a reply on the protocol.
+
+Left untested (see the task report for the full list): the DASH segment
+planner has no test against a real multi-representation TIDAL manifest,
+only the synthetic single-`SegmentTimeline` shape `manifest.rs`'s own tests
+use; wiping the cache on a subscription-terminal sub-status
+(`is_subscription_terminal`) is exercised only by its own pure unit test,
+not through a live `Player`/`resolve_stream` failure; two pins that share a
+member track store that track twice (no cross-pin deduplication); the
+loopback server's memory use scales with the requested `Range` (a whole
+big-file GET decrypts the whole file into memory before responding) rather
+than being a bounded streaming pipeline; `streamboatd` builds an
+`OfflineCache` but has no `logout` command of its own yet to hook a wipe
+into.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -491,7 +599,22 @@ than memory (the API changed hard across 0.9-0.14, per D-013).
   same-format gapless pair reopens the PCM exactly once, skipping with a
   message if `null` can't be opened (see the exclusive-mode bullet above
   for what this does *not* verify — everything hardware-dependent, tested
-  only by hand against a real DAC).
+  only by hand against a real DAC);
+  `tests/offline.rs` covers the offline
+  cache end to end against a wiremock TIDAL and a real (loopback) HTTP
+  round trip — a pin's chunk files hold no plaintext, playback through the
+  loopback route round-trips the exact bytes (compared by hash) including
+  a `Range` request and a wrong-token/non-loopback refusal, a PREVIEW asset
+  and an encrypted manifest are both refused (and the mock's recorded
+  requests never carry `playbackmode=OFFLINE`/`usage=DOWNLOAD`), unpin
+  deletes chunks, `wipe_all`/`wipe_dir` both wipe everything, the size cap
+  refuses a new pin and cleans up after itself, a 0-day validity window
+  forces (and, once `/v1/sessions` answers, completes) revalidation, and a
+  wrong device key (a `MemoryKeySlot`-backed second "install" over the same
+  directory) is never served; `src/offline.rs`'s own unit tests cover the
+  DASH `$Number$`/`SegmentTimeline` planner (including refusing an
+  open-ended one), the chunk AES-GCM round trip, HKDF device-binding, and
+  key resolution against a `MemoryKeySlot`.
 - `streamboat-server`: `tests/api.rs` (see "Control API" above) — health,
   auth, Host allowlisting, a command changing state, and both directions of
   the WebSocket, all over real sockets against an in-process daemon.
@@ -541,7 +664,8 @@ tested on Linux, see above; `ui::engine_select` gates the desktop side); the
 `org.freedesktop.ReserveDevice1` device-reservation handshake for the ALSA
 writer (`output-backends.md` §2, explicitly optional — `EBUSY` on open is
 handled with a bounded retry regardless); SMTC/NowPlayingInfoCenter (MPRIS is
-done for Linux, D-030); the offline cache (D-022); packaging (D-041); the
+done for Linux, D-030); packaging (D-041); a `logout` command for `streamboatd`
+to hook the offline-cache wipe into (D-022, otherwise built — see above); the
 mini-player window and tray icon (D-036, D-014); entity/Collection/lyrics
 screens (D-015; `ui::screens::placeholder` covers routing only); the
 control-API-backed remote-client `PlayerLink` and the single-instance lock

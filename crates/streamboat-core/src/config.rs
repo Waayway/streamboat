@@ -74,6 +74,12 @@ impl AppDirs {
     pub fn control_token_path(&self) -> PathBuf {
         self.data.join("control-token")
     }
+
+    /// The pinned, encrypted offline cache's directory (D-022), before any
+    /// `Settings::offline_dir` override.
+    pub fn offline_dir(&self) -> PathBuf {
+        self.data.join("offline")
+    }
 }
 
 /// Load the control API's bearer token, generating one on first use: 32
@@ -146,6 +152,17 @@ pub struct Settings {
     /// equivalent to album mode, and bypasses it in exclusive/bit-perfect
     /// output regardless of this setting.
     pub replay_gain_mode: ReplayGainMode,
+    /// Overrides `AppDirs::offline_dir()` for the pinned, encrypted offline
+    /// cache (D-022). `None` uses `<data_dir>/offline`.
+    pub offline_dir: Option<PathBuf>,
+    /// Days a pin stays valid before the account must be revalidated online
+    /// (a successful `ApiClient::session()` call) before it is served for
+    /// playback again (D-022). Mirrors TIDAL's own offline validity window.
+    pub offline_validity_days: u32,
+    /// Refuse a new pin that would push the cache over this many bytes.
+    /// `None` disables the cap, which is not recommended for an
+    /// automatically-growing cache — `Some` is the default.
+    pub offline_max_bytes: Option<u64>,
 }
 
 impl Default for Settings {
@@ -166,6 +183,12 @@ impl Default for Settings {
             scrobble: crate::scrobble::ScrobbleSettings::default(),
             theme: ThemePreference::default(),
             replay_gain_mode: ReplayGainMode::default(),
+            offline_dir: None,
+            offline_validity_days: 30,
+            // 20 GiB: generous enough for a handful of hi-res albums,
+            // small enough that "refuse over the cap" is reachable in
+            // practice rather than a number nobody hits (D-022).
+            offline_max_bytes: Some(20 * 1024 * 1024 * 1024),
         }
     }
 }

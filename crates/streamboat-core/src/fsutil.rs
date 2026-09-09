@@ -2,12 +2,17 @@
 //! (`streamboat-engineering-baseline` secrets §3): temp file in the same
 //! directory, write, fsync, rename, fsync the directory. A crash can never
 //! leave a torn token file that would silently log the user out.
+//!
+//! Public (additive, D-045-style boundary: still no policy here, just the
+//! mechanism) so the offline cache in `streamboat-player` (D-022) can write
+//! its own index and key files with the same crash-safety guarantee instead
+//! of duplicating this code under a different licence.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
-pub(crate) fn atomic_write(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> {
+pub fn atomic_write(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(dir)?;
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
@@ -41,7 +46,7 @@ pub(crate) fn atomic_write(path: &Path, data: &[u8], mode: u32) -> std::io::Resu
     Ok(())
 }
 
-pub(crate) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+pub fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {

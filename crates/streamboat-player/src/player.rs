@@ -21,10 +21,11 @@ use streamboat_core::reporting::{PlayEvent, PlayReporter, REPORT_THRESHOLD_MS};
 use streamboat_core::scrobble::{
     LastfmScrobbler, ListenBrainzScrobbler, ScrobbleHub, ScrobbleTrack, Scrobbler,
 };
-use streamboat_core::{ApiClient, AudioQuality, ResolvedStream};
+use streamboat_core::{ApiClient, AudioQuality, Error as CoreError, ResolvedStream};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::engine::{Engine, EngineEvent, LoadItem};
+use crate::offline::OfflineCache;
 
 /// Optional trait objects the player reports plays and claims streaming
 /// privileges through. Every field defaults to `None` (used by every
@@ -44,6 +45,12 @@ pub struct PlayerDeps {
     pub reporter: Option<Arc<PlayReporter>>,
     /// Scrobbles to Last.fm/ListenBrainz (D-037).
     pub scrobbler: Option<Arc<dyn Scrobbler>>,
+    /// The pinned, encrypted offline cache (D-022). When configured,
+    /// `start_from`/`prefetch` serve a pinned, valid track from it instead
+    /// of resolving a live stream, and `Command::Pin`/`Unpin`/`ListPins`
+    /// become live instead of failing with "offline cache is not
+    /// available".
+    pub offline: Option<Arc<OfflineCache>>,
 }
 
 impl PlayerDeps {
@@ -51,9 +58,12 @@ impl PlayerDeps {
     /// `streamboat` CLI and the desktop shell): the play reporter from
     /// `Settings::play_reporting` (D-027), the scrobble backends whose
     /// credentials are complete (D-037), and the streaming-privileges client
-    /// (D-033) — all persisted under the data dir. Must be called inside a
-    /// tokio runtime, because the privileges client spawns its socket task.
-    pub fn for_context(ctx: &Context) -> streamboat_core::Result<Self> {
+    /// (D-033), and the pinned offline cache (D-022; unavailable — say, no
+    /// keyring reachable with `key_storage = keyring` — means stream-only,
+    /// logged and never fatal) — all persisted under the data dir. Must be
+    /// called inside a tokio runtime: the privileges client spawns its
+    /// socket task and the cache opens its loopback server.
+    pub async fn for_context(ctx: &Context) -> streamboat_core::Result<Self> {
         let reporter = Arc::new(PlayReporter::open(
             ctx.api.clone(),
             ctx.dirs.data.join("play_reports.json"),
@@ -81,6 +91,16 @@ impl PlayerDeps {
             Some(Arc::new(ScrobbleHub::new(backends)))
         };
 
+        let offline =
+            match OfflineCache::open(&ctx.dirs, &ctx.settings, &ctx.device.client_unique_key).await
+            {
+                Ok(cache) => Some(cache),
+                Err(e) => {
+                    tracing::warn!(%e, "offline cache unavailable; streaming only");
+                    None
+                }
+            };
+
         let (privileges, privileges_events) =
             StreamingPrivileges::spawn(ctx.api.clone(), hostname_display_name());
         Ok(Self {
@@ -88,6 +108,7 @@ impl PlayerDeps {
             privileges_events: Some(privileges_events),
             reporter: Some(reporter),
             scrobbler,
+            offline,
         })
     }
 }
@@ -164,6 +185,7 @@ pub struct Player {
     privileges_events: Option<mpsc::UnboundedReceiver<PrivilegesEvent>>,
     reporter: Option<Arc<PlayReporter>>,
     scrobbler: Option<Arc<dyn Scrobbler>>,
+    offline: Option<Arc<OfflineCache>>,
     /// Server-anchored start time of the currently loaded entry, taken as
     /// soon as it starts (`EngineEvent::Started`) and consumed the moment
     /// it stops being current — by a natural `EngineEvent::Finished` or by
@@ -220,6 +242,7 @@ impl Player {
             privileges_events: deps.privileges_events,
             reporter: deps.reporter,
             scrobbler: deps.scrobbler,
+            offline: deps.offline,
             track_report_start_ms: None,
         };
         tokio::spawn(player.run());
@@ -707,6 +730,81 @@ impl Player {
             }
             Command::GetState => self.emit_state(),
             Command::Shutdown => {}
+            Command::Pin { kind, id } => {
+                let Some(cache) = self.offline.clone() else {
+                    self.emit(Event::PinFailed {
+                        kind,
+                        id,
+                        message: "the offline cache is not available".into(),
+                    });
+                    return;
+                };
+                let api = self.api.clone();
+                let ceiling = self.ceiling;
+                let events = self.events.clone();
+                let id_for_task = id.clone();
+                tokio::spawn(async move {
+                    let progress_events = events.clone();
+                    let progress_id = id_for_task.clone();
+                    let result = cache
+                        .pin(
+                            &api,
+                            kind,
+                            id_for_task.clone(),
+                            ceiling,
+                            |completed, total| {
+                                let _ = progress_events.send(Event::PinProgress {
+                                    kind,
+                                    id: progress_id.clone(),
+                                    completed,
+                                    total,
+                                });
+                            },
+                        )
+                        .await;
+                    match result {
+                        Ok(()) => {
+                            let _ = events.send(Event::PinReady {
+                                kind,
+                                id: id_for_task,
+                            });
+                            let _ = events.send(Event::PinsChanged);
+                        }
+                        Err(e) => {
+                            let _ = events.send(Event::PinFailed {
+                                kind,
+                                id: id_for_task,
+                                message: e.to_string(),
+                            });
+                        }
+                    }
+                });
+            }
+            Command::Unpin { kind, id } => {
+                let Some(cache) = self.offline.clone() else {
+                    self.emit(Event::PinFailed {
+                        kind,
+                        id,
+                        message: "the offline cache is not available".into(),
+                    });
+                    return;
+                };
+                match cache.unpin(kind, &id) {
+                    Ok(_) => self.emit(Event::PinsChanged),
+                    Err(e) => self.emit(Event::PinFailed {
+                        kind,
+                        id,
+                        message: e.to_string(),
+                    }),
+                }
+            }
+            Command::ListPins => {
+                // Front ends in this process (the CLI) query the offline
+                // cache directly; a remote control surface re-fetches its
+                // list on this signal (proto.rs's doc comment on the
+                // variant).
+                self.emit(Event::PinsChanged);
+            }
         }
     }
 
@@ -728,11 +826,7 @@ impl Player {
             };
             let resolved = match cached {
                 Some(r) => r,
-                None => match self
-                    .api
-                    .resolve_stream(track_id, self.ceiling, &session_id)
-                    .await
-                {
+                None => match self.resolve_track(track_id, &session_id).await {
                     Ok(r) => r,
                     Err(e) => {
                         self.emit(Event::Error {
@@ -791,11 +885,7 @@ impl Player {
         );
         let resolved = match cached {
             Some(r) => r,
-            None => match self
-                .api
-                .resolve_stream(track_id, self.ceiling, &session_id)
-                .await
-            {
+            None => match self.resolve_track(track_id, &session_id).await {
                 Ok(r) => r,
                 Err(e) => {
                     // Not fatal: start_from will retry at end of stream.
@@ -816,6 +906,44 @@ impl Player {
 
     fn index_of_item(&self, item_id: u64) -> Option<usize> {
         self.queue.iter().position(|e| e.item_id == item_id)
+    }
+
+    /// Resolves a stream for `track_id`: a pinned, valid offline copy when
+    /// one is configured and served (D-022 — never a written playable
+    /// file, see `OfflineCache::serve_track`), else the ordinary live
+    /// cascade. A terminal subscription sub-status from the live path
+    /// wipes the offline cache (D-022's "wiped on ... a terminal
+    /// subscription substatus"), since it means the account can no longer
+    /// stream at all, offline pins included.
+    async fn resolve_track(
+        &mut self,
+        track_id: u64,
+        session_id: &str,
+    ) -> Result<ResolvedStream, CoreError> {
+        if let Some(cache) = self.offline.clone() {
+            if let Some(served) = cache.serve_track(&self.api, track_id).await {
+                return Ok(served.into_resolved_stream(track_id));
+            }
+        }
+        let result = self
+            .api
+            .resolve_stream(track_id, self.ceiling, session_id)
+            .await;
+        if let Err(e) = &result {
+            if let Some(cache) = &self.offline {
+                if crate::offline::is_subscription_terminal(e) {
+                    tracing::warn!(
+                        %e,
+                        "subscription no longer serves this account; wiping the offline cache"
+                    );
+                    match cache.wipe_all() {
+                        Ok(()) => self.emit(Event::PinsChanged),
+                        Err(we) => tracing::warn!(%we, "failed to wipe the offline cache"),
+                    }
+                }
+            }
+        }
+        result
     }
 
     async fn handle_engine_event(&mut self, ev: EngineEvent) {

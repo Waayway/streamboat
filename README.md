@@ -163,6 +163,31 @@ and scrobbling to Last.fm/ListenBrainz (D-037, both off until you supply
 credentials in `settings.json`) are built the same way; neither is wired into
 the CLI spike yet outside `streamboatd`.
 
+## Offline pins
+
+```
+streamboat pin track 12345           # or: pin album 98765 / pin playlist <uuid>
+streamboat pins                      # what's pinned, and whether it still needs revalidating
+streamboat unpin track 12345
+streamboat play 12345                # uses a pinned, valid copy automatically
+```
+
+A pin is always explicit — streamboat never caches anything you didn't ask
+for, and never caches artwork or metadata this way either (D-022). Pinning
+resolves and downloads the exact same cleartext stream ordinary playback
+would (never TIDAL's licensed offline/download mode), then stores it as
+AES-256-GCM-encrypted chunks under a key derived from this install's
+keyring/file secret *and* its device identity — copy the `offline/`
+directory to another machine and the chunks are unreadable there, on
+purpose. Playback reads a pinned track through a loopback HTTP server on
+127.0.0.1 that decrypts on the fly; no plaintext copy is ever written to
+disk. A pin is revalidated against your account every `offline_validity_days`
+(default 30) and the whole cache is wiped on logout, on an unpin, or if
+TIDAL's subscription sub-status says the account itself can no longer
+stream. `offline_dir` and `offline_max_bytes` in `settings.json` override
+where it lives and how big it may grow. See
+`crates/streamboat-player/src/offline.rs` for the exact format.
+
 ## Legal
 
 streamboat uses an API TIDAL does not document for third parties, under your
@@ -170,6 +195,13 @@ own subscription. Read TIDAL's terms yourself before using it; the project's
 posture, and how comparable clients position themselves, is recorded in
 `docs/research/tidal-api.md` and `.claude/skills/tidal-api/references/legal-and-landscape.md`.
 TIDAL Connect is out of scope in both directions, permanently (D-035).
+
+Pinning a track for offline playback does not change any of that: it is an
+encrypted cache of a stream your subscription already entitles you to, tied
+to this specific install and this specific account, unreadable if copied
+elsewhere, and deleted on logout or if the subscription itself stops
+serving the account — never an export, a download, or a copy meant to
+outlive the subscription (D-022).
 
 ## Licence
 

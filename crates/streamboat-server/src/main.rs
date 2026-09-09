@@ -92,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
     // (`headless-and-tidal-connect` daemon-architecture.md §6): with no user
     // watching, a silent revocation is unrecoverable.
     let deps = PlayerDeps::for_context(&ctx)
+        .await
         .context("wiring play reporting, scrobbling and streaming privileges")?;
     let privileges = deps
         .privileges
