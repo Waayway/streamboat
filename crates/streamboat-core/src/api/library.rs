@@ -48,6 +48,19 @@ impl AlbumOrder {
     }
 }
 
+/// See [`ArtistOrder`]'s `Display` impl for why this exists (a `pick_list`
+/// label, not the wire value).
+impl std::fmt::Display for AlbumOrder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AlbumOrder::Artist => write!(f, "Artist"),
+            AlbumOrder::Date => write!(f, "Date added"),
+            AlbumOrder::Name => write!(f, "Name"),
+            AlbumOrder::ReleaseDate => write!(f, "Release date"),
+        }
+    }
+}
+
 /// Sort orders for `favorites/artists`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArtistOrder {
@@ -59,6 +72,18 @@ impl ArtistOrder {
         match self {
             ArtistOrder::Date => "DATE",
             ArtistOrder::Name => "NAME",
+        }
+    }
+}
+
+/// A human label for a `pick_list` — the wire value is `as_str()`
+/// (`"DATE"`/`"NAME"`/...); this is title-cased for display, not sent over
+/// the wire (`ui::screens::collection`'s sort-order pickers use this).
+impl std::fmt::Display for ArtistOrder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArtistOrder::Date => write!(f, "Date added"),
+            ArtistOrder::Name => write!(f, "Name"),
         }
     }
 }
@@ -82,6 +107,21 @@ impl ItemOrder {
             ItemOrder::Index => "INDEX",
             ItemOrder::Length => "LENGTH",
             ItemOrder::Name => "NAME",
+        }
+    }
+}
+
+/// See [`ArtistOrder`]'s `Display` impl for why this exists (a `pick_list`
+/// label, not the wire value).
+impl std::fmt::Display for ItemOrder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ItemOrder::Album => write!(f, "Album"),
+            ItemOrder::Artist => write!(f, "Artist"),
+            ItemOrder::Date => write!(f, "Date added"),
+            ItemOrder::Index => write!(f, "Playlist order"),
+            ItemOrder::Length => write!(f, "Length"),
+            ItemOrder::Name => write!(f, "Name"),
         }
     }
 }
@@ -114,6 +154,18 @@ impl MixOrder {
             MixOrder::Date => "DATE",
             MixOrder::MixType => "MIX_TYPE",
             MixOrder::Name => "NAME",
+        }
+    }
+}
+
+/// See [`ArtistOrder`]'s `Display` impl for why this exists (a `pick_list`
+/// label, not the wire value).
+impl std::fmt::Display for MixOrder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MixOrder::Date => write!(f, "Date added"),
+            MixOrder::MixType => write!(f, "Mix type"),
+            MixOrder::Name => write!(f, "Name"),
         }
     }
 }

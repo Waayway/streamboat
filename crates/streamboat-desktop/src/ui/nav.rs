@@ -1,12 +1,13 @@
 //! The navigation stack: a persistent left sidebar plus back/forward, per
-//! `tidal-client-features` browse-pages-screens.md §7. Screens for entity
-//! pages, Collection, lyrics and the mini-player are the NEXT wave, by
-//! design, not a gap — [`Screen::Entity`], [`Screen::Collection`] and
-//! [`Screen::Lyrics`] route to [`crate::ui::screens::placeholder`] today, but
-//! the routing itself, including the entity id, is complete now so cards
-//! already navigate correctly once those screens exist.
+//! `tidal-client-features` browse-pages-screens.md §7. Entity pages,
+//! Collection and Lyrics are real screens now (task item 1-2 of the next
+//! wave); this module still owns every [`Screen`] variant and the id each
+//! one carries, plus [`Screen::from_content_link`] (task item 5), which
+//! turns a parsed deep link into the screen it opens.
 
-/// One entity a placeholder screen or a future entity page renders.
+use streamboat_core::api::images::ContentLink;
+
+/// One entity an entity page renders.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EntityRef {
     Album(u64),
@@ -14,6 +15,8 @@ pub enum EntityRef {
     Track(u64),
     Playlist(String),
     Mix(String),
+    /// Metadata only — video playback is not supported yet (D-038).
+    Video(u64),
 }
 
 impl EntityRef {
@@ -24,12 +27,16 @@ impl EntityRef {
             EntityRef::Track(_) => "Track",
             EntityRef::Playlist(_) => "Playlist",
             EntityRef::Mix(_) => "Mix",
+            EntityRef::Video(_) => "Video",
         }
     }
 
     pub fn id_label(&self) -> String {
         match self {
-            EntityRef::Album(id) | EntityRef::Track(id) | EntityRef::Artist(id) => id.to_string(),
+            EntityRef::Album(id)
+            | EntityRef::Track(id)
+            | EntityRef::Artist(id)
+            | EntityRef::Video(id) => id.to_string(),
             EntityRef::Playlist(id) | EntityRef::Mix(id) => id.clone(),
         }
     }
@@ -46,12 +53,12 @@ pub enum Screen {
     Search,
     NowPlaying,
     Settings,
-    /// Album/artist/playlist/mix/track pages — placeholder for now (NEXT
-    /// wave), routed with the real entity id.
+    /// Album/artist/playlist/mix/track/video pages, routed with the real
+    /// entity id.
     Entity(EntityRef),
-    /// My Collection — placeholder for now (NEXT wave).
+    /// My Collection: favourites, playlists and folders.
     Collection,
-    /// Full-screen lyrics for a track — placeholder for now (NEXT wave).
+    /// Full-screen synced lyrics for a track.
     Lyrics(u64),
 }
 
@@ -67,6 +74,25 @@ impl Screen {
             Screen::Entity(e) => format!("{} {}", e.kind_label(), e.id_label()),
             Screen::Collection => "My Collection".to_string(),
             Screen::Lyrics(id) => format!("Lyrics — track {id}"),
+        }
+    }
+
+    /// A parsed deep link (task item 5), turned into the screen it opens.
+    /// Always resolves to *some* screen — a folder link, with no dedicated
+    /// per-folder screen yet, opens My Collection rather than failing.
+    /// Callers additionally special-case [`ContentLink::Playlist`] to also
+    /// start playback (D-039: "shared playlist links open and play") — that
+    /// needs an async fetch this pure mapping deliberately doesn't do.
+    pub fn from_content_link(link: ContentLink) -> Screen {
+        match link {
+            ContentLink::Track(id) => Screen::Entity(EntityRef::Track(id)),
+            ContentLink::Album(id) => Screen::Entity(EntityRef::Album(id)),
+            ContentLink::Artist(id) => Screen::Entity(EntityRef::Artist(id)),
+            ContentLink::Video(id) => Screen::Entity(EntityRef::Video(id)),
+            ContentLink::Playlist(uuid) => Screen::Entity(EntityRef::Playlist(uuid)),
+            ContentLink::Mix(id) => Screen::Entity(EntityRef::Mix(id)),
+            ContentLink::Folder(_) => Screen::Collection,
+            ContentLink::AlbumTrack { track_id, .. } => Screen::Entity(EntityRef::Track(track_id)),
         }
     }
 }
@@ -204,5 +230,41 @@ mod tests {
         assert_eq!(EntityRef::Album(42).id_label(), "42");
         assert_eq!(EntityRef::Playlist("abc-123".into()).id_label(), "abc-123");
         assert_eq!(EntityRef::Artist(7).kind_label(), "Artist");
+        assert_eq!(EntityRef::Video(9).kind_label(), "Video");
+    }
+
+    #[test]
+    fn content_link_maps_onto_the_matching_entity_screen() {
+        assert_eq!(
+            Screen::from_content_link(ContentLink::Track(1)),
+            Screen::Entity(EntityRef::Track(1))
+        );
+        assert_eq!(
+            Screen::from_content_link(ContentLink::Playlist("abc".into())),
+            Screen::Entity(EntityRef::Playlist("abc".into()))
+        );
+        assert_eq!(
+            Screen::from_content_link(ContentLink::Video(3)),
+            Screen::Entity(EntityRef::Video(3))
+        );
+    }
+
+    #[test]
+    fn folder_link_falls_back_to_collection() {
+        assert_eq!(
+            Screen::from_content_link(ContentLink::Folder("f-1".into())),
+            Screen::Collection
+        );
+    }
+
+    #[test]
+    fn album_track_link_opens_the_track() {
+        assert_eq!(
+            Screen::from_content_link(ContentLink::AlbumTrack {
+                album_id: 10,
+                track_id: 20
+            }),
+            Screen::Entity(EntityRef::Track(20))
+        );
     }
 }

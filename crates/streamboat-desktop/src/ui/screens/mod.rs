@@ -1,14 +1,22 @@
-//! Screens for this wave (task item 3): Login, Home, Explore, Search, Now
-//! Playing and Settings are real; `placeholder` covers everything routed
-//! but not yet built (entity/collection/lyrics pages, the mini-player).
+//! Every screen: Login, Home, Explore, Search, Now Playing and Settings from
+//! the previous wave, plus this wave's entity pages (Album, Artist,
+//! Playlist, Mix, Track, Video), My Collection and Lyrics. The mini-player
+//! is a sibling agent's concern, not this module's.
 
+pub mod album;
+pub mod artist;
+pub mod collection;
 pub mod explore;
 pub mod home;
 pub mod login;
+pub mod lyrics;
+pub mod mix;
 pub mod now_playing;
-pub mod placeholder;
+pub mod playlist;
 pub mod search;
 pub mod settings;
+pub mod track;
+pub mod video;
 
 use iced::widget::{button, column, text};
 use iced::{Element, Length, Theme};

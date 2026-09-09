@@ -83,6 +83,32 @@ impl ApiClient {
         .await
     }
 
+    /// `GET pages/mix?mixId=<id>&deviceType=BROWSER&locale=&countryCode=` —
+    /// the per-mix v1 page (`tidal-client-features`
+    /// browse-pages-screens.md §4: "note the required query param — don't
+    /// drop it"). Mixes have no v2 feed counterpart and no dedicated
+    /// metadata endpoint beyond this page and [`ApiClient::mix_items`]
+    /// (`api/catalog.rs`); this is the only documented way to get a mix's
+    /// own title/subtitle short of walking a user's recommendations
+    /// relationships, which no reference this crate cites has captured a
+    /// response shape for. Used for the header only — track listing comes
+    /// from [`ApiClient::mix_items`], whose typed shape is more reliable
+    /// than parsing this page's raw modules.
+    pub async fn mix_page(&self, mix_id: &str) -> Result<PageV1> {
+        let cc = self.country_code().await?;
+        self.get_json(
+            "pages/mix",
+            &[
+                ("mixId", mix_id.to_string()),
+                ("deviceType", "BROWSER".to_string()),
+                ("locale", self.locale()),
+                ("countryCode", cc),
+            ],
+            &[],
+        )
+        .await
+    }
+
     /// Expand a "View All" target — a v2 [`crate::models::FeedSection::api_path`]
     /// or a v1 module's `showMore.apiPath`.
     ///

@@ -5,6 +5,7 @@ use std::time::Duration;
 use iced::widget::{button, column, row, scrollable, text, text_input};
 use iced::{Element, Length, Task, Theme};
 
+use streamboat_core::api::images::{ContentLink, parse_content_link};
 use streamboat_core::models::SearchResults;
 use streamboat_core::{ApiClient, Error};
 
@@ -84,6 +85,11 @@ pub enum Effect {
     Enqueue(u64, streamboat_core::proto::QueuePosition),
     Navigate(EntityRef),
     ImagesNeeded(Vec<String>),
+    /// Task item 5: the query parsed as a `tidal.com`/`listen.tidal.com`/
+    /// `tidal://`/`streamboat://` content link instead of a search term —
+    /// `ui::app` opens the linked screen (and, for a playlist, starts
+    /// playback per D-039) instead of running a search for it.
+    OpenDeepLink(ContentLink),
 }
 
 impl State {
@@ -97,6 +103,11 @@ impl State {
                     self.results = None;
                     self.loading = false;
                     return (Task::none(), Vec::new());
+                }
+                // Task item 5: a pasted content link opens the linked
+                // screen instead of running a search for it.
+                if let Some(link) = parse_content_link(self.query.trim()) {
+                    return (Task::none(), vec![Effect::OpenDeepLink(link)]);
                 }
                 (
                     Task::perform(debounce(generation), Message::Debounced),
@@ -423,5 +434,41 @@ mod tests {
         let images = crate::ui::images::ImageCache::new(4);
         let mut ui = simulator(state.view(tokens, &images));
         assert!(ui.find("Synthetic Track").is_ok());
+    }
+
+    #[test]
+    fn pasting_a_content_link_opens_it_instead_of_searching() {
+        let mut state = State::default();
+        let (task, effects) = state.update(
+            Message::QueryChanged("tidal://album/42".into()),
+            &test_api(),
+        );
+        let _ = task;
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            Effect::OpenDeepLink(ContentLink::Album(id)) => assert_eq!(*id, 42),
+            _ => panic!("expected OpenDeepLink(Album)"),
+        }
+        // A deep link is not a search term: no debounce/search fires.
+        assert!(state.results.is_none());
+    }
+
+    #[test]
+    fn an_ordinary_query_still_debounces_a_search() {
+        let mut state = State::default();
+        let (_, effects) = state.update(Message::QueryChanged("daft punk".into()), &test_api());
+        assert!(effects.is_empty());
+    }
+
+    fn test_api() -> ApiClient {
+        use std::sync::Arc;
+        use streamboat_core::ClientCredentials;
+        use streamboat_core::token_store::MemoryTokenStore;
+        ApiClient::builder(
+            ClientCredentials::new("cid", None),
+            Arc::new(MemoryTokenStore::default()),
+        )
+        .build()
+        .unwrap()
     }
 }

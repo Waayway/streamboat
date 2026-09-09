@@ -20,12 +20,19 @@ hand-over to the next track and a selectable ALSA device.
 The desktop shell now exists too: `streamboat` with no subcommand opens an
 iced 0.14 window — Login (device-code or PKCE), Home and Explore (TIDAL's own
 server-driven feed sections, with a graceful card for a section type this
-client doesn't recognise yet), Search, Now Playing with a reorderable queue,
-a persistent playback bar, the signal-path panel, and Settings. Every CLI
-subcommand keeps working exactly as before. Entity/album/artist/playlist
-pages, the mini-player and the tray are the next wave; the libmpv backend for
-Windows and macOS is being built alongside this. Everything that was decided
-about the product and the stack is in `docs/DECISIONS.md`.
+client doesn't recognise yet), Search, Album/Artist/Playlist/Mix/Track/Video
+entity pages, My Collection (favourites, playlists and folders), synced
+lyrics, Now Playing with a reorderable queue, a persistent playback bar, the
+signal-path panel, a notification banner for warnings/errors/playback
+takeovers, and Settings. A shared per-track action row (play now/next,
+queue, favourite, add to playlist, go to album/artist) appears on every
+track list. Pasting a `tidal.com`/`listen.tidal.com`/`tidal://`/
+`streamboat://` link into Search — or running `streamboat open <url>` or
+`streamboat <url>` — opens the linked page directly (a shared playlist link
+opens and starts playing it). Every CLI subcommand keeps working exactly as
+before. The mini-player and the tray are the next wave; the libmpv backend
+for Windows and macOS is being built alongside this. Everything that was
+decided about the product and the stack is in `docs/DECISIONS.md`.
 
 ## Build (Linux)
 
@@ -89,6 +96,8 @@ ecosystem PKCE client id is unverified, so paste is the default.
 
 ```
 streamboat                               # opens the desktop shell (Login if not signed in)
+streamboat open https://listen.tidal.com/album/12345   # opens that page directly
+streamboat https://listen.tidal.com/playlist/<uuid>     # same thing; a bare link also works
 ```
 
 Or from the CLI:
