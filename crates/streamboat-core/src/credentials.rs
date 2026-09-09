@@ -29,7 +29,10 @@ impl std::fmt::Debug for ClientCredentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClientCredentials")
             .field("client_id", &self.client_id)
-            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
             .field("source", &self.source)
             .finish()
     }
@@ -46,7 +49,11 @@ impl ClientCredentials {
 
     /// Settings first, then the environment, then the build-time embed.
     pub fn resolve(settings: &Settings) -> Result<Self> {
-        if let Some(id) = settings.client_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        if let Some(id) = settings
+            .client_id
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+        {
             return Ok(Self {
                 client_id: id.trim().to_string(),
                 client_secret: settings

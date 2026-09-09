@@ -56,7 +56,10 @@ impl AudioQuality {
     }
 
     pub fn is_hi_res(self) -> bool {
-        matches!(self, AudioQuality::HiResLossless | AudioQuality::HiResLegacy)
+        matches!(
+            self,
+            AudioQuality::HiResLossless | AudioQuality::HiResLegacy
+        )
     }
 
     pub fn is_lossless(self) -> bool {
@@ -168,7 +171,10 @@ impl Track {
                 .collect::<Vec<_>>()
                 .join(", ")
         } else {
-            self.artist.as_ref().map(|a| a.name.clone()).unwrap_or_default()
+            self.artist
+                .as_ref()
+                .map(|a| a.name.clone())
+                .unwrap_or_default()
         }
     }
 
@@ -200,7 +206,11 @@ impl From<&Track> for TrackSummary {
             id: t.id,
             title: t.title.clone(),
             artists: t.artist_names(),
-            album: t.album.as_ref().map(|a| a.title.clone()).unwrap_or_default(),
+            album: t
+                .album
+                .as_ref()
+                .map(|a| a.title.clone())
+                .unwrap_or_default(),
             duration_ms: t.duration.map(|d| u64::from(d) * 1000),
             cover: t.album.as_ref().and_then(|a| a.cover.clone()),
         }

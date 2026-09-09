@@ -14,20 +14,33 @@ pub const PROTOCOL_VERSION: u32 = 1;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
     /// Replace the queue with these items and start playing the first.
-    Play { items: Vec<PlayItem> },
+    Play {
+        items: Vec<PlayItem>,
+    },
     /// Append (or insert next) without interrupting playback.
-    Enqueue { items: Vec<PlayItem>, position: QueuePosition },
+    Enqueue {
+        items: Vec<PlayItem>,
+        position: QueuePosition,
+    },
     Pause,
     Resume,
     TogglePlayPause,
     Stop,
     Next,
     Previous,
-    Seek { position_ms: u64 },
+    Seek {
+        position_ms: u64,
+    },
     /// 0.0 ..= 1.0. Ignored (reported as such) while an exclusive output is active.
-    SetVolume { volume: f32 },
-    SetQualityCeiling { ceiling: AudioQuality },
-    SetOutput { output: OutputConfig },
+    SetVolume {
+        volume: f32,
+    },
+    SetQualityCeiling {
+        ceiling: AudioQuality,
+    },
+    SetOutput {
+        output: OutputConfig,
+    },
     ClearQueue,
     GetState,
     Shutdown,
@@ -135,22 +148,52 @@ pub struct PlayerState {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+// `State` carries a full snapshot by design; it is sent on change, not in a hot loop.
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     /// Full snapshot; sent on connect, on `GetState`, and after any change.
-    State { state: PlayerState },
-    TrackStarted { track: TrackSummary, stream: StreamInfo, index: usize },
-    TrackFinished { track_id: u64 },
-    Position { position_ms: u64, duration_ms: Option<u64> },
-    QueueChanged { queue: Vec<TrackSummary>, current_index: Option<usize> },
-    Buffering { percent: u8 },
+    State {
+        state: PlayerState,
+    },
+    TrackStarted {
+        track: TrackSummary,
+        stream: StreamInfo,
+        index: usize,
+    },
+    TrackFinished {
+        track_id: u64,
+    },
+    Position {
+        position_ms: u64,
+        duration_ms: Option<u64>,
+    },
+    QueueChanged {
+        queue: Vec<TrackSummary>,
+        current_index: Option<usize>,
+    },
+    Buffering {
+        percent: u8,
+    },
     /// Something the user should know that did not stop playback
     /// (hi-res refused for this client id, quality downgraded, ...).
-    Warning { message: String },
+    Warning {
+        message: String,
+    },
     /// Something that did stop this track or the queue.
-    Error { message: String, track_id: Option<u64> },
+    Error {
+        message: String,
+        track_id: Option<u64>,
+    },
     /// Login needed; a remote can render its own QR from this.
-    AuthRequired { verification_url: String, user_code: String, expires_in_secs: u64 },
-    AuthOk { user_id: Option<u64>, country_code: Option<String> },
+    AuthRequired {
+        verification_url: String,
+        user_code: String,
+        expires_in_secs: u64,
+    },
+    AuthOk {
+        user_id: Option<u64>,
+        country_code: Option<String>,
+    },
     EndOfQueue,
     Stopped,
 }

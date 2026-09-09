@@ -16,6 +16,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod bootstrap;
 pub mod config;
 pub mod credentials;
 pub mod error;
@@ -27,9 +28,9 @@ pub mod proto;
 pub mod token_store;
 
 pub use api::{ResolvedStream, StreamSource};
-pub use http::ApiClient;
 pub use credentials::ClientCredentials;
 pub use error::{Error, Result};
+pub use http::ApiClient;
 pub use models::AudioQuality;
 pub use token_store::{EncryptedFileStore, TokenSet, TokenStore};
 

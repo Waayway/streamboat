@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::SCOPES;
 use crate::error::{Error, Result};
-use crate::http::{parse_error_body, ApiClient, TokenResponse};
+use crate::http::{ApiClient, TokenResponse, parse_error_body};
 use crate::token_store::TokenSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,12 +62,15 @@ pub async fn start_device_flow(client: &ApiClient) -> Result<DeviceAuthorization
     if let Some(secret) = &creds.client_secret {
         form.push(("client_secret", secret.clone()));
     }
-    let (status, text) = client.post_auth_form("v1/oauth2/device_authorization", &form).await?;
+    let (status, text) = client
+        .post_auth_form("v1/oauth2/device_authorization", &form)
+        .await?;
     if !status.is_success() {
         let api = parse_error_body(status.as_u16(), &text);
         return Err(classify_auth_error(api.sub_status, &api.message));
     }
-    serde_json::from_str(&text).map_err(|e| Error::Auth(format!("unexpected device_authorization response: {e}")))
+    serde_json::from_str(&text)
+        .map_err(|e| Error::Auth(format!("unexpected device_authorization response: {e}")))
 }
 
 pub async fn poll_device_token_once(
@@ -78,7 +81,10 @@ pub async fn poll_device_token_once(
     let mut form = vec![
         ("client_id", creds.client_id.clone()),
         ("device_code", auth.device_code.clone()),
-        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code".to_string()),
+        (
+            "grant_type",
+            "urn:ietf:params:oauth:grant-type:device_code".to_string(),
+        ),
         ("scope", SCOPES.to_string()),
     ];
     if let Some(secret) = &creds.client_secret {
@@ -88,7 +94,9 @@ pub async fn poll_device_token_once(
     if status.is_success() {
         let resp: TokenResponse = serde_json::from_str(&text)
             .map_err(|e| Error::Auth(format!("unexpected token response: {e}")))?;
-        return Ok(PollOutcome::Authorized(resp.into_token_set(&creds.client_id, None)));
+        return Ok(PollOutcome::Authorized(
+            resp.into_token_set(&creds.client_id, None),
+        ));
     }
     let api = parse_error_body(status.as_u16(), &text);
     let msg = api.message.to_ascii_lowercase();
@@ -99,13 +107,19 @@ pub async fn poll_device_token_once(
         return Ok(PollOutcome::SlowDown);
     }
     if msg.contains("expired_token") || msg.contains("expired") {
-        return Err(Error::Auth("the login code expired before it was used; run login again".into()));
+        return Err(Error::Auth(
+            "the login code expired before it was used; run login again".into(),
+        ));
     }
     Err(classify_auth_error(api.sub_status, &api.message))
 }
 
 fn classify_auth_error(sub_status: Option<u32>, message: &str) -> Error {
-    if sub_status == Some(1002) || message.to_ascii_lowercase().contains("not a limited input device") {
+    if sub_status == Some(1002)
+        || message
+            .to_ascii_lowercase()
+            .contains("not a limited input device")
+    {
         return Error::Auth(
             "this client id is not registered for the device-code flow (TIDAL says it is not a \
              Limited Input Device client); it is probably a web-player id. Use a device-flow client id"
@@ -127,7 +141,9 @@ pub async fn wait_for_device_token(
     let mut interval = auth.interval.max(1);
     loop {
         if start.elapsed() > Duration::from_secs(auth.expires_in) {
-            return Err(Error::Auth("the login code expired before it was used; run login again".into()));
+            return Err(Error::Auth(
+                "the login code expired before it was used; run login again".into(),
+            ));
         }
         if !should_continue() {
             return Err(Error::Auth("login cancelled".into()));

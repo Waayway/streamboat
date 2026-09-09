@@ -10,10 +10,7 @@ use std::path::Path;
 pub(crate) fn atomic_write(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(dir)?;
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("file");
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     let tmp = dir.join(format!(".{file_name}.{}.tmp", std::process::id()));
     {
         let mut opts = OpenOptions::new();

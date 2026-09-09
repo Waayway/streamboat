@@ -1,0 +1,19 @@
+//! streamboat-player (GPL-3.0-only): everything between a resolved TIDAL
+//! stream and the DAC. The [`engine::Engine`] trait is the contract both
+//! backends satisfy (D-016): GStreamer on Linux, libmpv on Windows and macOS.
+//! [`player::Player`] owns the queue and turns protocol Commands into Events.
+//!
+//! This crate is GPL so that engineering adapted from Sone, High Tide and
+//! Strawberry (all GPL-3.0) is licence-clean here and never lands in the
+//! Apache-2.0 core (D-009).
+
+pub mod engine;
+#[cfg(feature = "gstreamer")]
+pub mod gst;
+pub mod player;
+
+pub use engine::{Engine, EngineEvent, LoadItem};
+pub use player::{Player, PlayerConfig, PlayerHandle};
+
+#[cfg(feature = "gstreamer")]
+pub use gst::GstEngine;

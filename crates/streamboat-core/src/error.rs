@@ -108,12 +108,16 @@ impl ApiError {
     /// Human-readable hint for the most actionable codes.
     pub fn hint(&self) -> Option<&'static str> {
         Some(match self.sub_status? {
-            1002 => "this client id is not registered as a Limited Input Device: it is probably a \
-                     web-player id, not a device-flow id",
+            1002 => {
+                "this client id is not registered as a Limited Input Device: it is probably a \
+                     web-player id, not a device-flow id"
+            }
             4006 => "another device is playing on this account (TIDAL allows one stream at a time)",
             4010 => "monthly stream quota exceeded",
             4020 | 4021 => "session no longer valid: log in again",
-            4022 => "TIDAL no longer accepts this client id (rotated or revoked): supply another one",
+            4022 => {
+                "TIDAL no longer accepts this client id (rotated or revoked): supply another one"
+            }
             4030 => "not available on this subscription tier",
             4032 | 4035 => "not available in this account's region",
             4033 => "requires a higher subscription tier",

@@ -33,6 +33,14 @@ task actually touches, after those two:
   (`streamboat`, `streamboatd`) over one core, GPL-3.0-only apps over an Apache-2.0 core, full client
   at first release with all four quality tiers. Full list: `docs/DECISIONS.md`.
 
+## Code
+
+Rust workspace under `crates/` (`streamboat-core` Apache-2.0; `streamboat-player`,
+`streamboat-server`, `streamboat-desktop` GPL-3.0-only). `docs/architecture.md` says what is built
+and what is next. Before pushing: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D
+warnings`, `cargo test --workspace` (CI needs GStreamer dev packages, no secrets, no TIDAL account;
+`STREAMBOAT_GST_SINK=fakesink` for audio tests).
+
 ## Repo conventions
 
 - Research reports: `docs/research/*.md` (+ `decision-tree.json`), source of truth for the skills.

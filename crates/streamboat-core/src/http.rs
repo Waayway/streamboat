@@ -7,14 +7,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use reqwest::StatusCode;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use tokio::sync::RwLock;
 use url::Url;
 
 use crate::credentials::ClientCredentials;
 use crate::error::{ApiError, Error, Result};
-use crate::token_store::{now_secs, TokenSet, TokenStore};
+use crate::token_store::{TokenSet, TokenStore, now_secs};
 use crate::{PROJECT_URL, VERSION};
 
 pub const DEFAULT_API_BASE: &str = "https://api.tidal.com/";
@@ -174,7 +174,11 @@ pub(crate) fn parse_error_body(status: u16, text: &str) -> ApiError {
             })
             .unwrap_or_default();
         if sub_status.is_some() || !message.is_empty() {
-            return ApiError { status, sub_status, message };
+            return ApiError {
+                status,
+                sub_status,
+                message,
+            };
         }
     }
     if let Ok(v2) = serde_json::from_str::<V2>(text) {
@@ -190,14 +194,22 @@ pub(crate) fn parse_error_body(status: u16, text: &str) -> ApiError {
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join("; ");
-        return ApiError { status, sub_status: None, message };
+        return ApiError {
+            status,
+            sub_status: None,
+            message,
+        };
     }
     let mut message = text.trim().to_string();
     if message.len() > 300 {
         message.truncate(300);
         message.push('…');
     }
-    ApiError { status, sub_status: None, message }
+    ApiError {
+        status,
+        sub_status: None,
+        message,
+    }
 }
 
 fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> u64 {
@@ -330,9 +342,10 @@ impl ApiClient {
                 return Ok(());
             }
         }
-        let refresh_token = current.refresh_token.clone().ok_or_else(|| {
-            Error::Auth("no refresh token stored; log in again".into())
-        })?;
+        let refresh_token = current
+            .refresh_token
+            .clone()
+            .ok_or_else(|| Error::Auth("no refresh token stored; log in again".into()))?;
         let mut form: Vec<(&str, String)> = vec![
             ("grant_type", "refresh_token".into()),
             ("refresh_token", refresh_token),
@@ -386,7 +399,12 @@ impl ApiClient {
         loop {
             self.wait_rate_gate().await;
             let token = self.access_token().await?;
-            let mut req = self.inner.http.get(url.clone()).query(query).bearer_auth(&token);
+            let mut req = self
+                .inner
+                .http
+                .get(url.clone())
+                .query(query)
+                .bearer_auth(&token);
             for (k, v) in headers {
                 req = req.header(*k, v);
             }
@@ -401,7 +419,9 @@ impl ApiClient {
             if status == StatusCode::TOO_MANY_REQUESTS {
                 let secs = retry_after_secs(resp.headers());
                 self.arm_rate_gate(secs);
-                return Err(Error::RateLimited { retry_after_secs: secs });
+                return Err(Error::RateLimited {
+                    retry_after_secs: secs,
+                });
             }
             let text = resp.text().await.unwrap_or_default();
             let api = parse_error_body(status.as_u16(), &text);
@@ -427,13 +447,19 @@ impl ApiClient {
         form: &[(&str, String)],
     ) -> Result<(StatusCode, String)> {
         self.wait_rate_gate().await;
-        let url = self.inner.auth_base.join(path.trim_start_matches('/')).unwrap();
+        let url = self
+            .inner
+            .auth_base
+            .join(path.trim_start_matches('/'))
+            .unwrap();
         let resp = self.inner.http.post(url).form(form).send().await?;
         let status = resp.status();
         if status == StatusCode::TOO_MANY_REQUESTS {
             let secs = retry_after_secs(resp.headers());
             self.arm_rate_gate(secs);
-            return Err(Error::RateLimited { retry_after_secs: secs });
+            return Err(Error::RateLimited {
+                retry_after_secs: secs,
+            });
         }
         let text = resp.text().await.unwrap_or_default();
         Ok((status, text))
@@ -446,7 +472,10 @@ mod tests {
 
     #[test]
     fn parses_v1_error_with_float_substatus() {
-        let e = parse_error_body(401, r#"{"status":401,"subStatus":4005.0,"userMessage":"nope"}"#);
+        let e = parse_error_body(
+            401,
+            r#"{"status":401,"subStatus":4005.0,"userMessage":"nope"}"#,
+        );
         assert_eq!(e.sub_status, Some(4005));
         assert_eq!(e.message, "nope");
         assert!(e.is_terminal_playback());
@@ -461,14 +490,21 @@ mod tests {
 
     #[test]
     fn parses_oauth_error_shape() {
-        let e = parse_error_body(400, r#"{"error":"authorization_pending","error_description":"x"}"#);
+        let e = parse_error_body(
+            400,
+            r#"{"error":"authorization_pending","error_description":"x"}"#,
+        );
         assert_eq!(e.message, "authorization_pending: x");
     }
 
     #[test]
     fn recoverable_substatuses_are_not_terminal() {
         for s in [4006, 4033] {
-            let e = ApiError { status: 401, sub_status: Some(s), message: String::new() };
+            let e = ApiError {
+                status: 401,
+                sub_status: Some(s),
+                message: String::new(),
+            };
             assert!(!e.is_terminal_playback(), "{s}");
             assert!(e.is_playback_sub_status());
         }

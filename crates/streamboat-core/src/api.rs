@@ -42,14 +42,17 @@ impl ApiClient {
         }
         let s = self.session().await?;
         if s.country_code.is_empty() {
-            return Err(Error::Config("TIDAL did not report a country code for this session".into()));
+            return Err(Error::Config(
+                "TIDAL did not report a country code for this session".into(),
+            ));
         }
         Ok(s.country_code)
     }
 
     pub async fn track(&self, id: u64) -> Result<Track> {
         let cc = self.country_code().await?;
-        self.get_json(&format!("v1/tracks/{id}"), &[("countryCode", cc)], &[]).await
+        self.get_json(&format!("v1/tracks/{id}"), &[("countryCode", cc)], &[])
+            .await
     }
 
     pub async fn search_tracks(&self, query: &str, limit: u32) -> Result<Page<Track>> {
@@ -85,7 +88,10 @@ impl ApiClient {
             ],
             &[
                 ("x-tidal-token", self.credentials().client_id.clone()),
-                ("x-tidal-streamingsessionid", streaming_session_id.to_string()),
+                (
+                    "x-tidal-streamingsessionid",
+                    streaming_session_id.to_string(),
+                ),
             ],
         )
         .await
@@ -130,7 +136,10 @@ impl ApiClient {
         let mut warnings: Vec<String> = ladder_warning.into_iter().collect();
         let mut last_err: Option<Error> = None;
         for tier in tiers {
-            let info = match self.playback_info(track_id, tier, streaming_session_id).await {
+            let info = match self
+                .playback_info(track_id, tier, streaming_session_id)
+                .await
+            {
                 Ok(i) => i,
                 Err(e) if e.stops_cascade() => return Err(e),
                 Err(e) => {
@@ -151,7 +160,9 @@ impl ApiClient {
                     if info.is_preview() {
                         warnings.push(format!(
                             "TIDAL served a preview instead of the full track ({})",
-                            info.preview_reason.clone().unwrap_or_else(|| "no reason given".into())
+                            info.preview_reason
+                                .clone()
+                                .unwrap_or_else(|| "no reason given".into())
                         ));
                     }
                     let stream_info = StreamInfo {

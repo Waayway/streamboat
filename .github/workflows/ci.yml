@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # No job in this workflow needs a secret or a TIDAL account (D-046).
+  STREAMBOAT_GST_SINK: fakesink
+
+jobs:
+  check:
+    name: fmt, clippy, test (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GStreamer and ALSA development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-alsa gstreamer1.0-tools \
+            libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo build --workspace --release
+
+  headless-daemon:
+    name: streamboatd links no GUI toolkit
+    runs-on: ubuntu-24.04
+    container: debian:bookworm-slim
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install only what a headless build may need
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            curl ca-certificates build-essential pkg-config \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libasound2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p streamboat-server --release
+      - name: Assert no GUI libraries are linked
+        run: |
+          ldd target/release/streamboatd
+          if ldd target/release/streamboatd | grep -Ei 'gtk|wayland|libX11|webkit|libEGL|libGL\.'; then
+            echo "streamboatd links a GUI library" >&2; exit 1
+          fi

@@ -246,10 +246,13 @@ answer, with alternatives, rationale and consequences, is in `docs/DECISIONS.md`
 `D-047`, plus "the decided stack at a glance"), and the `streamboat-decisions` skill is its
 load-on-demand distillation.
 
-No code exists yet. The first milestone (D-044) is a playable CLI spike: log in, resolve a
-manifest, play one track to the end through the same Command/Event types the GUI will use, with
-the engine behind its trait on all three OSes and gapless-plus-exclusive prototyped. Then the iced
-shell.
+The first milestone (D-044), the playable CLI spike, is built for Linux: `cargo build --workspace`
+produces `streamboat` (CLI) and `streamboatd` (stdio-protocol daemon); `streamboat login` runs the
+device-code flow, `streamboat resolve <id>` shows the cascade result, `streamboat play <id>…`
+plays through GStreamer with gapless hand-over and a selectable `hw:` device. `docs/architecture.md`
+records what exists, the implementation choices made along the way, and the ordered list of what is
+not built yet (PKCE, keyring, libmpv backend, ALSA writer, control API, iced shell). Read it before
+touching code.
 
 Topic skills still carry their pre-decision "Open decisions" sections, each now headed by a note
 pointing at the decision log; read them as the inputs that were considered, not as open questions.

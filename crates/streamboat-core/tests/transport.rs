@@ -7,7 +7,7 @@ use std::sync::Arc;
 use base64::Engine;
 use serde_json::json;
 use streamboat_core::auth::device_code::{start_device_flow, wait_for_device_token};
-use streamboat_core::token_store::{now_secs, MemoryTokenStore, TokenSet, TokenStore};
+use streamboat_core::token_store::{MemoryTokenStore, TokenSet, TokenStore, now_secs};
 use streamboat_core::{ApiClient, AudioQuality, ClientCredentials, Error, StreamSource};
 use wiremock::matchers::{body_string_contains, header, method, path, query_param};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -38,7 +38,8 @@ fn client(server: &MockServer, store: Arc<MemoryTokenStore>, secret: bool) -> Ap
 }
 
 fn bts(url: &str) -> serde_json::Value {
-    let manifest = json!({"mimeType":"audio/flac","codecs":"flac","encryptionType":"NONE","urls":[url]});
+    let manifest =
+        json!({"mimeType":"audio/flac","codecs":"flac","encryptionType":"NONE","urls":[url]});
     json!({
         "trackId": 1, "assetPresentation": "FULL", "audioMode": "STEREO", "audioQuality": "LOSSLESS",
         "manifestMimeType": "application/vnd.tidal.bts",
@@ -49,7 +50,8 @@ fn bts(url: &str) -> serde_json::Value {
 }
 
 fn encrypted_bts() -> serde_json::Value {
-    let manifest = json!({"codecs":"flac","encryptionType":"OLD_AES","keyId":"k","urls":["https://cdn/x"]});
+    let manifest =
+        json!({"codecs":"flac","encryptionType":"OLD_AES","keyId":"k","urls":["https://cdn/x"]});
     json!({
         "audioQuality": "HI_RES_LOSSLESS",
         "manifestMimeType": "application/vnd.tidal.bts",
@@ -66,14 +68,21 @@ struct Sequence {
 impl Sequence {
     fn new(v: Vec<ResponseTemplate>) -> Self {
         let last = v.last().cloned().expect("at least one response");
-        Self { responses: std::sync::Mutex::new(v.into()), last }
+        Self {
+            responses: std::sync::Mutex::new(v.into()),
+            last,
+        }
     }
 }
 
 impl Respond for Sequence {
     fn respond(&self, _request: &Request) -> ResponseTemplate {
         let mut q = self.responses.lock().unwrap();
-        if q.len() > 1 { q.pop_front().unwrap() } else { q.front().cloned().unwrap_or_else(|| self.last.clone()) }
+        if q.len() > 1 {
+            q.pop_front().unwrap()
+        } else {
+            q.front().cloned().unwrap_or_else(|| self.last.clone())
+        }
     }
 }
 
@@ -132,7 +141,10 @@ async fn non_device_client_id_is_explained() {
         .await;
     let c = client(&server, Arc::new(MemoryTokenStore::default()), false);
     let err = start_device_flow(&c).await.unwrap_err();
-    assert!(matches!(err, Error::Auth(ref m) if m.contains("device-code")), "{err}");
+    assert!(
+        matches!(err, Error::Auth(ref m) if m.contains("device-code")),
+        "{err}"
+    );
 }
 
 #[tokio::test]
@@ -153,7 +165,10 @@ async fn expired_token_refreshes_once_before_request_and_keeps_old_refresh_token
     Mock::given(method("GET"))
         .and(path("/v1/sessions"))
         .and(header("authorization", "Bearer new-at"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"sessionId":"s","userId":7,"countryCode":"NL"})))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"sessionId":"s","userId":7,"countryCode":"NL"})),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -172,7 +187,9 @@ async fn auth_401_refreshes_once_and_retries() {
     Mock::given(method("GET"))
         .and(path("/v1/sessions"))
         .respond_with(Sequence::new(vec![
-            ResponseTemplate::new(401).set_body_json(json!({"status":401,"subStatus":11003,"userMessage":"The token has expired."})),
+            ResponseTemplate::new(401).set_body_json(
+                json!({"status":401,"subStatus":11003,"userMessage":"The token has expired."}),
+            ),
             ResponseTemplate::new(200).set_body_json(json!({"sessionId":"s","countryCode":"DE"})),
         ]))
         .expect(2)
@@ -180,11 +197,19 @@ async fn auth_401_refreshes_once_and_retries() {
         .await;
     Mock::given(method("POST"))
         .and(path("/v1/oauth2/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token":"fresh","refresh_token":"rt2","expires_in":3600})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                json!({"access_token":"fresh","refresh_token":"rt2","expires_in":3600}),
+            ),
+        )
         .expect(1)
         .mount(&server)
         .await;
-    let c = client(&server, Arc::new(MemoryTokenStore::with(tokens(3600))), false);
+    let c = client(
+        &server,
+        Arc::new(MemoryTokenStore::with(tokens(3600))),
+        false,
+    );
     let s = c.session().await.unwrap();
     assert_eq!(s.country_code, "DE");
     assert_eq!(c.tokens().await.unwrap().access_token, "fresh");
@@ -196,27 +221,42 @@ async fn concurrent_401s_collapse_into_one_refresh() {
     Mock::given(method("GET"))
         .and(path("/v1/sessions"))
         .respond_with(|req: &Request| {
-            let auth = req.headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
+            let auth = req
+                .headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
             if auth == "Bearer fresh" {
-                ResponseTemplate::new(200).set_body_json(json!({"sessionId":"s","countryCode":"DE"}))
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"sessionId":"s","countryCode":"DE"}))
             } else {
-                ResponseTemplate::new(401).set_body_json(json!({"status":401,"subStatus":11003,"userMessage":"expired"}))
+                ResponseTemplate::new(401)
+                    .set_body_json(json!({"status":401,"subStatus":11003,"userMessage":"expired"}))
             }
         })
         .mount(&server)
         .await;
     Mock::given(method("POST"))
         .and(path("/v1/oauth2/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"access_token":"fresh","expires_in":3600})))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"access_token":"fresh","expires_in":3600})),
+        )
         .expect(1)
         .mount(&server)
         .await;
-    let c = client(&server, Arc::new(MemoryTokenStore::with(tokens(3600))), false);
+    let c = client(
+        &server,
+        Arc::new(MemoryTokenStore::with(tokens(3600))),
+        false,
+    );
     let results = futures_join(vec![c.clone(), c.clone(), c.clone(), c.clone()]).await;
     assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
 }
 
-async fn futures_join(clients: Vec<ApiClient>) -> Vec<Result<streamboat_core::models::Session, Error>> {
+async fn futures_join(
+    clients: Vec<ApiClient>,
+) -> Vec<Result<streamboat_core::models::Session, Error>> {
     let handles: Vec<_> = clients
         .into_iter()
         .map(|c| tokio::spawn(async move { c.session().await }))
@@ -233,13 +273,28 @@ async fn playback_substatus_on_401_does_not_refresh() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/tracks/5/playbackinfopostpaywall"))
-        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"status":401,"subStatus":4006,"userMessage":"privileges"})))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .set_body_json(json!({"status":401,"subStatus":4006,"userMessage":"privileges"})),
+        )
         .expect(1)
         .mount(&server)
         .await;
-    Mock::given(method("POST")).and(path("/v1/oauth2/token")).respond_with(ResponseTemplate::new(500)).expect(0).mount(&server).await;
-    let c = client(&server, Arc::new(MemoryTokenStore::with(tokens(3600))), true);
-    let err = c.playback_info(5, AudioQuality::Lossless, "sid").await.unwrap_err();
+    Mock::given(method("POST"))
+        .and(path("/v1/oauth2/token"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let c = client(
+        &server,
+        Arc::new(MemoryTokenStore::with(tokens(3600))),
+        true,
+    );
+    let err = c
+        .playback_info(5, AudioQuality::Lossless, "sid")
+        .await
+        .unwrap_err();
     match err {
         Error::Api(e) => {
             assert_eq!(e.sub_status, Some(4006));
@@ -265,7 +320,10 @@ async fn refresh_4xx_wipes_credentials_but_5xx_keeps_them() {
     assert!(matches!(c.session().await, Err(Error::Api(_))));
     assert!(store.load().unwrap().is_some(), "5xx must keep credentials");
     assert!(matches!(c.session().await, Err(Error::AuthRequired)));
-    assert!(store.load().unwrap().is_none(), "4xx must clear credentials");
+    assert!(
+        store.load().unwrap().is_none(),
+        "4xx must clear credentials"
+    );
     assert!(!c.is_logged_in().await);
 }
 
@@ -281,12 +339,27 @@ async fn rate_limit_arms_cooldown_and_propagates() {
         .expect(2)
         .mount(&server)
         .await;
-    let c = client(&server, Arc::new(MemoryTokenStore::with(tokens(3600))), false);
+    let c = client(
+        &server,
+        Arc::new(MemoryTokenStore::with(tokens(3600))),
+        false,
+    );
     let err = c.session().await.unwrap_err();
-    assert!(matches!(err, Error::RateLimited { retry_after_secs: 1 }), "{err}");
+    assert!(
+        matches!(
+            err,
+            Error::RateLimited {
+                retry_after_secs: 1
+            }
+        ),
+        "{err}"
+    );
     let t0 = std::time::Instant::now();
     c.session().await.unwrap();
-    assert!(t0.elapsed() >= std::time::Duration::from_millis(900), "second call must wait out the gate");
+    assert!(
+        t0.elapsed() >= std::time::Duration::from_millis(900),
+        "second call must wait out the gate"
+    );
 }
 
 #[tokio::test]
@@ -317,12 +390,23 @@ async fn cascade_stops_at_first_playable_tier_and_skips_encrypted_hires() {
         .expect(0)
         .mount(&server)
         .await;
-    let c = client(&server, Arc::new(MemoryTokenStore::with(tokens(3600))), true);
-    let r = c.resolve_stream(1, AudioQuality::HiResLossless, "sid-1").await.unwrap();
+    let c = client(
+        &server,
+        Arc::new(MemoryTokenStore::with(tokens(3600))),
+        true,
+    );
+    let r = c
+        .resolve_stream(1, AudioQuality::HiResLossless, "sid-1")
+        .await
+        .unwrap();
     assert_eq!(r.source, StreamSource::Url("https://cdn/l.flac".into()));
     assert_eq!(r.info.quality, Some(AudioQuality::Lossless));
     assert_eq!(r.info.codec.as_deref(), Some("flac"));
-    assert!(r.warnings.iter().any(|w| w.contains("refused")), "{:?}", r.warnings);
+    assert!(
+        r.warnings.iter().any(|w| w.contains("refused")),
+        "{:?}",
+        r.warnings
+    );
 }
 
 #[tokio::test]
@@ -342,10 +426,21 @@ async fn cascade_skips_hires_without_secret() {
         .expect(1)
         .mount(&server)
         .await;
-    let c = client(&server, Arc::new(MemoryTokenStore::with(tokens(3600))), false);
-    let r = c.resolve_stream(1, AudioQuality::HiResLossless, "sid").await.unwrap();
+    let c = client(
+        &server,
+        Arc::new(MemoryTokenStore::with(tokens(3600))),
+        false,
+    );
+    let r = c
+        .resolve_stream(1, AudioQuality::HiResLossless, "sid")
+        .await
+        .unwrap();
     assert_eq!(r.requested, AudioQuality::Lossless);
-    assert!(r.warnings.iter().any(|w| w.contains("hi-res tiers skipped")));
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("hi-res tiers skipped"))
+    );
 }
 
 #[tokio::test]
@@ -354,7 +449,10 @@ async fn cascade_stops_on_terminal_substatus_and_on_rate_limit() {
     Mock::given(method("GET"))
         .and(path("/v1/tracks/2/playbackinfopostpaywall"))
         .and(query_param("audioquality", "LOSSLESS"))
-        .respond_with(ResponseTemplate::new(401).set_body_json(json!({"status":401,"subStatus":4032,"userMessage":"region"})))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .set_body_json(json!({"status":401,"subStatus":4032,"userMessage":"region"})),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -371,10 +469,23 @@ async fn cascade_stops_on_terminal_substatus_and_on_rate_limit() {
         .expect(1)
         .mount(&server)
         .await;
-    let c = client(&server, Arc::new(MemoryTokenStore::with(tokens(3600))), false);
-    let err = c.resolve_stream(2, AudioQuality::Lossless, "sid").await.unwrap_err();
-    assert!(matches!(err, Error::Api(ref e) if e.sub_status == Some(4032)), "{err}");
-    let err = c.resolve_stream(3, AudioQuality::Lossless, "sid").await.unwrap_err();
+    let c = client(
+        &server,
+        Arc::new(MemoryTokenStore::with(tokens(3600))),
+        false,
+    );
+    let err = c
+        .resolve_stream(2, AudioQuality::Lossless, "sid")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::Api(ref e) if e.sub_status == Some(4032)),
+        "{err}"
+    );
+    let err = c
+        .resolve_stream(3, AudioQuality::Lossless, "sid")
+        .await
+        .unwrap_err();
     assert!(matches!(err, Error::RateLimited { .. }), "{err}");
 }
 
@@ -395,8 +506,15 @@ async fn cascade_continues_past_non_terminal_errors() {
         .expect(1)
         .mount(&server)
         .await;
-    let c = client(&server, Arc::new(MemoryTokenStore::with(tokens(3600))), false);
-    let r = c.resolve_stream(4, AudioQuality::Lossless, "sid").await.unwrap();
+    let c = client(
+        &server,
+        Arc::new(MemoryTokenStore::with(tokens(3600))),
+        false,
+    );
+    let r = c
+        .resolve_stream(4, AudioQuality::Lossless, "sid")
+        .await
+        .unwrap();
     assert_eq!(r.requested, AudioQuality::High);
 }
 
@@ -416,10 +534,16 @@ async fn track_and_search_tolerate_missing_fields() {
     Mock::given(method("GET"))
         .and(path("/v1/search/tracks"))
         .and(query_param("query", "song"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items": [{"id": 10, "title": "Song"}], "totalNumberOfItems": 1})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"items": [{"id": 10, "title": "Song"}], "totalNumberOfItems": 1}),
+        ))
         .mount(&server)
         .await;
-    let c = client(&server, Arc::new(MemoryTokenStore::with(tokens(3600))), false);
+    let c = client(
+        &server,
+        Arc::new(MemoryTokenStore::with(tokens(3600))),
+        false,
+    );
     let t = c.track(10).await.unwrap();
     assert_eq!(t.artist_names(), "A, B");
     assert_eq!(t.duration, None);

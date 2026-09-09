@@ -1,0 +1,24 @@
+[package]
+name = "streamboat-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "GPL-3.0-only"
+description = "streamboat: the desktop shell and command-line client for TIDAL subscribers"
+repository.workspace = true
+
+[[bin]]
+name = "streamboat"
+path = "src/main.rs"
+
+[dependencies]
+streamboat-core.workspace = true
+streamboat-player.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+gstreamer.workspace = true

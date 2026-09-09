@@ -46,7 +46,10 @@ impl std::fmt::Debug for TokenSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TokenSet")
             .field("access_token", &"<redacted>")
-            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "<redacted>"))
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
             .field("expires_at", &self.expires_at)
             .field("client_id", &self.client_id)
             .field("user_id", &self.user_id)
@@ -82,7 +85,9 @@ pub struct MemoryTokenStore {
 
 impl MemoryTokenStore {
     pub fn with(tokens: TokenSet) -> Self {
-        Self { inner: Mutex::new(Some(tokens)) }
+        Self {
+            inner: Mutex::new(Some(tokens)),
+        }
     }
 }
 
@@ -107,7 +112,10 @@ pub struct EncryptedFileStore {
 
 impl EncryptedFileStore {
     pub fn new(token_path: impl Into<PathBuf>, key_path: impl Into<PathBuf>) -> Self {
-        Self { token_path: token_path.into(), key_path: key_path.into() }
+        Self {
+            token_path: token_path.into(),
+            key_path: key_path.into(),
+        }
     }
 
     pub fn token_path(&self) -> &Path {
@@ -232,13 +240,19 @@ mod tests {
         store.save(&sample()).unwrap();
         assert_eq!(store.load().unwrap(), Some(sample()));
         let raw = std::fs::read(dir.path().join("tokens.bin")).unwrap();
-        assert!(!raw.windows(2).any(|w| w == b"at"), "plaintext must not appear on disk");
+        assert!(
+            !raw.windows(2).any(|w| w == b"at"),
+            "plaintext must not appear on disk"
+        );
         store.clear().unwrap();
         assert!(store.load().unwrap().is_none());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.path().join("k")).unwrap().permissions().mode();
+            let mode = std::fs::metadata(dir.path().join("k"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
     }
@@ -263,7 +277,9 @@ mod tests {
     fn wrong_key_is_a_typed_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tokens.bin");
-        EncryptedFileStore::new(&path, dir.path().join("k1")).save(&sample()).unwrap();
+        EncryptedFileStore::new(&path, dir.path().join("k1"))
+            .save(&sample())
+            .unwrap();
         let other = EncryptedFileStore::new(&path, dir.path().join("k2"));
         assert!(matches!(other.load(), Err(Error::TokenStore(_))));
     }

@@ -148,6 +148,13 @@ Keep these in mind so you do not "fix" them back:
 | Updates | Check and notify | GitHub Releases only |
 | Testing | Unit and fixture tests | Unit, fixture and UI tests |
 
+## Status of delivery
+
+The playable spike (D-044) exists for Linux: see `docs/architecture.md` for the crate contents,
+the implementation choices it fixed (seek flags, DASH feeding, `dashdemux2` demotion, token file
+format, protocol version) and the not-yet-built list in decision order. The libmpv backend, the
+ALSA writer, PKCE, keyring storage, the control API and the iced shell are next.
+
 ## Still open (implementation-time calls, not owner decisions)
 
 - Universal versus Apple-Silicon-only macOS builds (decide with the first macOS CI job; the

@@ -1,0 +1,22 @@
+[package]
+name = "streamboat-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "GPL-3.0-only"
+description = "streamboatd: the headless streamboat daemon (control API, MPRIS, streaming privileges)"
+repository.workspace = true
+
+[[bin]]
+name = "streamboatd"
+path = "src/main.rs"
+
+[dependencies]
+streamboat-core.workspace = true
+streamboat-player.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

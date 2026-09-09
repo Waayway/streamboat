@@ -140,8 +140,15 @@ pub fn parse(info: &PlaybackInfo) -> Result<ParsedManifest> {
 fn parse_bts(bytes: &[u8], kind: &'static str) -> Result<ParsedManifest> {
     let m: BtsManifest = serde_json::from_slice(bytes)
         .map_err(|e| Error::Manifest(format!("{kind} manifest is not valid JSON: {e}")))?;
-    let enc = m.encryption_type.as_deref().map(str::trim).unwrap_or("NONE");
-    if !enc.eq_ignore_ascii_case("NONE") || non_empty(&m.key_id) || non_empty(&m.license_security_token) {
+    let enc = m
+        .encryption_type
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("NONE");
+    if !enc.eq_ignore_ascii_case("NONE")
+        || non_empty(&m.key_id)
+        || non_empty(&m.license_security_token)
+    {
         return Err(Error::ManifestRefused(format!(
             "TIDAL served an encrypted stream (encryptionType {enc:?}) for this client id; streamboat \
              does not decrypt streams. Lower the quality ceiling or use a client id that receives \
@@ -157,7 +164,10 @@ fn parse_bts(bytes: &[u8], kind: &'static str) -> Result<ParsedManifest> {
     Ok(ParsedManifest {
         source: StreamSource::Url(url),
         kind,
-        codec: m.codecs.map(|c| c.trim().to_string()).filter(|c| !c.is_empty()),
+        codec: m
+            .codecs
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty()),
         sample_rate,
         bit_depth,
     })
@@ -193,7 +203,9 @@ fn parse_dash(bytes: &[u8]) -> Result<ParsedManifest> {
     let (mut codec, mut sample_rate, mut bit_depth) = (None, None, None);
     if let Some(rep) = representation {
         codec = rep.attribute("codecs").map(|c| c.trim().to_string());
-        sample_rate = rep.attribute("audioSamplingRate").and_then(|r| r.trim().parse().ok());
+        sample_rate = rep
+            .attribute("audioSamplingRate")
+            .and_then(|r| r.trim().parse().ok());
         // `Representation@id` carries "FLAC,44100,16" (codec, rate, depth) in
         // TIDAL's MPDs; the web SDK's parser is the only evidence, so treat it
         // as a hint that fills gaps rather than as the source of truth.
@@ -210,9 +222,13 @@ fn parse_dash(bytes: &[u8]) -> Result<ParsedManifest> {
             }
         }
     }
-    let has_template = root
-        .descendants()
-        .any(|n| n.is_element() && matches!(n.tag_name().name(), "SegmentTemplate" | "SegmentList" | "SegmentBase"));
+    let has_template = root.descendants().any(|n| {
+        n.is_element()
+            && matches!(
+                n.tag_name().name(),
+                "SegmentTemplate" | "SegmentList" | "SegmentBase"
+            )
+    });
     let base_url = root
         .descendants()
         .find(|n| n.is_element() && n.tag_name().name() == "BaseURL")
@@ -230,7 +246,13 @@ fn parse_dash(bytes: &[u8]) -> Result<ParsedManifest> {
             ));
         }
     };
-    Ok(ParsedManifest { source, kind: "dash", codec, sample_rate, bit_depth })
+    Ok(ParsedManifest {
+        source,
+        kind: "dash",
+        codec,
+        sample_rate,
+        bit_depth,
+    })
 }
 
 #[cfg(test)]
@@ -255,13 +277,19 @@ mod tests {
         .unwrap();
         assert_eq!(p.kind, "bts");
         assert_eq!(p.codec.as_deref(), Some("flac"));
-        assert_eq!(p.source, StreamSource::Url("https://cdn.example/a.flac?token=x".into()));
+        assert_eq!(
+            p.source,
+            StreamSource::Url("https://cdn.example/a.flac?token=x".into())
+        );
     }
 
     #[test]
     fn emu_is_a_subset_of_bts() {
-        let p = parse(&info(MIME_EMU, r#"{"mimeType":"audio/mp4","urls":["https://cdn.example/e"]}"#))
-            .unwrap();
+        let p = parse(&info(
+            MIME_EMU,
+            r#"{"mimeType":"audio/mp4","urls":["https://cdn.example/e"]}"#,
+        ))
+        .unwrap();
         assert_eq!(p.kind, "emu");
         assert_eq!(p.codec, None);
     }
@@ -308,14 +336,20 @@ mod tests {
             "<Representation",
             r#"<ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc"/><Representation"#,
         );
-        assert!(matches!(parse(&info(MIME_DASH, &mpd)), Err(Error::ManifestRefused(_))));
+        assert!(matches!(
+            parse(&info(MIME_DASH, &mpd)),
+            Err(Error::ManifestRefused(_))
+        ));
     }
 
     #[test]
     fn dash_bare_base_url_is_direct() {
         let mpd = r#"<MPD><Period><AdaptationSet><Representation id="FLAC,96000,24" codecs="flac"><BaseURL>https://cdn.example/whole.flac?t=2</BaseURL></Representation></AdaptationSet></Period></MPD>"#;
         let p = parse(&info(MIME_DASH, mpd)).unwrap();
-        assert_eq!(p.source, StreamSource::Url("https://cdn.example/whole.flac?t=2".into()));
+        assert_eq!(
+            p.source,
+            StreamSource::Url("https://cdn.example/whole.flac?t=2".into())
+        );
         assert_eq!(p.sample_rate, Some(96000));
         assert_eq!(p.bit_depth, Some(24));
     }
