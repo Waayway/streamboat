@@ -24,8 +24,8 @@ pub enum Message {
     MoveUp(usize),
     MoveDown(usize),
     Remove(usize),
-    /// Lyrics is a NEXT-wave placeholder screen (`ui::screens::placeholder`)
-    /// — this is its one reachable route today.
+    /// Opens the full-screen synced-lyrics view (`ui::screens::lyrics`) for
+    /// the currently playing track.
     OpenLyrics(u64),
 }
 

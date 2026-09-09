@@ -204,6 +204,27 @@ pub fn cover_url(image_id: &str) -> Option<String> {
         .ok()
 }
 
+/// A playlist's cover: its square image at the id `cover_url` also uses
+/// (320) when present, else its wide image — playlists carry either or both
+/// (`tidal-client-features` library-playlists-collections.md §1's `image`
+/// vs `squareImage`), and neither shares the album-cover size table
+/// (`api/images.rs`'s `PLAYLIST_SQUARE_SIZES`/`WIDE_SIZES`).
+pub fn playlist_cover_url(playlist: &streamboat_core::models::Playlist) -> Option<String> {
+    if let Some(id) = playlist.square_image.as_deref() {
+        if let Ok(url) = streamboat_core::api::images::playlist_square_url(id, 320) {
+            return Some(url);
+        }
+    }
+    let id = playlist.image.as_deref()?;
+    streamboat_core::api::images::playlist_wide_url(id, 480, 320).ok()
+}
+
+/// A video's thumbnail at the smallest documented wide size — videos have
+/// no square-cover size table (`api/images.rs`'s `WIDE_SIZES`).
+pub fn video_thumbnail_url(image_id: &str) -> Option<String> {
+    streamboat_core::api::images::video_thumbnail_url(image_id, 480, 320).ok()
+}
+
 /// The v1 module `type`s this renderer knows how to turn into cards
 /// (`tidal-client-features` browse-pages-screens.md §2). Explore's items
 /// are raw JSON (`PageModuleV1::items`), so unlike [`feed_item_to_card`]

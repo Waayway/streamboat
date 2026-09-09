@@ -108,6 +108,49 @@ separately as `iced_test = "=0.14.0"` (see below for why it's a separate crate a
     borrow to outlive anything) — pass owned `String`s built inside a `view` function directly rather
     than reaching for `Box::leak` or restructuring lifetimes to keep a `&str` alive; the leak is not
     just ugly, it is an actual per-render memory leak.
+13. **There is no dedicated modal/dialog widget.** Build one from `iced::widget::stack!` (or the
+    `stack(children)` free function) — a base layer plus a full-size `container` with a translucent
+    background (`iced::Color { a: 0.5, ..Color::BLACK }`) holding the modal's content, centred with
+    `.center_x(Length::Fill).center_y(Length::Fill)` (`Container::center_x`/`center_y` take the
+    *length*, not a bare alignment — `.align_x(...)`/`.align_y(...)` exist too but need an
+    `Into<alignment::Horizontal>`/`Into<alignment::Vertical>`, one more conversion than `center_x`/
+    `center_y` ask for). `stack!`'s children each go through `Element::from`, so anything that
+    already satisfies `Into<Element>` (a `Container`, another already-built `Element`) drops straight
+    in with no extra wrapping. streamboat's "add to playlist" picker (task item 3) is exactly this
+    shape: `stack![base_ui, dimmed_container_with_the_picker_inside]`.
+14. **A `scrollable` can be scrolled programmatically, but only by a stable `widget::Id`, and the
+    operation lives at `iced::widget::operation`, not on `scrollable` itself.** Give the scrollable
+    `.id(iced::widget::Id::new("some-name"))`, then return
+    `iced::widget::operation::scroll_to(id, iced::widget::operation::AbsoluteOffset { x: None, y:
+    Some(pixels) })` as a `Task<Message>` from `update` — `iced_widget::scrollable` re-exports
+    `AbsoluteOffset`/`RelativeOffset` but not `scroll_to`/`snap_to` themselves, which live in
+    `iced_runtime::widget::operation` and are re-exported at `iced::widget::operation` (via `iced`'s
+    blanket `pub use iced_runtime::widget::*`). `AbsoluteOffset<T = f32>` is generic and defaults to
+    plain `f32` for *reading* the current position (`Viewport::absolute_offset()`), but `scroll_to`
+    always wants `AbsoluteOffset<Option<f32>>` (an axis left `None` is untouched) — don't reach for
+    the bare-`f32` shape when *setting* a position, only when reading one back. There is no way to
+    ask a `Simulator` "did this actually scroll" — the operation itself is one of the things this
+    project's own headless tests cannot verify (see the Lyrics screen's auto-scroll, task item 4: the
+    pure line-selection logic is tested, the `scroll_to` call it drives is not).
+15. **`Task::perform(future, f)` runs `future`'s constructor eagerly, at the call site, before the
+    `Task` is ever polled by anything** — an async function's body is lazy (nothing inside it runs
+    until polled), but anything evaluated *before* the first `.await` inside a plain (non-async-fn)
+    expression passed directly to `Task::perform` runs immediately. `tokio::time::sleep(duration)`
+    calls `Handle::current()` at the moment it's invoked (to register the timer), not lazily at first
+    poll — writing `Task::perform(tokio::time::sleep(duration), ...)` inside a synchronous `update`/
+    `push`/similar function panics with "there is no reactor running" the instant that line executes
+    in any context without a live tokio runtime (a plain `#[test]`, most concretely, but the same
+    panic risk exists if that function is ever called before the app's own runtime is attached).
+    Wrap it in an async block so the sleep is deferred to poll time instead:
+    `Task::perform(async move { tokio::time::sleep(duration).await }, ...)` — the same shape
+    `ui::screens::search`'s debounce already used, now also `ui::banner`'s auto-expire.
+16. **`std::collections::hash_map::RandomState` plus `BuildHasher::hash_one` is a zero-dependency way
+    to shuffle a `Vec` "randomly enough" for a UI shuffle button** — `RandomState::new()` draws a
+    fresh per-call seed from the OS (the same source any `HashMap` uses), and sorting by
+    `seed.hash_one(item)` gives a full, unbiased-in-practice permutation without pulling in the `rand`
+    crate for one button (`ui::actions::shuffled`). Prefer `BuildHasher::hash_one` over the older
+    "make a hasher, feed it, call `.finish()`" three-step manually — `clippy::manual_hash_one` flags
+    the manual version under `-D warnings`.
 
 ## Owner-context notes
 
@@ -130,3 +173,15 @@ separately as `iced_test = "=0.14.0"` (see below for why it's a separate crate a
 - Keyboard shortcuts (task item 4) go through `iced::event::listen_with`, matched on
   `iced::keyboard::Event::KeyPressed` — space, ctrl+f and escape are exactly the three this wave
   wires up; media keys are explicitly MPRIS's job later, not this subscription's.
+- Per-screen state that depends on an id (an album, a playlist, a track — the Entity/Collection/
+  Lyrics wave, task items 1-2, 4) does **not** live in the `Nav`/`Screen` stack itself — `Screen`
+  only carries the id, never the loaded data. `ui::app::App` keeps one `EntityScreen` enum field
+  (`None` or exactly one loaded entity screen's `State`) rebuilt from scratch by a single
+  `sync_entity_screen` helper every time navigation changes, compared against the *current*
+  `Screen::Entity`'s id so revisiting the same id via back/forward doesn't refetch. My Collection and
+  the Lyrics screen's current track are different again — persistent `App` fields like Home/Explore/
+  Search, since Collection has no per-visit id and Lyrics is keyed off whatever track is playing
+  rather than off navigation at all (D-036: lyrics are prefetched from `Event::TrackStarted`, before
+  the user ever opens the Lyrics screen). Three different lifetimes, three different homes for the
+  state — reach for the one that actually matches what keys the data, not "wherever the last screen
+  put its `State` field."

@@ -2,7 +2,9 @@
 //! the persistent sidebar/playback bar, and the `PlayerLink` seam over
 //! `streamboat-player`'s `PlayerHandle`/`Player::spawn` (D-010).
 
+pub mod actions;
 pub mod app;
+pub mod banner;
 pub mod design;
 pub mod engine_select;
 pub mod format;

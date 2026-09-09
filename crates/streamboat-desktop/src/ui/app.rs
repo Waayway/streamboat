@@ -6,24 +6,146 @@
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 
-use iced::widget::{column, container, row};
+use iced::widget::{column, container, row, stack};
 use iced::{Element, Length, Subscription, Task, Theme};
 
+use streamboat_core::api::images::{ContentLink, parse_content_link};
 use streamboat_core::bootstrap::Context;
 use streamboat_core::config::ThemePreference;
 use streamboat_core::models::TrackSummary;
-use streamboat_core::proto::{Command, Event, PlayItem, PlayerState};
+use streamboat_core::proto::{Command, Event, PlayItem, PlayerState, QueuePosition};
 use streamboat_player::{Player, PlayerConfig, PlayerDeps};
 
+use crate::ui::actions;
+use crate::ui::banner;
 use crate::ui::design::Tokens;
 use crate::ui::engine_select;
 use crate::ui::format::cover_url;
 use crate::ui::images::ImageCache;
-use crate::ui::nav::{Nav, Screen};
+use crate::ui::nav::{EntityRef, Nav, Screen};
 use crate::ui::player_link::{InProcessLink, LinkKey, SharedLink};
 use crate::ui::{playback_bar, screens, signal_path};
 
 const IMAGE_CACHE_CAPACITY: usize = 512;
+
+// --- Entity/Collection/Lyrics wave: screen state and cross-screen effects ---
+// Everything in this block through `impl From<...> for EntityEffect` is new
+// this wave (task items 1-4): one enum holding whichever entity screen is
+// currently open (constructed fresh per navigation by `App::sync_entity_screen`),
+// and one small effect type every entity screen's own `Effect` converts into,
+// so `update_album`/`update_artist`/... below share one `apply_entity_effect`
+// instead of five near-identical copies of "send Play, navigate, prefetch
+// artwork, open the add-to-playlist picker."
+
+/// Whichever entity page (task item 1) is currently open, or `None` before
+/// the first one loads. Rebuilt by [`App::sync_entity_screen`] whenever
+/// navigation lands on a different [`Screen::Entity`]/id.
+enum EntityScreen {
+    None,
+    Album(screens::album::State),
+    Artist(screens::artist::State),
+    Playlist(screens::playlist::State),
+    Mix(screens::mix::State),
+    Track(screens::track::State),
+    Video(screens::video::State),
+}
+
+/// The effects every entity screen's own `Effect` type converts into, so
+/// `App` has one place that knows how to turn "play these tracks" or "open
+/// the add-to-playlist picker" into real `Command`s/state changes.
+enum EntityEffect {
+    PlayTracks(Vec<u64>),
+    Enqueue(u64, QueuePosition),
+    Navigate(EntityRef),
+    ImagesNeeded(Vec<String>),
+    OpenAddToPlaylist(u64),
+    /// The user deleted their own playlist (`screens::playlist::Effect::Deleted`).
+    PlaylistDeleted,
+}
+
+impl From<screens::album::Effect> for EntityEffect {
+    fn from(e: screens::album::Effect) -> Self {
+        match e {
+            screens::album::Effect::PlayTracks(ids) => EntityEffect::PlayTracks(ids),
+            screens::album::Effect::Enqueue(id, pos) => EntityEffect::Enqueue(id, pos),
+            screens::album::Effect::Navigate(entity) => EntityEffect::Navigate(entity),
+            screens::album::Effect::ImagesNeeded(ids) => EntityEffect::ImagesNeeded(ids),
+            screens::album::Effect::OpenAddToPlaylist(id) => EntityEffect::OpenAddToPlaylist(id),
+        }
+    }
+}
+
+impl From<screens::artist::Effect> for EntityEffect {
+    fn from(e: screens::artist::Effect) -> Self {
+        match e {
+            screens::artist::Effect::PlayTracks(ids) => EntityEffect::PlayTracks(ids),
+            screens::artist::Effect::Enqueue(id, pos) => EntityEffect::Enqueue(id, pos),
+            screens::artist::Effect::Navigate(entity) => EntityEffect::Navigate(entity),
+            screens::artist::Effect::ImagesNeeded(ids) => EntityEffect::ImagesNeeded(ids),
+            screens::artist::Effect::OpenAddToPlaylist(id) => EntityEffect::OpenAddToPlaylist(id),
+        }
+    }
+}
+
+impl From<screens::playlist::Effect> for EntityEffect {
+    fn from(e: screens::playlist::Effect) -> Self {
+        match e {
+            screens::playlist::Effect::PlayTracks(ids) => EntityEffect::PlayTracks(ids),
+            screens::playlist::Effect::Enqueue(id, pos) => EntityEffect::Enqueue(id, pos),
+            screens::playlist::Effect::Navigate(entity) => EntityEffect::Navigate(entity),
+            screens::playlist::Effect::ImagesNeeded(ids) => EntityEffect::ImagesNeeded(ids),
+            screens::playlist::Effect::OpenAddToPlaylist(id) => EntityEffect::OpenAddToPlaylist(id),
+            screens::playlist::Effect::Deleted => EntityEffect::PlaylistDeleted,
+        }
+    }
+}
+
+impl From<screens::mix::Effect> for EntityEffect {
+    fn from(e: screens::mix::Effect) -> Self {
+        match e {
+            screens::mix::Effect::PlayTracks(ids) => EntityEffect::PlayTracks(ids),
+            screens::mix::Effect::Enqueue(id, pos) => EntityEffect::Enqueue(id, pos),
+            screens::mix::Effect::Navigate(entity) => EntityEffect::Navigate(entity),
+            screens::mix::Effect::OpenAddToPlaylist(id) => EntityEffect::OpenAddToPlaylist(id),
+        }
+    }
+}
+
+impl From<screens::track::Effect> for EntityEffect {
+    fn from(e: screens::track::Effect) -> Self {
+        match e {
+            screens::track::Effect::PlayTracks(ids) => EntityEffect::PlayTracks(ids),
+            screens::track::Effect::Enqueue(id, pos) => EntityEffect::Enqueue(id, pos),
+            screens::track::Effect::Navigate(entity) => EntityEffect::Navigate(entity),
+            screens::track::Effect::ImagesNeeded(ids) => EntityEffect::ImagesNeeded(ids),
+            screens::track::Effect::OpenAddToPlaylist(id) => EntityEffect::OpenAddToPlaylist(id),
+        }
+    }
+}
+
+impl From<screens::video::Effect> for EntityEffect {
+    fn from(e: screens::video::Effect) -> Self {
+        match e {
+            screens::video::Effect::Navigate(entity) => EntityEffect::Navigate(entity),
+            screens::video::Effect::ImagesNeeded(ids) => EntityEffect::ImagesNeeded(ids),
+        }
+    }
+}
+
+impl From<screens::collection::Effect> for EntityEffect {
+    fn from(e: screens::collection::Effect) -> Self {
+        match e {
+            screens::collection::Effect::PlayTracks(ids) => EntityEffect::PlayTracks(ids),
+            screens::collection::Effect::Enqueue(id, pos) => EntityEffect::Enqueue(id, pos),
+            screens::collection::Effect::Navigate(entity) => EntityEffect::Navigate(entity),
+            screens::collection::Effect::ImagesNeeded(ids) => EntityEffect::ImagesNeeded(ids),
+            screens::collection::Effect::OpenAddToPlaylist(id) => {
+                EntityEffect::OpenAddToPlaylist(id)
+            }
+        }
+    }
+}
+// --- end Entity/Collection/Lyrics wave block ---
 
 pub struct App {
     ctx: Context,
@@ -44,6 +166,25 @@ pub struct App {
     explore: screens::explore::State,
     search: screens::search::State,
     settings: screens::settings::State,
+
+    /// Task item 1: whichever entity page is open, rebuilt on navigation by
+    /// [`App::sync_entity_screen`].
+    entity: EntityScreen,
+    /// Task item 2: My Collection persists across visits like `home`/
+    /// `explore`/`search` above, rather than being rebuilt per navigation
+    /// like `entity` — it has no per-visit id to key a fresh load on.
+    collection: screens::collection::State,
+    /// Task item 4: the currently (pre)fetched track's lyrics.
+    lyrics: screens::lyrics::State,
+    /// Task item 6: dismissible, auto-expiring notification banners.
+    banner: banner::State,
+    /// Task item 3: the "add to playlist" picker, open over whichever
+    /// screen triggered it.
+    add_to_playlist: Option<actions::PickerState>,
+    /// Task item 5: a deep link passed on the command line (`streamboat
+    /// open <url>` or a bare URL as `argv[1]`), applied once the user is
+    /// confirmed logged in.
+    pending_open: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +205,27 @@ pub enum Message {
     LoginCheck(bool),
     ImageFetched(String, Option<iced::widget::image::Handle>),
     KeyShortcut(Shortcut),
+
+    // --- Entity/Collection/Lyrics wave (task items 1-6) ---
+    Album(screens::album::Message),
+    Artist(screens::artist::Message),
+    Playlist(screens::playlist::Message),
+    Mix(screens::mix::Message),
+    Track(screens::track::Message),
+    Video(screens::video::Message),
+    Collection(screens::collection::Message),
+    Lyrics(screens::lyrics::Message),
+    Banner(banner::Message),
+    /// Task item 3: the "add to playlist" picker overlay, opened by any
+    /// screen's `EntityEffect::OpenAddToPlaylist` (via `App::open_add_to_playlist`,
+    /// called directly rather than through a `Message` — there is no UI
+    /// element outside a screen's own track rows that opens this, so there
+    /// is nothing that would ever construct a top-level `Message` for it).
+    AddToPlaylist(actions::PickerMessage),
+    /// A shared playlist link resolved to its track ids (task item 5,
+    /// D-039 "shared playlist links open and play") — `Err` surfaces as a
+    /// banner rather than a silent failure.
+    DeepLinkPlaylistLoaded(Result<Vec<u64>, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +256,7 @@ pub enum Shortcut {
 }
 
 impl App {
-    fn boot(ctx: Context, link: SharedLink) -> (Self, Task<Message>) {
+    fn boot(ctx: Context, link: SharedLink, open_url: Option<String>) -> (Self, Task<Message>) {
         let http = reqwest::Client::builder()
             .user_agent(format!(
                 "streamboat/{} (+{})",
@@ -123,6 +285,12 @@ impl App {
             explore: screens::explore::State::default(),
             search: screens::search::State::default(),
             settings,
+            entity: EntityScreen::None,
+            collection: screens::collection::State::default(),
+            lyrics: screens::lyrics::State::default(),
+            banner: banner::State::default(),
+            add_to_playlist: None,
+            pending_open: open_url,
         };
         let check = Task::perform(async move { api.is_logged_in().await }, Message::LoginCheck);
         (app, check)
@@ -152,13 +320,10 @@ impl App {
             Message::LoginCheck(true) => {
                 self.logged_in = true;
                 self.nav = Nav::new(Screen::Home);
-                self.load_home_and_explore()
+                Task::batch([self.load_home_and_explore(), self.apply_pending_open()])
             }
             Message::LoginCheck(false) => Task::none(),
-            Message::Nav(action) => {
-                self.apply_nav(action);
-                Task::none()
-            }
+            Message::Nav(action) => self.apply_nav(action),
             Message::Login(inner) => self.update_login(inner),
             Message::Home(inner) => self.update_home(inner),
             Message::Explore(inner) => self.update_explore(inner),
@@ -174,6 +339,19 @@ impl App {
                 Task::none()
             }
             Message::KeyShortcut(shortcut) => self.handle_shortcut(shortcut),
+
+            // --- Entity/Collection/Lyrics wave (task items 1-6) ---
+            Message::Album(inner) => self.update_album(inner),
+            Message::Artist(inner) => self.update_artist(inner),
+            Message::Playlist(inner) => self.update_playlist(inner),
+            Message::Mix(inner) => self.update_mix(inner),
+            Message::Track(inner) => self.update_track(inner),
+            Message::Video(inner) => self.update_video(inner),
+            Message::Collection(inner) => self.update_collection(inner),
+            Message::Lyrics(inner) => self.update_lyrics(inner),
+            Message::Banner(inner) => self.update_banner(inner),
+            Message::AddToPlaylist(inner) => self.update_add_to_playlist(inner),
+            Message::DeepLinkPlaylistLoaded(result) => self.deep_link_playlist_loaded(result),
         }
     }
 
@@ -184,9 +362,9 @@ impl App {
         ])
     }
 
-    fn apply_nav(&mut self, action: NavAction) {
+    fn apply_nav(&mut self, action: NavAction) -> Task<Message> {
         if !self.logged_in {
-            return;
+            return Task::none();
         }
         match action {
             NavAction::Go(target) => self.nav.go_to(target.into()),
@@ -197,6 +375,284 @@ impl App {
                 let _ = self.nav.forward();
             }
         }
+        self.sync_entity_screen()
+    }
+
+    /// Navigate to `screen` and make sure whatever state it needs (an
+    /// entity page's data, My Collection's first tab, this track's lyrics)
+    /// is loading — the one path every navigation in this module should go
+    /// through instead of calling `self.nav.go_to` directly, so nothing new
+    /// this wave adds is ever shown stale or empty.
+    fn navigate(&mut self, screen: Screen) -> Task<Message> {
+        self.nav.go_to(screen);
+        self.sync_entity_screen()
+    }
+
+    /// Rebuilds [`EntityScreen`]/loads My Collection's first tab/(re)requests
+    /// lyrics when navigation just landed on a screen that needs it — a
+    /// no-op for every screen that already manages its own persistent state
+    /// (Home, Explore, Search, Now Playing, Settings).
+    fn sync_entity_screen(&mut self) -> Task<Message> {
+        match self.nav.current().clone() {
+            Screen::Entity(EntityRef::Album(id)) => {
+                if !matches!(&self.entity, EntityScreen::Album(s) if s.album_id() == id) {
+                    self.entity = EntityScreen::Album(screens::album::State::new(id));
+                    return screens::album::State::load(&self.ctx.api, id).map(Message::Album);
+                }
+            }
+            Screen::Entity(EntityRef::Artist(id)) => {
+                if !matches!(&self.entity, EntityScreen::Artist(s) if s.artist_id() == id) {
+                    self.entity = EntityScreen::Artist(screens::artist::State::new(id));
+                    return screens::artist::State::load(&self.ctx.api, id).map(Message::Artist);
+                }
+            }
+            Screen::Entity(EntityRef::Playlist(uuid)) => {
+                if !matches!(&self.entity, EntityScreen::Playlist(s) if s.uuid() == uuid.as_str()) {
+                    self.entity =
+                        EntityScreen::Playlist(screens::playlist::State::new(uuid.clone()));
+                    return screens::playlist::State::load(&self.ctx.api, uuid)
+                        .map(Message::Playlist);
+                }
+            }
+            Screen::Entity(EntityRef::Mix(id)) => {
+                if !matches!(&self.entity, EntityScreen::Mix(s) if s.mix_id() == id.as_str()) {
+                    self.entity = EntityScreen::Mix(screens::mix::State::new(id.clone()));
+                    return screens::mix::State::load(&self.ctx.api, id).map(Message::Mix);
+                }
+            }
+            Screen::Entity(EntityRef::Track(id)) => {
+                if !matches!(&self.entity, EntityScreen::Track(s) if s.track_id() == id) {
+                    self.entity = EntityScreen::Track(screens::track::State::new(id));
+                    return screens::track::State::load(&self.ctx.api, id).map(Message::Track);
+                }
+            }
+            Screen::Entity(EntityRef::Video(id)) => {
+                if !matches!(&self.entity, EntityScreen::Video(s) if s.video_id() == id) {
+                    self.entity = EntityScreen::Video(screens::video::State::new(id));
+                    return screens::video::State::load(&self.ctx.api, id).map(Message::Video);
+                }
+            }
+            Screen::Collection => {
+                if !self.collection.is_loaded() {
+                    return screens::collection::State::load(&self.ctx.api)
+                        .map(Message::Collection);
+                }
+            }
+            Screen::Lyrics(id) => {
+                let (task, _effect) = self
+                    .lyrics
+                    .update(screens::lyrics::Message::Requested(id), &self.ctx.api);
+                return task.map(Message::Lyrics);
+            }
+            Screen::Login
+            | Screen::Home
+            | Screen::Explore
+            | Screen::Search
+            | Screen::NowPlaying
+            | Screen::Settings => {}
+        }
+        Task::none()
+    }
+
+    /// Applies the effects every entity screen's own `Effect` converts into
+    /// via `From` — see the block above [`App`]'s struct definition.
+    fn apply_entity_effect(&mut self, effect: EntityEffect) -> Task<Message> {
+        match effect {
+            EntityEffect::PlayTracks(ids) => {
+                if ids.is_empty() {
+                    return Task::none();
+                }
+                self.link.send(Command::Play {
+                    items: ids
+                        .into_iter()
+                        .map(|track_id| PlayItem { track_id })
+                        .collect(),
+                });
+                self.navigate(Screen::NowPlaying)
+            }
+            EntityEffect::Enqueue(id, position) => {
+                self.link.send(Command::Enqueue {
+                    items: vec![PlayItem { track_id: id }],
+                    position,
+                });
+                Task::none()
+            }
+            EntityEffect::Navigate(entity) => self.navigate(Screen::Entity(entity)),
+            EntityEffect::ImagesNeeded(ids) => self.prefetch_images(ids),
+            EntityEffect::OpenAddToPlaylist(id) => self.open_add_to_playlist(id),
+            EntityEffect::PlaylistDeleted => self.navigate(Screen::Collection),
+        }
+    }
+
+    fn open_add_to_playlist(&mut self, track_id: u64) -> Task<Message> {
+        let (state, task) = actions::PickerState::open(track_id, &self.ctx.api);
+        self.add_to_playlist = Some(state);
+        task.map(Message::AddToPlaylist)
+    }
+
+    fn update_add_to_playlist(&mut self, message: actions::PickerMessage) -> Task<Message> {
+        let Some(state) = self.add_to_playlist.as_mut() else {
+            return Task::none();
+        };
+        let (task, effect) = state.update(message, &self.ctx.api);
+        if matches!(effect, Some(actions::PickerEffect::Close)) {
+            self.add_to_playlist = None;
+        }
+        task.map(Message::AddToPlaylist)
+    }
+
+    fn update_album(&mut self, inner: screens::album::Message) -> Task<Message> {
+        let EntityScreen::Album(state) = &mut self.entity else {
+            return Task::none();
+        };
+        let (task, effects) = state.update(inner, &self.ctx.api);
+        let mut tasks = vec![task.map(Message::Album)];
+        for effect in effects {
+            tasks.push(self.apply_entity_effect(effect.into()));
+        }
+        Task::batch(tasks)
+    }
+
+    fn update_artist(&mut self, inner: screens::artist::Message) -> Task<Message> {
+        let EntityScreen::Artist(state) = &mut self.entity else {
+            return Task::none();
+        };
+        let (task, effects) = state.update(inner, &self.ctx.api);
+        let mut tasks = vec![task.map(Message::Artist)];
+        for effect in effects {
+            tasks.push(self.apply_entity_effect(effect.into()));
+        }
+        Task::batch(tasks)
+    }
+
+    fn update_playlist(&mut self, inner: screens::playlist::Message) -> Task<Message> {
+        let EntityScreen::Playlist(state) = &mut self.entity else {
+            return Task::none();
+        };
+        let (task, effects) = state.update(inner, &self.ctx.api);
+        let mut tasks = vec![task.map(Message::Playlist)];
+        for effect in effects {
+            tasks.push(self.apply_entity_effect(effect.into()));
+        }
+        Task::batch(tasks)
+    }
+
+    fn update_mix(&mut self, inner: screens::mix::Message) -> Task<Message> {
+        let EntityScreen::Mix(state) = &mut self.entity else {
+            return Task::none();
+        };
+        let (task, effects) = state.update(inner, &self.ctx.api);
+        let mut tasks = vec![task.map(Message::Mix)];
+        for effect in effects {
+            tasks.push(self.apply_entity_effect(effect.into()));
+        }
+        Task::batch(tasks)
+    }
+
+    fn update_track(&mut self, inner: screens::track::Message) -> Task<Message> {
+        let EntityScreen::Track(state) = &mut self.entity else {
+            return Task::none();
+        };
+        let (task, effects) = state.update(inner, &self.ctx.api);
+        let mut tasks = vec![task.map(Message::Track)];
+        for effect in effects {
+            tasks.push(self.apply_entity_effect(effect.into()));
+        }
+        Task::batch(tasks)
+    }
+
+    fn update_video(&mut self, inner: screens::video::Message) -> Task<Message> {
+        let EntityScreen::Video(state) = &mut self.entity else {
+            return Task::none();
+        };
+        let (task, effects) = state.update(inner, &self.ctx.api);
+        let mut tasks = vec![task.map(Message::Video)];
+        for effect in effects {
+            tasks.push(self.apply_entity_effect(effect.into()));
+        }
+        Task::batch(tasks)
+    }
+
+    fn update_collection(&mut self, inner: screens::collection::Message) -> Task<Message> {
+        let (task, effects) = self.collection.update(inner, &self.ctx.api);
+        let mut tasks = vec![task.map(Message::Collection)];
+        for effect in effects {
+            tasks.push(self.apply_entity_effect(effect.into()));
+        }
+        Task::batch(tasks)
+    }
+
+    fn update_lyrics(&mut self, inner: screens::lyrics::Message) -> Task<Message> {
+        let (task, effect) = self.lyrics.update(inner, &self.ctx.api);
+        if let Some(screens::lyrics::Effect::Seek(position_ms)) = effect {
+            self.link.send(Command::Seek { position_ms });
+        }
+        task.map(Message::Lyrics)
+    }
+
+    fn update_banner(&mut self, inner: banner::Message) -> Task<Message> {
+        if let Some(banner::Effect::Resume) = self.banner.update(inner) {
+            self.link.send(Command::Resume);
+        }
+        Task::none()
+    }
+
+    /// Task item 5: apply a deep link once parsed — navigate immediately,
+    /// and for a shared playlist link, also fetch its tracks and start
+    /// playback (D-039).
+    fn open_deep_link(&mut self, link: ContentLink) -> Task<Message> {
+        let screen = Screen::from_content_link(link.clone());
+        let mut tasks = vec![self.navigate(screen)];
+        if let ContentLink::Playlist(uuid) = link {
+            let api = self.ctx.api.clone();
+            tasks.push(Task::perform(
+                load_playlist_track_ids(api, uuid),
+                Message::DeepLinkPlaylistLoaded,
+            ));
+        }
+        Task::batch(tasks)
+    }
+
+    fn deep_link_playlist_loaded(&mut self, result: Result<Vec<u64>, String>) -> Task<Message> {
+        match result {
+            Ok(ids) if !ids.is_empty() => {
+                self.link.send(Command::Play {
+                    items: ids
+                        .into_iter()
+                        .map(|track_id| PlayItem { track_id })
+                        .collect(),
+                });
+                Task::none()
+            }
+            Ok(_) => Task::none(),
+            Err(e) => {
+                let task = self.banner.push(
+                    format!("couldn't load this shared playlist: {e}"),
+                    banner::Tone::Danger,
+                    false,
+                );
+                task.map(Message::Banner)
+            }
+        }
+    }
+
+    /// A CLI-provided deep link (`streamboat open <url>` or a bare URL as
+    /// `argv[1]`), applied once — parsed and consumed from `pending_open`
+    /// after the first successful login check, whether that's an existing
+    /// session or a fresh login.
+    fn apply_pending_open(&mut self) -> Task<Message> {
+        let Some(url) = self.pending_open.take() else {
+            return Task::none();
+        };
+        let Some(link) = parse_content_link(&url) else {
+            let task = self.banner.push(
+                format!("couldn't recognise this link: {url}"),
+                banner::Tone::Warning,
+                false,
+            );
+            return task.map(Message::Banner);
+        };
+        self.open_deep_link(link)
     }
 
     fn update_login(&mut self, inner: screens::login::Message) -> Task<Message> {
@@ -206,7 +662,11 @@ impl App {
         if matches!(effect, Some(screens::login::Effect::LoggedIn)) {
             self.logged_in = true;
             self.nav = Nav::new(Screen::Home);
-            return Task::batch([task.map(Message::Login), self.load_home_and_explore()]);
+            return Task::batch([
+                task.map(Message::Login),
+                self.load_home_and_explore(),
+                self.apply_pending_open(),
+            ]);
         }
         task.map(Message::Login)
     }
@@ -216,7 +676,9 @@ impl App {
         let mut tasks = vec![task.map(Message::Home)];
         for effect in effects {
             match effect {
-                screens::home::Effect::Navigate(entity) => self.nav.go_to(Screen::Entity(entity)),
+                screens::home::Effect::Navigate(entity) => {
+                    tasks.push(self.navigate(Screen::Entity(entity)))
+                }
                 screens::home::Effect::ImagesNeeded(ids) => tasks.push(self.prefetch_images(ids)),
             }
         }
@@ -229,7 +691,7 @@ impl App {
         for effect in effects {
             match effect {
                 screens::explore::Effect::Navigate(entity) => {
-                    self.nav.go_to(Screen::Entity(entity))
+                    tasks.push(self.navigate(Screen::Entity(entity)))
                 }
                 screens::explore::Effect::ImagesNeeded(ids) => {
                     tasks.push(self.prefetch_images(ids))
@@ -248,7 +710,7 @@ impl App {
                     self.link.send(Command::Play {
                         items: vec![PlayItem { track_id: id }],
                     });
-                    self.nav.go_to(Screen::NowPlaying);
+                    tasks.push(self.navigate(Screen::NowPlaying));
                 }
                 screens::search::Effect::Enqueue(id, position) => {
                     self.link.send(Command::Enqueue {
@@ -256,8 +718,13 @@ impl App {
                         position,
                     });
                 }
-                screens::search::Effect::Navigate(entity) => self.nav.go_to(Screen::Entity(entity)),
+                screens::search::Effect::Navigate(entity) => {
+                    tasks.push(self.navigate(Screen::Entity(entity)))
+                }
                 screens::search::Effect::ImagesNeeded(ids) => tasks.push(self.prefetch_images(ids)),
+                screens::search::Effect::OpenDeepLink(link) => {
+                    tasks.push(self.open_deep_link(link))
+                }
             }
         }
         Task::batch(tasks)
@@ -291,7 +758,7 @@ impl App {
                 self.link.send(Command::RemoveQueueItem { index });
             }
             screens::now_playing::Message::OpenLyrics(track_id) => {
-                self.nav.go_to(Screen::Lyrics(track_id));
+                return self.navigate(Screen::Lyrics(track_id));
             }
         }
         Task::none()
@@ -360,21 +827,62 @@ impl App {
 
     fn handle_player_event(&mut self, event: Event) -> Task<Message> {
         match event {
-            Event::State { state } => self.player_state = state,
-            Event::QueueChanged { queue, .. } => self.queue = queue,
+            Event::State { state } => {
+                self.player_state = state;
+                Task::none()
+            }
+            Event::QueueChanged { queue, .. } => {
+                self.queue = queue;
+                Task::none()
+            }
             Event::Position {
                 position_ms,
                 duration_ms,
             } => {
                 self.player_state.position_ms = position_ms;
                 self.player_state.duration_ms = duration_ms;
+                // Task item 4: keep the Lyrics screen's highlighted line
+                // (and its auto-scroll) in sync even while the screen isn't
+                // the one currently shown, so it's correct the instant the
+                // user opens it.
+                let (task, _effect) = self.lyrics.update(
+                    screens::lyrics::Message::PositionChanged(position_ms),
+                    &self.ctx.api,
+                );
+                task.map(Message::Lyrics)
             }
-            Event::TrackStarted { .. }
-            | Event::TrackFinished { .. }
+            // --- Banner wave (task item 6): replaces the previous silent
+            // arms for these three events with a dismissible, auto-expiring
+            // banner (`ui::banner`). `PlaybackTakenOver` additionally offers
+            // a resume button (D-033: only ever a real button press, never
+            // an automatic retry).
+            Event::Warning { message } => self
+                .banner
+                .push(message, banner::Tone::Warning, false)
+                .map(Message::Banner),
+            Event::Error { message, .. } => self
+                .banner
+                .push(message, banner::Tone::Danger, false)
+                .map(Message::Banner),
+            Event::PlaybackTakenOver { by } => self
+                .banner
+                .push(
+                    format!("Playback started on {by}."),
+                    banner::Tone::Info,
+                    true,
+                )
+                .map(Message::Banner),
+            // --- Task item 4: prefetch this track's lyrics as soon as it
+            // starts, so the Lyrics screen (reached from Now Playing) opens
+            // instantly instead of showing "Loading lyrics…" every time.
+            Event::TrackStarted { track, .. } => {
+                let (task, _effect) = self
+                    .lyrics
+                    .update(screens::lyrics::Message::Requested(track.id), &self.ctx.api);
+                task.map(Message::Lyrics)
+            }
+            Event::TrackFinished { .. }
             | Event::Buffering { .. }
-            | Event::Warning { .. }
-            | Event::Error { .. }
-            | Event::PlaybackTakenOver { .. }
             | Event::AuthRequired { .. }
             | Event::AuthOk { .. }
             | Event::PinProgress { .. }
@@ -382,9 +890,8 @@ impl App {
             | Event::PinFailed { .. }
             | Event::PinsChanged
             | Event::EndOfQueue
-            | Event::Stopped => {}
+            | Event::Stopped => Task::none(),
         }
-        Task::none()
     }
 
     fn handle_shortcut(&mut self, shortcut: Shortcut) -> Task<Message> {
@@ -396,6 +903,13 @@ impl App {
                 self.link.send(Command::TogglePlayPause);
             }
             Shortcut::FocusSearch => self.nav.go_to(Screen::Search),
+            // Task item 3: escape closes the add-to-playlist overlay first,
+            // rather than navigating the screen underneath it — the modal
+            // has no other keyboard dismissal and this is the one place
+            // `Shortcut::Back` is already wired globally.
+            Shortcut::Back if self.add_to_playlist.is_some() => {
+                self.add_to_playlist = None;
+            }
             Shortcut::Back => {
                 let _ = self.nav.back();
             }
@@ -440,16 +954,12 @@ impl App {
                     .map(Message::NowPlaying)
             }
             Screen::Settings => self.settings.view(self.tokens).map(Message::Settings),
-            Screen::Entity(entity) => {
-                crate::ui::screens::placeholder::entity_view(self.tokens, entity)
-                    .map(|m| match m {})
-            }
-            Screen::Collection => {
-                crate::ui::screens::placeholder::collection_view(self.tokens).map(|m| match m {})
-            }
-            Screen::Lyrics(id) => {
-                crate::ui::screens::placeholder::lyrics_view(self.tokens, *id).map(|m| match m {})
-            }
+            Screen::Entity(_) => self.entity_view(),
+            Screen::Collection => self
+                .collection
+                .view(self.tokens, &self.images)
+                .map(Message::Collection),
+            Screen::Lyrics(_) => self.lyrics.view(self.tokens).map(Message::Lyrics),
         };
 
         let mut main_row = row![self.sidebar(), body]
@@ -470,7 +980,12 @@ impl App {
         )
         .map(Message::PlaybackBar);
 
-        container(column![main_row, bar].height(Length::Fill))
+        let mut page = column![main_row, bar].height(Length::Fill);
+        if let Some(banner_area) = self.banner.view(self.tokens) {
+            page = column![banner_area.map(Message::Banner), page].height(Length::Fill);
+        }
+
+        let base: Element<'_, Message> = container(page)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(move |_theme: &Theme| iced::widget::container::Style {
@@ -478,7 +993,56 @@ impl App {
                 text_color: Some(self.tokens.text),
                 ..iced::widget::container::Style::default()
             })
-            .into()
+            .into();
+
+        // Task item 3: the "add to playlist" picker overlays whatever
+        // screen opened it, dimming the background rather than replacing
+        // it — iced 0.14 has no dedicated modal widget, so `stack!` plus a
+        // full-size translucent backdrop is the mechanism (§6 of the
+        // `iced-ui` skill has no stock "no wrap layout" surprises here,
+        // just none of this needing one).
+        match &self.add_to_playlist {
+            Some(picker) => stack![
+                base,
+                container(picker.view(self.tokens).map(Message::AddToPlaylist))
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .style(move |_theme: &Theme| iced::widget::container::Style {
+                        background: Some(
+                            iced::Color {
+                                a: 0.55,
+                                ..iced::Color::BLACK
+                            }
+                            .into()
+                        ),
+                        ..iced::widget::container::Style::default()
+                    }),
+            ]
+            .into(),
+            None => base,
+        }
+    }
+
+    /// The currently open entity page (task item 1), read from [`EntityScreen`]
+    /// rather than [`Screen::Entity`]'s own payload — `sync_entity_screen`
+    /// keeps the two in lockstep, and this avoids a second id-based match.
+    fn entity_view(&self) -> Element<'_, Message> {
+        match &self.entity {
+            EntityScreen::None => crate::ui::widgets::page(
+                self.tokens,
+                iced::widget::text("Loading…").color(self.tokens.muted),
+            ),
+            EntityScreen::Album(state) => state.view(self.tokens, &self.images).map(Message::Album),
+            EntityScreen::Artist(state) => {
+                state.view(self.tokens, &self.images).map(Message::Artist)
+            }
+            EntityScreen::Playlist(state) => {
+                state.view(self.tokens, &self.images).map(Message::Playlist)
+            }
+            EntityScreen::Mix(state) => state.view(self.tokens).map(Message::Mix),
+            EntityScreen::Track(state) => state.view(self.tokens, &self.images).map(Message::Track),
+            EntityScreen::Video(state) => state.view(self.tokens, &self.images).map(Message::Video),
+        }
     }
 
     fn current_art(&self) -> Option<iced::widget::image::Handle> {
@@ -619,11 +1183,29 @@ fn keyboard_shortcut(
     }
 }
 
+/// Task item 5 (D-039 "shared playlist links open and play"): every track
+/// id of a shared playlist, for `App::open_deep_link` to hand straight to
+/// `Command::Play`.
+async fn load_playlist_track_ids(
+    api: streamboat_core::ApiClient,
+    uuid: String,
+) -> Result<Vec<u64>, String> {
+    let items = api
+        .playlist_items_all(&uuid, 10_000)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(items
+        .iter()
+        .filter_map(|i| i.as_track())
+        .map(|t| t.id)
+        .collect())
+}
+
 /// Runs the desktop shell: loads [`Context`], builds the platform engine
 /// (D-016 via `engine_select`), spawns [`Player`], and opens the window
 /// (task item 2). If the stored tokens are not valid, the boot task flips
 /// to the Login screen instead of failing.
-pub fn run() -> anyhow::Result<()> {
+pub fn run(open_url: Option<String>) -> anyhow::Result<()> {
     let ctx = Context::load()?;
     let (etx, erx) = std_mpsc::channel();
     let output = ctx.settings.output.clone().unwrap_or_default();
@@ -648,7 +1230,7 @@ pub fn run() -> anyhow::Result<()> {
     let link: SharedLink = Arc::new(InProcessLink::new(handle));
 
     iced::application(
-        move || App::boot(ctx.clone(), link.clone()),
+        move || App::boot(ctx.clone(), link.clone(), open_url.clone()),
         App::update,
         App::view,
     )

@@ -109,6 +109,12 @@ enum Cmd {
     Unpin { kind: PinKindArg, id: String },
     /// List pinned albums/playlists/tracks and their validity.
     Pins,
+    /// Open a TIDAL/streamboat content link in the desktop shell (task item
+    /// 5) — `tidal.com`, `listen.tidal.com`, `tidal://` or `streamboat://`.
+    /// A bare link as `streamboat`'s only argument is rewritten into this
+    /// subcommand by [`main`] before `clap` ever sees it, so both `streamboat
+    /// open <url>` and `streamboat <url>` work.
+    Open { url: String },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -151,18 +157,50 @@ fn main() -> anyhow::Result<()> {
         )
         .with_writer(std::io::stderr)
         .init();
-    let cli = Cli::parse();
+    // Task item 5: `streamboat <url>` (no subcommand) is sugar for
+    // `streamboat open <url>` — rewritten here, before `clap` parses
+    // anything, so a bare link doesn't need to match a subcommand name.
+    let mut args: Vec<String> = std::env::args().collect();
+    if let Some(first) = args.get(1) {
+        if looks_like_content_link(first) {
+            let url = args.remove(1);
+            args.insert(1, "open".to_string());
+            args.insert(2, url);
+        }
+    }
+    let cli = Cli::parse_from(args);
     let Some(cmd) = cli.cmd else {
-        return ui::run();
+        return ui::run(None);
     };
+    if let Cmd::Open { url } = cmd {
+        // The GUI's own event loop is blocking and builds its own tokio
+        // runtime (`ui::run`'s `player_rt`) — this must not also run inside
+        // `rt.block_on` below, same as the no-subcommand path above.
+        return ui::run(Some(url));
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     rt.block_on(run(cmd))
 }
 
+/// Whether `arg` looks like a TIDAL/streamboat content link rather than an
+/// ordinary CLI argument — the four schemes/hosts
+/// `streamboat_core::api::images::parse_content_link` understands.
+fn looks_like_content_link(arg: &str) -> bool {
+    arg.starts_with("tidal://")
+        || arg.starts_with("streamboat://")
+        || arg.starts_with("https://tidal.com/")
+        || arg.starts_with("https://listen.tidal.com/")
+}
+
 async fn run(cmd: Cmd) -> anyhow::Result<()> {
     match cmd {
+        // Handled directly in `main()`, before this function is ever
+        // called, since opening a link launches the GUI (`ui::run`), which
+        // is blocking and builds its own tokio runtime — it cannot run
+        // inside the `rt.block_on(run(cmd))` every other subcommand shares.
+        Cmd::Open { .. } => unreachable!("Cmd::Open is intercepted in main() before run()"),
         Cmd::Paths => {
             let ctx = Context::load();
             let dirs = streamboat_core::config::AppDirs::resolve()?;

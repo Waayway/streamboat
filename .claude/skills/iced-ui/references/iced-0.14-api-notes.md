@@ -233,3 +233,93 @@ impl<'a, Message, Theme, Renderer> Simulator<...> {
 - No `horizontal_space()`/`vertical_space()` free functions at `iced::widget::` top level (see §6) —
   use `iced::widget::space::horizontal()`/`::vertical()`.
 - No `Wrap`/flow layout widget (see §6).
+- No dedicated modal/dialog/popup widget — see §9 for the `stack!` + dimmed-`container` shape that
+  substitutes for one.
+
+## 9. Modals (`stack!`), programmatic scroll (`operation::scroll_to`), and eager-vs-lazy futures
+
+Verified building the Entity/Collection/Lyrics wave's "add to playlist" picker and the Lyrics
+screen's auto-scroll.
+
+**`stack!`** (`iced_widget-0.14.2/src/lib.rs`'s macro, or the `stack(children)` free function in
+`helpers.rs`) layers children back-to-front; each child is converted with `Element::from`, so an
+already-built `Element` or anything `Into<Element>` (a bare `Container`, `Column`, ...) drops in
+directly:
+
+```rust
+stack![
+    base_ui,                         // Element<'_, Message> — whatever screen opened the modal
+    container(modal_content)         // Container<'_, Message> — Into<Element> works too
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(|_theme| container::Style {
+            background: Some(Color { a: 0.55, ..Color::BLACK }.into()),
+            ..container::Style::default()
+        }),
+]
+```
+
+`Container::center_x(width: impl Into<Length>)`/`center_y(height: impl Into<Length>)`
+(`iced_widget-0.14.2/src/container.rs`) set the length *and* centre the content on that axis in one
+call — simpler than `.width(Length::Fill).align_x(...)`, whose `align_x`/`align_y` additionally need
+an `impl Into<alignment::Horizontal>`/`Into<alignment::Vertical>` rather than a bare
+`iced::Alignment`.
+
+**`iced::widget::operation::{scroll_to, snap_to, scroll_by, AbsoluteOffset, RelativeOffset}`** — a
+`Task<T>`-returning family for driving a `scrollable` from `update` rather than `view`. They live in
+`iced_runtime::widget::operation` (`iced_runtime-0.14.0/src/widget/operation.rs`), re-exported at
+`iced::widget::operation` through `iced`'s `pub use iced_runtime::widget::*;` — *not* re-exported
+under `iced::widget::scrollable`, which only re-exports the two offset types
+(`iced_widget-0.14.2/src/scrollable.rs`: `pub use operation::scrollable::{AbsoluteOffset,
+RelativeOffset};`). Give the target `scrollable` a stable id first:
+
+```rust
+scrollable(content).id(iced::widget::Id::new("lyrics-lines"))
+```
+
+then, from `update`, whenever the thing that should be visible changes:
+
+```rust
+iced::widget::operation::scroll_to(
+    iced::widget::Id::new("lyrics-lines"),   // same id, re-constructed — Id is just a wrapped string/u64
+    iced::widget::operation::AbsoluteOffset { x: None, y: Some(offset_px) },
+)
+```
+
+`AbsoluteOffset<T = f32>` (`iced_core-0.14.0/src/widget/operation/scrollable.rs`) is generic with a
+default type param, not two unrelated types of the same name — but its two call shapes use
+different instantiations, and mixing them up is the actual pitfall. *Setting* a position always
+wants `AbsoluteOffset<Option<f32>>` — both the public `operation::scroll_to` above and the
+`operation::Scrollable for State` trait method it dispatches to internally
+(`fn scroll_to(&mut self, offset: AbsoluteOffset<Option<f32>>)`) take exactly this shape, an axis
+left `None` staying untouched. *Reading* the current position uses the bare default instead —
+`Viewport::absolute_offset(&self) -> AbsoluteOffset` (i.e. `AbsoluteOffset<f32>`, no operation
+involved, just a getter). Nothing in `iced_test`'s `Simulator` can confirm a scroll operation
+actually moved the viewport — verify visually, or restrict testing to the pure "what index should
+be visible" logic that decides *when* to issue the scroll.
+
+**A future passed to `Task::perform` is only lazy from its first `.await` onward.** Anything
+evaluated in the expression *before* that — including the call that produces the future value
+itself, if that call does work at invocation time rather than at first poll — runs immediately,
+synchronously, wherever `Task::perform` is called. `tokio::time::sleep(duration)` is exactly such a
+call: it calls `tokio::runtime::Handle::current()` to register the timer *when invoked*, not when
+first polled, so
+
+```rust
+Task::perform(tokio::time::sleep(duration), move |()| Message::Expire(id))   // panics with no reactor
+```
+
+panics with `there is no reactor running, must be called from the context of a Tokio 1.x runtime`
+the instant this line executes anywhere without a live tokio context — a plain `#[test]` most
+concretely, since it has no runtime at all, but the same eager evaluation would just as readily blow
+up if this code path were ever reached before the app's own runtime is attached. The fix is an
+`async move` block, which defers everything inside it — the `tokio::time::sleep(...)` call included
+— to actual poll time:
+
+```rust
+Task::perform(async move { tokio::time::sleep(duration).await }, move |()| Message::Expire(id))
+```
+
+`ui::screens::search`'s debounce helper already did this correctly (an `async fn` body is lazy in
+its entirety, since calling an `async fn` just builds a state machine); `ui::banner`'s auto-expire
+needed the same wrapping once written as an inline expression instead of a named `async fn`.

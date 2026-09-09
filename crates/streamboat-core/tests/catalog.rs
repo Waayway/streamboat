@@ -663,3 +663,20 @@ async fn explore_and_page_v1_fallback() {
     assert_eq!(page.title.as_deref(), Some("Explore"));
     assert_eq!(page.rows[0].modules[0].kind, "ALBUM_LIST");
 }
+
+#[tokio::test]
+async fn mix_page_sends_the_required_mix_id_query_param() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pages/mix"))
+        .and(query_param("mixId", "mix-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "title": "Synthetic Daily Mix",
+            "rows": []
+        })))
+        .mount(&server)
+        .await;
+    let c = client(&server);
+    let page = c.mix_page("mix-1").await.unwrap();
+    assert_eq!(page.title.as_deref(), Some("Synthetic Daily Mix"));
+}

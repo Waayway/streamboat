@@ -496,10 +496,82 @@ than memory (the API changed hard across 0.9-0.14, per D-013).
   and prints "lossy source, bit-perfect not applicable" for AAC/lossy tiers per D-036), and Settings
   (`ui::screens::settings` — quality ceiling, output device + exclusive toggle, ReplayGain mode,
   play-reporting toggle with the D-027 disclosure text, credentials, key storage, theme, logout).
-  Entity/Collection/Lyrics screens (`ui::screens::placeholder`) are the NEXT wave: routing is
-  complete (cards already navigate to `Screen::Entity(EntityRef::Album(id))` etc. with the real id),
-  the screens themselves are a "coming soon" note. The mini-player window and the tray are not
-  started at all yet (no second `iced` window is opened this wave).
+  The mini-player window and the tray are a sibling wave's concern, not started here (no second
+  `iced` window is opened by anything below).
+- **Entity, Collection and Lyrics screens (D-015; this wave's task items 1-2, 4)** replace the old
+  `ui::screens::placeholder` routes (now deleted): Album (`ui::screens::album` — cover, title,
+  artist links, year/track-count/duration, quality/explicit badges, a track list through the
+  shared action row below, play-all/shuffle, a favourite toggle backed by `favorite_ids()`, a
+  similar-albums row, and the review text when `album_review` returns one), Artist
+  (`ui::screens::artist` — picture, follow toggle (D-039 — an alias over favouriting the artist),
+  top tracks, an Albums/EPs & Singles/Compilations tab bar over the three `artist_albums` filter
+  values loaded up front rather than per-tab, similar artists, bio with its source attribution, and
+  a "Play artist mix" button that only appears once `artists/{id}/mix` resolves an id), Playlist
+  (`ui::screens::playlist` — header, items paged 50 at a time with a "Load more" button
+  (`api/pagination`'s page-size constant, not its `collect_all` helper — this screen wants explicit
+  load-more, not eager collection), play-all, a favourite toggle, and — gated on
+  `playlist.creator.id == user_id()`, fetched once per visit — rename/describe, remove item and
+  move item up/down (both index-based through `api/playlists.rs`'s ETag-precondition helpers,
+  passing `None` so each call fetches its own fresh etag rather than risking a stale cached one),
+  and delete behind a two-step confirmation banner), Mix (`ui::screens::mix` — `mix_page` for the
+  title (the new `ApiClient::mix_page`, added this wave: `pages/mix?mixId=`, `tidal-client-features`
+  browse-pages-screens.md §4's "note the required query param") and `mix_items` for the track list,
+  items list, play-all), Track (`ui::screens::track` — fetches the track to learn its album id,
+  then reuses `album::content_with_highlight` (the album view split out of its page/scrollable
+  wrap so this screen can embed it) with that track's row picked out, plus a credits panel from
+  `track_credits` grouped by role), and Video (`ui::screens::video` — metadata only, artist links,
+  explicit/quality badges, and a fixed "Video playback is not supported yet." banner, never a play
+  button, per D-038). My Collection (`ui::screens::collection`) is a persistent top-level `App` field
+  like Home/Explore/Search, not a per-visit `Entity`-style screen: five tabs (Tracks/Albums/
+  Artists/Playlists/Mixes & Radio), each loading lazily on first visit; Tracks/Albums/Artists/Mixes
+  page 50 at a time with their documented `api/library.rs` sort orders (`ItemOrder`/`AlbumOrder`/
+  `ArtistOrder`/`MixOrder`, each given a `Display` impl this wave purely for the `pick_list` label —
+  the wire value stays `as_str()`); Playlists uses `playlists_and_favorite_playlists` (client-side
+  name/recency sort, since that endpoint takes no `order` param) plus a "Folders" section from
+  `collection_folders_all` rendered as best-effort `name`/`title` labels, since no reference this
+  crate cites enumerates that endpoint's item shape beyond `trn`; a "+ New playlist" dialog calls
+  `create_playlist`. Lyrics (`ui::screens::lyrics`) is fetched by `ApiClient::lyrics` and rendered
+  synced (LRC lines via `parse_synced_lyrics`, the current line picked out by a pure
+  `highlighted_index(lines, position_ms)` helper and highlighted, with `iced::widget::operation::scroll_to`
+  auto-scrolling to it — see the `iced-ui` skill for the exact API), plain-text (falls back when
+  `subtitles` is absent or empty but `lyrics` isn't), or a "No lyrics for this track." note; a
+  synced line is click-to-seek. `App` prefetches lyrics from `Event::TrackStarted` (so the Lyrics
+  screen, reached from Now Playing's existing button, opens instantly) and re-requests on
+  navigating there directly; `Event::Position` is also forwarded into the lyrics screen's own
+  `update` on every tick to keep the highlighted line and scroll position correct even while some
+  other screen is showing.
+- **The shared per-track action row (task item 3)**: `ui::actions::track_action_row` — Play/Next/
+  Queue/♥·♡/"+ List" buttons, plus Album/Artist buttons the caller can omit (the Album screen's own
+  tracks omit "Album"; the Artist screen's top tracks omit "Artist") — used by every list above
+  except Search's older inline buttons (unchanged this wave) and Mix (no favourite state needed
+  there beyond what the row itself tracks). `TrackAction::PlayNext`/`AddLast` both resolve to the
+  *existing* `Command::Enqueue{position: Next|Last}` — the task brief's "add `Command::PlayNext` if
+  needed" turned out not to apply, since `Enqueue{Next}` already inserts right after the playing
+  index in `Player::handle_command`; a second command would just be a second name for the same
+  behaviour. "Add to playlist" opens `ui::actions::PickerState`, a small modal `App` renders as a
+  `stack!` overlay (task item 3) over whichever screen opened it: one `playlists_and_favorite_playlists`
+  fetch, click a playlist, `playlist_add_tracks` with `None` for the etag. Every entity/Collection
+  screen converts its own `Effect` enum into one shared `app::EntityEffect` via `From`, so `App` has
+  exactly one `apply_entity_effect` instead of six near-identical copies of "send `Command::Play`,
+  navigate, prefetch artwork, or open the picker."
+- **The notification banner (task item 6)**: `ui::banner` replaces the previously-silent
+  `Event::Warning`/`Event::Error`/`Event::PlaybackTakenOver` arms in `App::handle_player_event` —
+  each pushes a dismissible entry that auto-expires after 8 seconds
+  (`Task::perform(async { tokio::time::sleep(...).await }, ...)`, deliberately lazy — calling
+  `tokio::time::sleep` eagerly, outside the async block, panics with no reactor when nothing has
+  polled it yet, which is exactly the shape a plain `#[test]` exercises). A takeover banner
+  ("Playback started on `<by>`.") carries a Resume button that sends `Command::Resume` — genuine
+  user intent, never automatic, per D-033.
+- **Deep links (task item 5)**: pasting a `tidal.com`/`listen.tidal.com`/`tidal://`/`streamboat://`
+  link into the Search field (`api::images::parse_content_link`) opens the linked screen instead of
+  running a search for it (`screens::search::Effect::OpenDeepLink`); `Screen::from_content_link`
+  (added to `ui::nav`, which already owned every `Screen`/`EntityRef` variant) does the mapping,
+  falling back to `Screen::Collection` for a folder link (no dedicated per-folder screen exists). A
+  shared playlist link additionally fetches every track id (`playlist_items_all`) and starts
+  playback (D-039). The same path is reachable from the command line: `streamboat open <url>`, or a
+  bare link as `streamboat`'s only argument (rewritten to `open <url>` by `main` before `clap` ever
+  parses it) — the one change this wave makes to `main.rs`/`ui::app::run` beyond what task item 5
+  required, per the task brief's explicit carve-out for that subcommand.
 - **Image cache**: `ui::images::ImageCache`, a hand-rolled insertion-order-bounded map (not a true
   read-touches-recency LRU — `peek`, the only read `view` code calls, deliberately never reorders,
   since `view` only ever holds `&ImageCache`; eviction order is "oldest inserted," which is
@@ -524,6 +596,12 @@ than memory (the API changed hard across 0.9-0.14, per D-013).
   `Warning` event instead of the ordinary index bookkeeping). None of this changes any existing
   variant's behaviour — every change is a new field, a new trait impl, or a new enum variant with a
   new match arm.
+- **Additive core changes the Entity/Collection/Lyrics wave required**: `ApiClient::mix_page`
+  (`api/pages.rs`, `pages/mix?mixId=`, for the Mix screen's title/subtitle — track listing still
+  comes from the already-existing `mix_items`); `Display` impls on `api::library::{ItemOrder,
+  AlbumOrder, ArtistOrder, MixOrder}` (a human `pick_list` label distinct from each enum's existing
+  `as_str()` wire value, which is unchanged). Nothing here changes any existing method's behaviour
+  or any enum's wire representation.
 
 ## Offline cache (D-022)
 
@@ -720,7 +798,7 @@ into.
 - `streamboat-server`: `tests/api.rs` (see "Control API" above) — health,
   auth, Host allowlisting, a command changing state, and both directions of
   the WebSocket, all over real sockets against an in-process daemon.
-- `streamboat-desktop`: 37 tests (`cargo test -p streamboat-desktop`), all inline
+- `streamboat-desktop`: 78 tests (`cargo test -p streamboat-desktop`), all inline
   `#[cfg(test)]` (this crate is bin-only, no `lib.rs`, so there is no separate
   `tests/` integration-test target). iced 0.14's `iced_test` headless simulator
   (`simulator(view(...))`, `ui.find("text")`, confirmed to fall back to the
@@ -732,21 +810,44 @@ into.
   correctly in both modes; Now Playing renders the current track, queue, and a
   "nothing playing" placeholder; the signal-path panel renders the AAC
   "bit-perfect not applicable" line and a "nothing playing" placeholder; Search
-  renders the query/filter row and track results; the Entity placeholder shows
-  the right kind/id. Plain `#[test]`s (no simulator) cover the pure view-model
-  helpers — `mmss`/`quality_badge`/`bit_perfect_applicable` formatting,
+  renders the query/filter row and track results, and recognises a pasted
+  content link instead of debouncing a search for it; Album renders its
+  header/badges/track list and a loading state, and its highlighted-row view
+  used by Track; Artist renders its header, top tracks, album tabs and the
+  Following-vs-Follow label; Playlist shows/hides the rename/delete controls
+  by ownership and renders its track list; Mix renders its title and items;
+  Track renders a credits panel once loaded; Video renders its metadata and
+  the fixed "not supported yet" notice, and a loading state; Collection renders
+  its tab bar and switches tabs, and its create-playlist dialog opens/closes;
+  Lyrics renders synced lines with the current one picked out, the plain-text
+  fallback, and the "no lyrics" note; the notification banner renders a
+  message (with a Resume button for a takeover) and clears on dismiss/resume;
+  the shared per-track action row renders every button it's given. Plain
+  `#[test]`s (no simulator) cover the pure view-model helpers —
+  `mmss`/`quality_badge`/`bit_perfect_applicable` formatting,
   `feed_section_to_view`/`page_module_to_view`'s known-vs-unknown-type mapping,
   the `Nav` back/forward stack (five cases: push+clear-forward, round-trip,
   no-op on empty history, dropping the stale forward branch after a fresh
-  `go_to`, no-op on navigating to the current screen), the `ImageCache`'s
+  `go_to`, no-op on navigating to the current screen) plus `Screen::from_content_link`'s
+  mapping for every `ContentLink` variant, the `ImageCache`'s
   insert/evict/re-insert behaviour, `Tokens::dark()`/`light()` (distinct
-  colours, shared scale), and the `Settings`⇄`settings::State` round trip.
+  colours, shared scale), the `Settings`⇄`settings::State` round trip,
+  `lyrics::highlighted_index`'s line-selection logic, `actions::shuffled`'s
+  permutation property, each entity screen's `Effect` output for its own
+  `update` (play-all's track-id order, an item removal/reorder updating the
+  local list, a confirmed delete bubbling `Effect::Deleted`), and a track
+  row's favourite toggle updating local state on a successful API result.
   **Not verified without a display** (this container has none): the actual
   `iced::application(...).run()` event loop, window creation, real mouse/keyboard
-  delivery through winit, and anything about visual layout beyond what
-  `ui.find("...")` widget-tree assertions can see (no pixel/snapshot tests were
-  taken here, though `Simulator::snapshot` exists for a future pass that adds
-  them).
+  delivery through winit, whether `iced::widget::operation::scroll_to` actually
+  scrolls the Lyrics screen's line list to the right offset (the pure
+  `highlighted_index` helper it's driven by is tested; the scroll operation
+  itself is not, the same way `Simulator` cannot drive a real click sequence
+  through a `stack!` overlay to verify the add-to-playlist picker's dimmed
+  backdrop blocks clicks to what's behind it), and anything about visual
+  layout beyond what `ui.find("...")` widget-tree assertions can see (no
+  pixel/snapshot tests were taken here, though `Simulator::snapshot` exists
+  for a future pass that adds them).
 - CI: fmt, clippy `-D warnings`, tests, release build; `cargo test -p
   streamboat-player --features mpv` on top of the default (GStreamer) build;
   a Debian container job builds `streamboatd` without GUI libraries and
@@ -859,32 +960,33 @@ recommended Debian-stable install path.
 
 ## Not yet built (in decision order)
 
-the `streamboat://` handler for the desktop shell (D-024, though its OS
-handler registration is written in `packaging/linux/`, `packaging/windows/wix/`
-and `packaging/macos/` — the shell itself still needs to open a URL its OS
-hands it); the Flatpak Secret portal (D-026); the `org.freedesktop.ReserveDevice1` device-reservation
-handshake for the ALSA writer (`output-backends.md` §2, explicitly optional
-— `EBUSY` on open is handled with a bounded retry regardless); packaging
-(D-041); a `logout` command for `streamboatd` to hook the offline-cache wipe
-into (D-022, otherwise built — see above); the mini-player window and tray
-icon (D-036, D-014); entity/Collection/lyrics screens (D-015;
-`ui::screens::placeholder` covers routing only); the control-API-backed
+the `streamboat://` handler registration per OS (D-024 — the OS-side
+registration files exist in `packaging/linux/`, `packaging/windows/wix/` and
+`packaging/macos/`, and `streamboat open <url>`/a bare-link argument parse and
+navigate; what is missing is only the shell being launched by the OS with that
+URL through the single-instance path); the Flatpak Secret portal (D-026); the
+`org.freedesktop.ReserveDevice1` device-reservation handshake for the ALSA
+writer (`output-backends.md` §2, explicitly optional — `EBUSY` on open is
+handled with a bounded retry regardless); a `logout` command for `streamboatd`
+to hook the offline-cache wipe into (D-022, otherwise built — see above); the
+mini-player window and tray icon (D-036, D-014); the control-API-backed
 remote-client `PlayerLink` and the single-instance lock (D-010,
 `RemoteLink`); the `/opt/streamboat` vendored GStreamer tree actually wired
 into a deb/rpm job (the build script exists, see "Packaging" above); an
 AppUserModelID for Windows SMTC and a universal macOS build (both still-open
-packaging questions, see `streamboat-decisions`).
+packaging questions, see `streamboat-decisions`); video *playback* (D-038 —
+the Video entity page itself is built, metadata-only, and says so).
 
 `streamboat_player::default_engine`/`enumerate_output_devices`/
 `media_controls::spawn` (D-016, D-030 — see "Engine selection, device
 enumeration and media controls" above) are built and wired into
-`streamboatd` and the `streamboat` CLI's `play` and `devices` commands; the
-desktop shell (`ui::engine_select`, `ui::app::run`) should call the same
-helpers once its multi-window rewrite lands. `smtc.rs`/`nowplaying.rs` are
-built (Windows/macOS, default-on features `smtc`/`nowplaying`) but untested
-beyond cross-target type-checking — no Windows or macOS CI runner exists
-yet; see "Cross-target type-checking" below for exactly what did and did
-not get checked, and each module's own doc comment for the specific open
-questions (SMTC: none beyond "no live popup was ever seen"; NowPlaying:
-whether `MPRemoteCommandCenter`'s handlers fire at all with no AppKit run
-loop in a bare daemon).
+`streamboatd`, the `streamboat` CLI's `play` and `devices` commands and the
+shell's `ui::engine_select`; the shell should also call
+`media_controls::spawn` once it holds a `PlayerHandle` in the multi-window
+rewrite. `smtc.rs`/`nowplaying.rs` are built (Windows/macOS, default-on
+features `smtc`/`nowplaying`) but untested beyond cross-target
+type-checking — no Windows or macOS CI runner exists yet; see "Cross-target
+type-checking" below for exactly what did and did not get checked, and each
+module's own doc comment for the specific open questions (SMTC: none beyond
+"no live popup was ever seen"; NowPlaying: whether `MPRemoteCommandCenter`'s
+handlers fire at all with no AppKit run loop in a bare daemon).
