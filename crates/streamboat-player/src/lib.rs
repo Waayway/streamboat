@@ -14,6 +14,8 @@ pub mod engine;
 pub mod gst;
 #[cfg(all(feature = "mpris", target_os = "linux"))]
 pub mod mpris;
+#[cfg(feature = "mpv")]
+pub mod mpv;
 pub mod player;
 
 pub use engine::{Engine, EngineEvent, LoadItem};
@@ -21,3 +23,5 @@ pub use player::{Player, PlayerConfig, PlayerDeps, PlayerHandle};
 
 #[cfg(feature = "gstreamer")]
 pub use gst::GstEngine;
+#[cfg(feature = "mpv")]
+pub use mpv::MpvEngine;
