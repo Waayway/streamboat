@@ -15,6 +15,7 @@
 //! ReplayGain element. ReplayGain here is a single `volume` audio-filter,
 //! which has the known boundary glitch when consecutive tracks differ.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -61,6 +62,19 @@ pub(crate) struct Shared {
     pub(crate) current: Mutex<Option<LoadItem>>,
     /// The item audio is actually flowing for.
     pub(crate) playing: Mutex<Option<LoadItem>>,
+    /// Items whose URI has been set on playbin, in order, whose
+    /// `stream-start` the bus thread has not consumed yet. playbin posts one
+    /// `stream-start` per URI in the order the URIs were set, so attributing
+    /// each to the front of this queue is exact even when `about-to-finish`
+    /// (GStreamer's streaming thread) has already moved `current` on to the
+    /// successor before the bus thread got to the predecessor's start — which
+    /// happens routinely with `fakesink` and short clips, and can happen
+    /// under load with real sinks.
+    pub(crate) pending_starts: Mutex<VecDeque<LoadItem>>,
+    /// An `about-to-finish` that fired before the bus thread had emitted
+    /// `Started` for that item: replayed right after the `Started`, so the
+    /// Player always sees Started before AboutToFinish for the same id.
+    pub(crate) deferred_about: Mutex<Option<u64>>,
     pub(crate) events: Sender<EngineEvent>,
     pub(crate) stop_bus: AtomicBool,
     /// The exclusive-mode ALSA sink, when one is active (D-017), so the
@@ -125,6 +139,8 @@ impl GstEngine {
             next: Mutex::new(None),
             current: Mutex::new(None),
             playing: Mutex::new(None),
+            pending_starts: Mutex::new(VecDeque::new()),
+            deferred_about: Mutex::new(None),
             events,
             stop_bus: AtomicBool::new(false),
             #[cfg(feature = "alsa-direct")]
@@ -137,7 +153,14 @@ impl GstEngine {
             let pb = args[0].get::<gst::Element>().ok()?;
             let cur_id = s.current.lock().unwrap().as_ref().map(|i| i.id);
             if let Some(id) = cur_id {
-                s.emit(EngineEvent::AboutToFinish { id });
+                let started = s.playing.lock().unwrap().as_ref().map(|i| i.id) == Some(id);
+                if started {
+                    s.emit(EngineEvent::AboutToFinish { id });
+                } else {
+                    // The bus thread has not seen this item's stream-start
+                    // yet; it replays the event once it has (see `Shared`).
+                    *s.deferred_about.lock().unwrap() = Some(id);
+                }
             }
             let next = s.next.lock().unwrap().take();
             if let Some(item) = next {
@@ -158,6 +181,7 @@ impl GstEngine {
                             }
                         }
                         pb.set_property("uri", &uri);
+                        s.pending_starts.lock().unwrap().push_back(item.clone());
                         *s.current.lock().unwrap() = Some(item);
                     }
                     Err(e) => s.emit(EngineEvent::Warning {
@@ -245,8 +269,10 @@ impl GstEngine {
                                 shared.emit(EngineEvent::Buffering { percent: pct });
                             }
                             MessageView::StreamStart(_) if from_playbin => {
-                                // A new stream is flowing: the item whose URI is set.
-                                let cur = shared.current.lock().unwrap().clone();
+                                // A new stream is flowing: the oldest item whose
+                                // URI was set and whose start we have not seen.
+                                let queued = shared.pending_starts.lock().unwrap().pop_front();
+                                let cur = queued.or_else(|| shared.current.lock().unwrap().clone());
                                 let prev = shared.playing.lock().unwrap().replace(
                                     cur.clone().unwrap_or_else(|| LoadItem {
                                         id: 0,
@@ -265,6 +291,13 @@ impl GstEngine {
                                 }
                                 if let Some(c) = cur {
                                     shared.emit(EngineEvent::Started { id: c.id });
+                                    let deferred = shared.deferred_about.lock().unwrap().take();
+                                    match deferred {
+                                        Some(id) if id == c.id => {
+                                            shared.emit(EngineEvent::AboutToFinish { id });
+                                        }
+                                        other => *shared.deferred_about.lock().unwrap() = other,
+                                    }
                                     // The alsa-direct writer emits its own
                                     // Format event from the real hw_params
                                     // read-back once it opens/confirms the
@@ -489,6 +522,8 @@ impl Engine for GstEngine {
             .map_err(|e| EngineError::Other(format!("stop before load: {e}")))?;
         *self.shared.playing.lock().unwrap() = None;
         *self.shared.next.lock().unwrap() = None;
+        self.shared.pending_starts.lock().unwrap().clear();
+        *self.shared.deferred_about.lock().unwrap() = None;
         let (uri, tmp) = uri_for(&item.source, Some(&self.runtime_dir))?;
         if let Some(p) = tmp {
             self.temp_files.push(p);
@@ -502,6 +537,11 @@ impl Engine for GstEngine {
         if !self.output.is_exclusive() {
             self.playbin.set_property("volume", self.volume);
         }
+        self.shared
+            .pending_starts
+            .lock()
+            .unwrap()
+            .push_back(item.clone());
         *self.shared.current.lock().unwrap() = Some(item);
         self.playbin.set_state(gst::State::Playing).map_err(|_| {
             EngineError::Output(format!("cannot start playback on {}", self.sink_name))
@@ -550,6 +590,8 @@ impl Engine for GstEngine {
         if let Some(item) = done {
             self.shared.emit(EngineEvent::Finished { id: item.id });
         }
+        self.shared.pending_starts.lock().unwrap().clear();
+        *self.shared.deferred_about.lock().unwrap() = None;
         *self.shared.current.lock().unwrap() = None;
         Ok(())
     }
