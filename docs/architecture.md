@@ -444,42 +444,109 @@ whether `x-tidal-streamingsessionid` must actually equal the reported
 surface without ever sending that header at all — `reporting::PlayEvent`
 reuses one id for both anyway, the cheapest safe move the reference names).
 
-## Desktop shell (iced) (D-010, D-012, D-013)
+## Desktop shell (iced) (D-010, D-012, D-013, D-014, D-036)
 
 `crates/streamboat-desktop/src/ui/` (loaded by `main.rs`'s `mod ui;`; `streamboat` with no
 subcommand calls `ui::run()`, every existing CLI subcommand is unchanged). Pinned to
 `iced = "=0.14.0"` exactly, features `tokio`, `image`, `svg`, `advanced`, `debug` — see the
-`iced-ui` skill for the pinned-API facts this wave verified against the actual 0.14 sources rather
-than memory (the API changed hard across 0.9-0.14, per D-013).
+`iced-ui` skill for the pinned-API facts this and the multi-window wave verified against the
+actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, per D-013).
 
-- **Architecture**: `ui::app::App` is the top-level `iced::application` state; `ui::app::Message`
-  wraps each screen's own message enum (D-013's "split messages per screen/module") plus
-  `PlayerEvent(Box<Event>)` (boxed: `Event::State` carries a full snapshot and dwarfs every other
-  variant), `Nav`, `LoginCheck`, `ImageFetched` and `KeyShortcut`. `ui::nav::{Screen, Nav}` is the
-  navigation stack (`go_to`/`back`/`forward`, back pushes history and clears forward, matching the
-  task brief). `ui::design::Tokens` is the design-token struct (background/surface/elevated/
-  accent/text/muted/warning/danger/success/border colours, a radius/spacing/type scale) with
-  `dark()` (default) and `light()` constructors; `Tokens::iced_theme` builds the `iced::Theme::custom`
-  palette stock widgets style against, while custom containers/cards/badges read the tokens
-  directly (captured `Copy` into style closures) — see the `iced-ui` skill §"Owner-context notes"
-  for why the token struct, not `iced::Theme`, is the source of truth.
+- **Architecture**: `ui::app::App` is the top-level state, now built with `iced::daemon(...)`
+  instead of `iced::application(...)` (D-036) so it can own more than one window — see "Multi-window
+  and the mini-player" below. `ui::app::Message` wraps each screen's own message enum (D-013's
+  "split messages per screen/module") plus `PlayerEvent(Box<Event>)` (boxed: `Event::State` carries
+  a full snapshot and dwarfs every other variant), `Nav`, `LoginCheck`, `ImageFetched`,
+  `KeyShortcut`, `MiniPlayer`, `Tray`, `WindowCloseRequested`, `WindowClosed`, `ShowRequested` and
+  `ReadyToExit`. `ui::nav::{Screen, Nav}` is the navigation stack (`go_to`/`back`/`forward`, back
+  pushes history and clears forward, matching the task brief). `ui::design::Tokens` is the
+  design-token struct (background/surface/elevated/accent/text/muted/warning/danger/success/border
+  colours, a radius/spacing/type scale) with `dark()` (default) and `light()` constructors;
+  `Tokens::iced_theme` builds the `iced::Theme::custom` palette stock widgets style against, while
+  custom containers/cards/badges read the tokens directly (captured `Copy` into style closures) —
+  see the `iced-ui` skill §"Owner-context notes" for why the token struct, not `iced::Theme`, is the
+  source of truth.
 - **The engine seam (D-010)**: `ui::player_link::PlayerLink` is a trait (`send(Command) -> bool`,
   `events() -> BoxStream<Event>`); `InProcessLink` wraps a `PlayerHandle` from `Player::spawn` — the
   *only* two `streamboat-player` APIs the shell touches, never `Engine`/a backend type directly.
-  `RemoteLink` is a documented, deliberately-unimplemented stub for the future control-API client
-  (D-030) — `PlayerLink::connect` always errors today; no HTTP/WebSocket code exists yet because
-  `streamboatd`'s control API doesn't either. `Player::spawn` runs on a second, explicitly-built
-  `tokio::runtime::Runtime` kept alive for the process's lifetime (a local variable in `ui::app::run`
-  that outlives the blocking `.run()` call) — separate from iced's own internal tokio runtime (its
-  `tokio` feature), which drives `Task`/`Subscription` futures instead.
-- **Startup (task item 2)**: `ui::app::run()` loads `Context` (now `#[derive(Clone)]`, an additive
-  change — every field it holds was already `Clone`, needed so the `Fn`-bound `boot` closure can
-  `ctx.clone()` on each call instead of moving out of a capture), builds the platform engine via
-  `ui::engine_select::build` (a thin call into `streamboat_player::default_engine`, so the shell
-  never names a backend; which one is compiled in follows this crate's `gstreamer`/`mpv` features),
-  spawns `Player`, and opens the window. The app starts on `Screen::Login` and only flips to `Home`
-  once an async `ApiClient::is_logged_in()` check resolves `true` (never optimistically shows a
-  protected screen first).
+  `ui::remote_link::RemoteLink` is the other implementation, now built (not a stub): a control-API
+  client over D-030's HTTP + WebSocket surface — `GET /v1/state` is not polled separately since the
+  first WebSocket message on any connection is always a full snapshot; `send` fires a `POST
+  /v1/commands` on an explicitly-held `tokio::runtime::Handle` (iced's own update loop is not
+  async); `events` is a `futures::stream::unfold` state machine (`Disconnected`/`Connected`) that
+  reconnects with capped exponential backoff (250ms, doubling, capped at 30s) on a dropped
+  connection *and* on detecting its own revision gap (any jump greater than one — treated as a
+  proactive resync, reconnecting immediately with no backoff since it is not a failure), always
+  landing on a fresh snapshot either way per the reconnect rule. `Player::spawn` (when this process
+  runs one) runs on a second, explicitly-built `tokio::runtime::Runtime` kept alive for the process's
+  lifetime (a local variable threaded through `ui::app::run`'s helper functions that outlives the
+  blocking `.run()` call) — separate from iced's own internal tokio runtime (its `tokio` feature),
+  which drives `Task`/`Subscription` futures instead; the same runtime backs `RemoteLink`'s
+  `send` when there is no local `Player`.
+- **Single-instance lock and remote-client mode (D-010, D-045)**: `ui::instance::decide` is the one
+  call `ui::app::run` makes before anything else — `streamboat_core::instance_lock::InstanceLock`
+  (a portable `fd-lock` file at `AppDirs::instance_lock_path()`, `<runtime dir>/instance.lock`) is
+  tried first; holding it means this process becomes the instance and spawns its own engine
+  (`ui::app::run_as_local_instance`). Failing to take it checks
+  `AppDirs::control_address_path()` (`<runtime dir>/control-address`, written by whichever holder
+  also hosts the control API — always `streamboatd`, per D-031's "only the daemon binds a
+  listener," never a GUI): present means become a `RemoteLink` client
+  (`run_as_remote_client`); absent means the holder is another GUI instance, so this process
+  touches `AppDirs::show_request_path()` (`<runtime dir>/show-request`) and exits without opening
+  a window (`Decision::FocusedOther`). The holding GUI polls that file's mtime every 400ms
+  (`ui::instance::show_request_events`, an `iced::Subscription::run_with` built only while
+  `Decision::Local`) and answers a touch the same way the tray's "Show" does — unhide and focus the
+  main window. Deliberately not built: the MPRIS-bus-name variant of D-010's lock (the decision
+  names two mechanisms; this wave always takes the portable-lock-file branch, which D-010 already
+  permits on its own) and a `POST /v1/show` control-API route (the task considered it, but it would
+  require the GUI to bind a listener, contradicting D-031 — the filesystem touch is the
+  `Command`-free alternative D-031 leaves room for).
+- **Multi-window and the mini-player (D-036)**: `App::boot` opens the main window itself via
+  `window::open`, storing the `window::Id` it returns synchronously; `App::view`/`App::title`
+  dispatch on the `window::Id` iced asks for (`Some(window) == self.mini_window` renders
+  `ui::mini_player::view` — art, title/artists, previous/play-pause/next, a thin seek bar, the
+  quality badge and a restore button — everything else renders the main shell). The playback bar's
+  "Mini player" toggle and Ctrl+M open/close it via `window::open`/`window::close`; both windows
+  read the same `App::player_state`/`App::current_art()`, there is no separate copy of playback
+  state for the mini window. The mini window is `window::Level::AlwaysOnTop`, fixed-size, not
+  resizable.
+- **Window lifecycle and tray (D-014)**: the main window's `window::Settings::exit_on_close_request`
+  is `false`, so its native close button only delivers `window::Event::CloseRequested` (via
+  `window::close_requests()`) instead of iced auto-closing it; `update` answers that by hiding it
+  (`window::set_mode(id, window::Mode::Hidden)`) rather than closing it, keeping the lock, the
+  engine and the audio device held exactly as before. `iced::daemon` never exits when its last
+  window closes on its own (verified against `iced_winit`'s `is_daemon`-gated exit check), so this
+  costs nothing extra. Quitting is explicit: the tray's "Quit" item or Ctrl+Q
+  (`App::quit`) sends `Command::Shutdown` and waits up to 800ms for `Event::Stopped`/`EndOfQueue`
+  (`ui::app::wait_for_shutdown`, over a fresh `PlayerLink::events()` subscription) before returning
+  `iced::exit()` — never hangs quitting on a player that does not answer. `ui::tray` builds the tray
+  icon: Linux via `ksni = "0.3"` (resolved 0.3.6, verified against its real crate source — a
+  `StatusNotifierItem` over D-Bus, no GTK dependency, spawned on its own thread with a
+  `current_thread` tokio runtime, the same shape `mpris.rs` already uses for its own D-Bus
+  registration) with Show/Hide/Play-Pause/Next/Previous/Quit menu items and a "now playing" tooltip
+  updated from `PlayerLink::events()`; Windows/macOS via `tray-icon = "0.24"` (resolved 0.24.1),
+  cfg-gated behind `#[cfg(not(target_os = "linux"))]` and **compile-checked only** — there is no
+  Windows/macOS runner or display here, and `tray-icon`'s own documentation requires the icon to be
+  created on the same thread as a running native event loop (a win32 message loop on Windows, the
+  main thread's loop on macOS), which this implementation's dedicated background thread does not
+  provide; see `ui::tray`'s doc comment for the full caveat. Both backends only ever produce
+  `ui::tray::TrayEvent`s onto one channel; `ui::tray::tray_event_to_command` is the pure,
+  D-Bus-free mapping from a tray click to a `Command` that `ui::app::update` calls — Show/Hide/Quit
+  are handled directly against `window`/`exit` `Task`s instead, since they are not `Command`s.
+- **Decoder probe (D-003)**: `streamboat_player::probe::DecoderSupport` — `low`/`high`/`lossless`/
+  `hi_res_lossless` booleans, `probe()` dispatching to `probe_gstreamer()` (Linux: looks for the
+  `flacdec` and `avdec_aac`/`faad` element factories) or `probe_libmpv()` (Windows/macOS: always
+  "everything reachable," ffmpeg is bundled with mpv, D-016) by the same `cfg` `ui::engine_select`
+  uses. `ui::app::run_as_local_instance` calls it once at startup, `DecoderSupport::cap(ceiling)`
+  walks `AudioQuality::LADDER` for the highest still-reachable tier at or below the requested
+  ceiling, and a mismatch publishes an `Event::Warning` explaining the cap through the same
+  `PlayerHandle` every front end already reads. The result is stored on `App` (`decoder_support`)
+  and handed to the Settings screen (`settings::State::with_decoder_support`), whose quality
+  picker leaves unreachable tiers out and names them underneath with the reason — iced's
+  `pick_list` has no per-item disabled state, so "greyed out" is "not offered, explained."
+- **OS media controls from the shell**: `ui::app::run_as_local_instance` calls
+  `streamboat_player::media_controls::spawn(handle.clone())`, the same call `streamboatd`'s
+  `main.rs` makes — MPRIS on Linux, SMTC on Windows, NowPlaying on macOS.
 - **Screens this wave**: Login (`ui::screens::login` — device-code and PKCE-paste/PKCE-loopback,
   reusing `auth::device_code`/`auth::pkce` exactly as the CLI does; errors inline), Home
   (`ui::screens::home` — v2 `home/feed` sections, the tab bar from `header.vibes.items`, cursor
@@ -488,8 +555,8 @@ than memory (the API changed hard across 0.9-0.14, per D-013).
   all types, a type filter, 300ms-debounced input), Now Playing (`ui::screens::now_playing` — large
   art, seek, quality badge, the queue list with move-up/move-down/remove buttons over
   `Command::MoveQueueItem`/`RemoveQueueItem`, a Lyrics button routing to the placeholder), the
-  persistent playback bar (`ui::playback_bar` — art/title/artist/transport/seek/volume/badges/queue
-  and signal-path toggles; the volume slider dims and grows a tooltip while `OutputConfig::is_exclusive()`,
+  persistent playback bar (`ui::playback_bar` — art/title/artist/transport/seek/volume/badges/queue,
+  signal-path and mini-player toggles; the volume slider dims and grows a tooltip while `OutputConfig::is_exclusive()`,
   per D-017, rather than becoming inert — it still sends `SetVolume`, which the Player already
   refuses with a `Warning` event in exclusive mode), the signal-path panel (`ui::signal_path` —
   renders `PlayerState::signal_path` field-for-field, `None` stays "Unknown" rather than guessing,
@@ -584,13 +651,19 @@ than memory (the API changed hard across 0.9-0.14, per D-013).
   `keyboard::Event::KeyPressed` — space toggles play/pause, escape goes back one step in the nav
   stack, ctrl+f navigates to Search (it does not additionally force text-input focus — no
   `Task`-returning focus helper was found on `iced_widget::text_input` in 0.14.2's public API; see
-  the `iced-ui` skill §8). Media keys are explicitly out of scope here (MPRIS, later).
-- **Additive core/player changes this wave required**: `Context: Clone` (above);
-  `config::{ThemePreference, ReplayGainMode}` plus two new `Settings` fields
-  (`theme`, `replay_gain_mode`) and one (`play_reporting_enabled`, default `true` per D-027) — all
-  three persisted by the Settings screen; `KeyStorage: Display`; `PkceSession: Debug` (hand-written,
+  the `iced-ui` skill §9), ctrl+m toggles the mini-player window, ctrl+q quits (D-014, `App::quit`).
+  Media keys are explicitly out of scope here (MPRIS, above).
+- **Additive core/player changes this wave required**: `streamboat_core::instance_lock` (new
+  module: `InstanceLock`, `write_control_address`/`read_control_address`, `request_show`/
+  `show_request_mtime`); three new `AppDirs` path methods (`instance_lock_path`,
+  `control_address_path`, `show_request_path`); `streamboat_player::probe` (new module,
+  `DecoderSupport`). All new items, no changed behaviour on anything that existed before.
+- **Additive core/player changes the previous wave required** (unchanged by this one): `Context:
+  Clone`; `config::{ThemePreference, ReplayGainMode}` plus two new `Settings` fields (`theme`,
+  `replay_gain_mode`) and one (`play_reporting_enabled`, default `true` per D-027) — all three
+  persisted by the Settings screen; `KeyStorage: Display`; `PkceSession: Debug` (hand-written,
   redacts the verifier — needed because enabling iced's `debug` feature makes `Message: Debug` a
-  hard `Application::run` requirement, transitively through every nested screen message);
+  hard `Application::run`/`Daemon::run` requirement, transitively through every nested screen message);
   `proto::Command::{MoveQueueItem, RemoveQueueItem}` and their `Player::handle_command` arms
   (index-based queue reorder/removal, refusing to remove the currently-playing entry with a
   `Warning` event instead of the ordinary index bookkeeping). None of this changes any existing
@@ -798,7 +871,7 @@ into.
 - `streamboat-server`: `tests/api.rs` (see "Control API" above) — health,
   auth, Host allowlisting, a command changing state, and both directions of
   the WebSocket, all over real sockets against an in-process daemon.
-- `streamboat-desktop`: 78 tests (`cargo test -p streamboat-desktop`), all inline
+- `streamboat-desktop`: 96 tests (`cargo test -p streamboat-desktop`), all inline
   `#[cfg(test)]` (this crate is bin-only, no `lib.rs`, so there is no separate
   `tests/` integration-test target). iced 0.14's `iced_test` headless simulator
   (`simulator(view(...))`, `ui.find("text")`, confirmed to fall back to the
@@ -848,6 +921,52 @@ into.
   layout beyond what `ui.find("...")` widget-tree assertions can see (no
   pixel/snapshot tests were taken here, though `Simulator::snapshot` exists
   for a future pass that adds them).
+  Platform wave: the mini-player (`ui::mini_player`) renders "nothing
+  playing," the current track/quality badge, and that its restore button emits
+  `Message::Restore` on click. Plain `#[test]`s (no simulator) cover the pure
+  view-model helpers — `mmss`/`quality_badge`/`bit_perfect_applicable`
+  formatting, `feed_section_to_view`/`page_module_to_view`'s known-vs-unknown-type
+  mapping, the `Nav` back/forward stack (five cases: push+clear-forward,
+  round-trip, no-op on empty history, dropping the stale forward branch after a
+  fresh `go_to`, no-op on navigating to the current screen), the `ImageCache`'s
+  insert/evict/re-insert behaviour, `Tokens::dark()`/`light()` (distinct
+  colours, shared scale), the `Settings`⇄`settings::State` round trip,
+  `ui::tray::tray_event_to_command`'s pure mapping (every fixed menu entry
+  present and distinct, PlayPause/Next/Previous map to their `Command`,
+  Show/Hide/Quit correctly map to none), and `ui::instance::decide`'s three
+  outcomes (`Local` when nothing else holds the lock, `Remote` when a
+  `control-address` file is present, `FocusedOther` plus a `show-request`
+  touch when neither) against real `fd-lock` files under a temp directory.
+  `ui::remote_link::RemoteLink` is exercised against a real, separately
+  runtime-hosted `streamboat_server::api::router` (the `FakeEngine` pattern,
+  a local copy of `streamboat-server`'s own `tests/common` since that module
+  is not importable across the crate boundary): a snapshot on connect, a
+  `Play` command round-tripping back as a `State` event over the real HTTP +
+  WebSocket wire, and a full reconnect story — the daemon's entire runtime is
+  torn down mid-connection (`shutdown_background`, the only thing that
+  reliably kills an already-accepted connection's task; aborting just the
+  top-level `axum::serve` future does not, since each connection's handler is
+  its own independently spawned task), the link surfaces a reconnect
+  `Warning` rather than ending the stream, and once a fresh daemon binds the
+  same address it reconnects and delivers a new snapshot.
+  **Not verified without a display or a session/D-Bus bus** (this container
+  has neither): the actual `iced::daemon(...).run()` event loop, real window
+  creation/hide/show/focus and multi-window behaviour, real mouse/keyboard
+  delivery through winit, anything about visual layout beyond what
+  `ui.find("...")` widget-tree assertions can see (no pixel/snapshot tests
+  were taken here, though `Simulator::snapshot` exists for a future pass that
+  adds them), the Linux tray's actual D-Bus/`ksni` registration (`mpris.rs`'s
+  own D-Bus registration has the same gap), and the Windows/macOS tray-icon
+  path, which is additionally unreachable to `cargo check` on this Linux
+  sandbox at all (`#[cfg(not(target_os = "linux"))]`) — cross-checking it
+  with `cargo check --target x86_64-pc-windows-gnu`/`--target
+  aarch64-apple-darwin` was attempted and hit an unrelated, pre-existing
+  blocker: `gstreamer`/`gstreamer-audio` are unconditional (not
+  `target_os`-gated) dependencies of `streamboat-desktop`'s `Cargo.toml`, and
+  `gstreamer-rs`'s `glib-sys` needs a real GLib pkg-config sysroot for the
+  target platform, which this environment does not have — a pre-existing gap
+  unrelated to the tray work, not something this wave changed or attempted
+  to fix.
 - CI: fmt, clippy `-D warnings`, tests, release build; `cargo test -p
   streamboat-player --features mpv` on top of the default (GStreamer) build;
   a Debian container job builds `streamboatd` without GUI libraries and
@@ -969,24 +1088,27 @@ URL through the single-instance path); the Flatpak Secret portal (D-026); the
 writer (`output-backends.md` §2, explicitly optional — `EBUSY` on open is
 handled with a bounded retry regardless); a `logout` command for `streamboatd`
 to hook the offline-cache wipe into (D-022, otherwise built — see above); the
-mini-player window and tray icon (D-036, D-014); the control-API-backed
-remote-client `PlayerLink` and the single-instance lock (D-010,
-`RemoteLink`); the `/opt/streamboat` vendored GStreamer tree actually wired
-into a deb/rpm job (the build script exists, see "Packaging" above); an
-AppUserModelID for Windows SMTC and a universal macOS build (both still-open
-packaging questions, see `streamboat-decisions`); video *playback* (D-038 —
-the Video entity page itself is built, metadata-only, and says so).
+`/opt/streamboat` vendored GStreamer tree actually wired into a deb/rpm job
+(the build script exists, see "Packaging" above); an AppUserModelID for
+Windows SMTC and a universal macOS build (both still-open packaging
+questions, see `streamboat-decisions`); video *playback* (D-038 — the Video
+entity page itself is built, metadata-only, and says so); handing a
+`streamboat://` link to an already-running instance (a second `streamboat
+<url>` only asks the running window to come to the front today); real
+verification of the Windows/macOS tray-icon path, the Linux tray's D-Bus
+registration and the multi-window loop (no display, no session bus here);
+the MPRIS-bus-name variant of D-010's single-instance lock (the portable
+lock-file branch the decision also names is what runs).
 
 `streamboat_player::default_engine`/`enumerate_output_devices`/
 `media_controls::spawn` (D-016, D-030 — see "Engine selection, device
 enumeration and media controls" above) are built and wired into
 `streamboatd`, the `streamboat` CLI's `play` and `devices` commands and the
-shell's `ui::engine_select`; the shell should also call
-`media_controls::spawn` once it holds a `PlayerHandle` in the multi-window
-rewrite. `smtc.rs`/`nowplaying.rs` are built (Windows/macOS, default-on
-features `smtc`/`nowplaying`) but untested beyond cross-target
-type-checking — no Windows or macOS CI runner exists yet; see "Cross-target
-type-checking" below for exactly what did and did not get checked, and each
-module's own doc comment for the specific open questions (SMTC: none beyond
-"no live popup was ever seen"; NowPlaying: whether `MPRemoteCommandCenter`'s
-handlers fire at all with no AppKit run loop in a bare daemon).
+shell (`ui::engine_select`, `ui::app::run_as_local_instance`).
+`smtc.rs`/`nowplaying.rs` are built (Windows/macOS, default-on features
+`smtc`/`nowplaying`) but untested beyond cross-target type-checking — no
+Windows or macOS CI runner exists yet; see "Cross-target type-checking"
+below for exactly what did and did not get checked, and each module's own
+doc comment for the specific open questions (SMTC: none beyond "no live
+popup was ever seen"; NowPlaying: whether `MPRemoteCommandCenter`'s handlers
+fire at all with no AppKit run loop in a bare daemon).

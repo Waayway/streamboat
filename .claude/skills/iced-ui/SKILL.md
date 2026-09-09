@@ -151,6 +151,25 @@ separately as `iced_test = "=0.14.0"` (see below for why it's a separate crate a
     crate for one button (`ui::actions::shuffled`). Prefer `BuildHasher::hash_one` over the older
     "make a hasher, feed it, call `.finish()`" three-step manually — `clippy::manual_hash_one` flags
     the manual version under `-D warnings`.
+17. **Multi-window is `iced::daemon`, not a builder flag on `iced::application`.** `daemon(boot,
+    update, view)` reuses `application`'s `BootFn`/`UpdateFn` but its `view`/`title`/`theme` all take
+    an extra `window::Id`; `subscription`/`style` stay window-less (one subscription for the whole
+    app). A `Daemon` opens no window by itself and — verified against `iced_winit`'s own
+    `WindowEvent::Destroyed` handling — never auto-exits when its last window closes, which is what
+    makes D-014's "closing the window keeps the app running" free rather than something to work
+    around. `window::open(settings) -> (window::Id, Task<window::Id>)` hands back the `Id`
+    *synchronously* (store it immediately; the `Task` is only for the open's side effect).
+    **Preventing** an actual close (to hide instead) needs `window::Settings::exit_on_close_request:
+    false` on that window — without it, `iced_winit` runs `window::Action::Close` itself on a native
+    close-button press *in addition to* delivering the ordinary `CloseRequested` event, not instead
+    of it (verified in `conversion::window_event`: the `CloseRequested → Event::Window(...)` mapping
+    happens unconditionally, before the shell's separate `exit_on_close_request` special case even
+    runs). There is no `window::hide`/`show` action — visibility is `window::set_mode(id,
+    window::Mode::Hidden | Windowed)`, and `window::gain_focus(id)` only works on an already-visible
+    window, so restoring one is `set_mode(id, Windowed).chain(gain_focus(id))` (`Task::chain`, not
+    `batch`, so the un-hide is guaranteed to land first). Full signatures and the always-on-top
+    (`window::Level::AlwaysOnTop`) and close/open-event-subscription details are in
+    `references/iced-0.14-api-notes.md` §8, verified for streamboat's D-036 mini-player wave.
 
 ## Owner-context notes
 
@@ -185,3 +204,15 @@ separately as `iced_test = "=0.14.0"` (see below for why it's a separate crate a
   the user ever opens the Lyrics screen). Three different lifetimes, three different homes for the
   state — reach for the one that actually matches what keys the data, not "wherever the last screen
   put its `State` field."
+  `iced::keyboard::Event::KeyPressed` — space, ctrl+f, ctrl+m, ctrl+q and escape are the five this
+  and the multi-window wave wire up; media keys are explicitly MPRIS's job later, not this
+  subscription's.
+- Multi-window (D-036): `ui::app::run` builds the shell with `iced::daemon(...)` instead of
+  `iced::application(...)` — see pitfall #13 and `references/iced-0.14-api-notes.md` §8 for the
+  pinned facts this rests on. `App` stores both the main window's `window::Id` (known synchronously
+  from `boot`'s own `window::open` call) and an `Option<window::Id>` for the mini-player, and
+  `view`/`title` dispatch on which `window::Id` iced is asking about; there is exactly one `App` for
+  every window, never one instance per window. The tray (`ui::tray`) and the single-instance/
+  remote-client decision (`ui::instance`, D-010, D-030) both live outside this skill's scope — they
+  are plain Rust (channels, `fd-lock`, `reqwest`/`tokio-tungstenite`) wired into `App` through
+  ordinary `Subscription`/`Task` values, not iced-specific facts worth pinning here.

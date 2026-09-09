@@ -26,6 +26,11 @@ pub struct State {
     pkce_client_secret: String,
     key_storage: KeyStorage,
     key_location: String,
+    /// Quality tiers this build cannot decode (D-003 decoder probe), left
+    /// out of the ceiling picker and named under it — iced's `pick_list` has
+    /// no per-item disabled state, so "greyed out" is "not offered, with the
+    /// reason shown."
+    unreachable: Vec<AudioQuality>,
     saved: bool,
     error: Option<String>,
 }
@@ -49,9 +54,30 @@ impl State {
             pkce_client_secret: settings.pkce_client_secret.clone().unwrap_or_default(),
             key_storage: settings.key_storage,
             key_location,
+            unreachable: Vec::new(),
             saved: true,
             error: None,
         }
+    }
+
+    /// Record which tiers the startup decoder probe found unreachable
+    /// (D-003), so the picker only offers what this build can play.
+    pub fn with_decoder_support(mut self, support: streamboat_player::DecoderSupport) -> Self {
+        self.unreachable = AudioQuality::LADDER
+            .into_iter()
+            .filter(|q| !support.is_reachable(*q))
+            .collect();
+        self
+    }
+
+    /// The tiers offered by the ceiling picker: everything the probe found
+    /// decodable, plus the current setting itself so a persisted choice this
+    /// build cannot reach still shows (capped at startup with a warning).
+    fn offered_tiers(&self) -> Vec<AudioQuality> {
+        AudioQuality::LADDER
+            .into_iter()
+            .filter(|q| !self.unreachable.contains(q) || *q == self.quality_ceiling)
+            .collect()
     }
 
     /// Writes the edited fields back into `settings`, returning the
@@ -214,11 +240,26 @@ impl State {
                     tokens,
                     "Quality ceiling",
                     pick_list(
-                        AudioQuality::LADDER.to_vec(),
+                        self.offered_tiers(),
                         Some(self.quality_ceiling),
                         Message::QualityChanged,
                     )
                 ),
+                text(if self.unreachable.is_empty() {
+                    "Every tier is decodable by this build.".to_string()
+                } else {
+                    format!(
+                        "Not decodable by this build, so not offered: {} (no matching decoder; \
+                         the ceiling is capped at startup).",
+                        self.unreachable
+                            .iter()
+                            .map(|q| q.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
+                .size(tokens.text_sm)
+                .color(tokens.muted),
                 labelled(
                     tokens,
                     "Output device",
@@ -430,6 +471,39 @@ async fn logout(api: ApiClient) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoder_probe_drops_unreachable_tiers_from_the_picker() {
+        let settings = Settings {
+            quality_ceiling: Some(AudioQuality::High),
+            ..Settings::default()
+        };
+        let no_flac = streamboat_player::DecoderSupport {
+            low: true,
+            high: true,
+            lossless: false,
+            hi_res_lossless: false,
+        };
+        let state = State::from_settings(&settings, "file".into()).with_decoder_support(no_flac);
+        assert_eq!(
+            state.unreachable,
+            vec![AudioQuality::HiResLossless, AudioQuality::Lossless]
+        );
+        assert_eq!(
+            state.offered_tiers(),
+            vec![AudioQuality::High, AudioQuality::Low]
+        );
+
+        // A persisted ceiling this build cannot reach still shows, so the
+        // user sees what was asked for rather than a silently changed value.
+        let persisted = Settings {
+            quality_ceiling: Some(AudioQuality::Lossless),
+            ..Settings::default()
+        };
+        let state = State::from_settings(&persisted, "file".into()).with_decoder_support(no_flac);
+        assert!(state.offered_tiers().contains(&AudioQuality::Lossless));
+        assert!(!state.offered_tiers().contains(&AudioQuality::HiResLossless));
+    }
 
     #[test]
     fn from_settings_round_trips_through_apply_to() {

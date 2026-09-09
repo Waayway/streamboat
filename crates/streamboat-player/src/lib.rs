@@ -30,6 +30,7 @@ pub mod nowplaying;
 pub mod offline;
 pub mod platform;
 pub mod player;
+pub mod probe;
 #[cfg(all(feature = "smtc", target_os = "windows"))]
 pub mod smtc;
 
@@ -37,6 +38,7 @@ pub use engine::{Engine, EngineEvent, LoadItem};
 pub use offline::{OfflineCache, OfflineError, PinInfo};
 pub use platform::{OutputDevice, default_engine, enumerate_output_devices};
 pub use player::{Player, PlayerConfig, PlayerDeps, PlayerHandle};
+pub use probe::DecoderSupport;
 
 #[cfg(feature = "gstreamer")]
 pub use gst::GstEngine;
