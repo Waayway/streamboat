@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.waayway.streamboat</id>
+  <name>streamboat</name>
+  <summary>Play TIDAL with your own subscription; not affiliated with TIDAL</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+
+  <developer id="io.github.waayway">
+    <name>Waayway</name>
+  </developer>
+
+  <description>
+    <p>
+      streamboat is an open-source client for TIDAL, for people who already pay for a TIDAL
+      subscription. It talks to the same unofficial api.tidal.com API that other open-source
+      TIDAL clients — High Tide and Sone — use, so it needs your own active TIDAL subscription
+      and does not work without one. It is not affiliated with, endorsed by, or sponsored by
+      TIDAL in any way.
+    </p>
+    <p>
+      streamboat is a player, not a downloader. It never decrypts protected streams, never
+      requests TIDAL's own licensed offline mode, never pools credentials across accounts, and
+      never produces a playable file that outlives your subscription. An encrypted manifest is
+      refused, loudly, with an explanation, rather than worked around.
+    </p>
+    <p>
+      By default, streamboat reports what you played back to TIDAL once you've listened to more
+      than 30 seconds of it, the same way TIDAL's own apps do, so Recently Played and
+      personalization behave the way you would expect. This is disclosed, not hidden, and can be
+      turned off entirely in settings.
+    </p>
+    <p>Highlights:</p>
+    <ul>
+      <li>Gapless playback, all four TIDAL quality tiers up to Hi-Res Lossless</li>
+      <li>Optional bit-perfect / exclusive-mode output (no OS resampling or mixing)</li>
+      <li>A headless daemon mode for a Raspberry Pi or a server, alongside the desktop app</li>
+      <li>MPRIS media-key integration on Linux</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">io.github.waayway.streamboat.desktop</launchable>
+
+  <screenshots>
+    <!--
+      Placeholder only: no screenshot exists yet because the iced desktop
+      shell (D-013) has not been built (docs/architecture.md, "Not yet
+      built" — the project ships a CLI spike today). Replace this entry
+      with at least one real, directly-hosted screenshot of the running
+      shell before any store submission: Flathub's
+      "metainfo-missing-screenshots" lint rule is never waived, and the
+      AppStream quality guidelines want it captured on Linux with default
+      system settings and native window decoration, at up to 1000x700 (or
+      2000x1400 for HiDPI).
+    -->
+    <screenshot type="default">
+      <caption>streamboat's desktop shell (not built yet — see docs/architecture.md)</caption>
+      <image>https://raw.githubusercontent.com/Waayway/streamboat/main/packaging/linux/screenshot-placeholder.png</image>
+    </screenshot>
+  </screenshots>
+
+  <url type="homepage">https://github.com/Waayway/streamboat</url>
+  <url type="bugtracker">https://github.com/Waayway/streamboat/issues</url>
+  <url type="vcs-browser">https://github.com/Waayway/streamboat</url>
+
+  <!--
+    Generated from https://hughsie.github.io/oars/generate.html, not
+    hand-written, per the metainfo guidelines this file follows. streamboat
+    plays licensed music; it has no user-generated content, chat, location
+    sharing or other OARS-relevant surface, hence "none" throughout.
+  -->
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-audio">none</content_attribute>
+    <content_attribute id="social-chat">none</content_attribute>
+    <content_attribute id="social-contacts">none</content_attribute>
+    <content_attribute id="social-info">none</content_attribute>
+  </content_rating>
+
+  <releases>
+    <release version="0.0.1" date="2026-09-09">
+      <description>
+        <p>
+          First playable milestone: a command-line spike. Device-code login, search, manifest
+          resolution through the quality cascade, and gapless playback through GStreamer on
+          Linux with a selectable ALSA output device. The desktop shell and Windows/macOS
+          support are not in this release yet.
+        </p>
+      </description>
+    </release>
+  </releases>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#2f8fd6</color>
+    <color type="primary" scheme_preference="dark">#0d3a5c</color>
+  </branding>
+
+  <categories>
+    <category>Audio</category>
+    <category>Music</category>
+  </categories>
+
+  <keywords>
+    <keyword>TIDAL</keyword>
+    <keyword>music</keyword>
+    <keyword>streaming</keyword>
+    <keyword>FLAC</keyword>
+    <keyword>lossless</keyword>
+  </keywords>
+
+  <!--
+    Desktop-only for now (D-002/D-004): mobile is future scope, not shipped
+    today. Move this to <supports> with <control>touch</control> and a
+    smaller <display_length> if/when a touch-first build exists — see
+    packaging-and-distribution.md's device-relations note.
+  -->
+  <requires>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <supports>
+    <internet>always</internet>
+  </supports>
+
+  <custom>
+    <value key="ai-generated-notice">
+      Parts of streamboat, including this metainfo file, are developed with AI coding
+      assistants and reviewed by a human before merge (see CONTRIBUTING.md). Any store
+      submission built from this file is prepared and opened by a human, never by an agent.
+    </value>
+  </custom>
+</component>

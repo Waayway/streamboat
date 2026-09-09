@@ -1,0 +1,85 @@
+# Maintainer: streamboat contributors <streamboat@users.noreply.github.com>
+#
+# shellcheck shell=bash disable=SC2034,SC2154
+# (PKGBUILD variables are read by, and pkgdir/srcdir are provided by,
+# makepkg itself -- not by this script.)
+#
+# streamboat -- an open-source TIDAL client, built from source against
+# Arch's own system GStreamer (D-041: AUR is the one Linux channel that does
+# *not* need the /opt/streamboat vendored GStreamer tree from
+# packaging/linux/vendor-gstreamer.sh, because Arch's `gstreamer` package is
+# always at or above D-020's 1.26.10 floor).
+#
+# This PKGBUILD builds the whole Cargo workspace and packages both binaries
+# it produces (D-045): `streamboat` (the desktop shell/CLI) and `streamboatd`
+# (the headless daemon), plus the desktop entry, AppStream metainfo, icon and
+# both systemd units. See packaging/aur/PKGBUILD-bin for the prebuilt
+# counterpart.
+
+pkgname=streamboat
+pkgver=0.0.1
+pkgrel=1
+pkgdesc="Play TIDAL with your own subscription; not affiliated with TIDAL"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Waayway/streamboat"
+# streamboat-core is Apache-2.0; streamboat-player/-server/-desktop (and so
+# both shipped binaries) are GPL-3.0-only (D-005).
+license=('Apache-2.0' 'GPL-3.0-only')
+depends=(
+  'gstreamer'
+  'gst-plugins-base'
+  'gst-plugins-good'
+  'gst-plugins-bad'
+  'gst-libav'
+  'alsa-lib'
+)
+makedepends=('cargo' 'git')
+provides=('streamboat' 'streamboatd')
+conflicts=('streamboat-bin')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/Waayway/streamboat/archive/refs/tags/v$pkgver.tar.gz")
+# Replace with the real tarball checksum when cutting a release; see
+# packaging/README.md "AUR" for the update procedure. Never publish a
+# PKGBUILD with sha256sums left as SKIP.
+sha256sums=('SKIP')
+
+prepare() {
+  cd "streamboat-$pkgver" || exit
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "streamboat-$pkgver" || exit
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release --workspace --bins
+}
+
+check() {
+  cd "streamboat-$pkgver" || exit
+  # The live TIDAL canary is opt-in and never runs here (D-047, no secrets
+  # or TIDAL account in this build environment); everything else in the
+  # workspace's test suite runs against synthetic fixtures.
+  STREAMBOAT_GST_SINK=fakesink cargo test --frozen --release --workspace
+}
+
+package() {
+  cd "streamboat-$pkgver" || exit
+
+  install -Dm755 target/release/streamboat "$pkgdir/usr/bin/streamboat"
+  install -Dm755 target/release/streamboatd "$pkgdir/usr/bin/streamboatd"
+
+  install -Dm644 packaging/linux/io.github.waayway.streamboat.desktop \
+    "$pkgdir/usr/share/applications/io.github.waayway.streamboat.desktop"
+  install -Dm644 packaging/linux/io.github.waayway.streamboat.metainfo.xml \
+    "$pkgdir/usr/share/metainfo/io.github.waayway.streamboat.metainfo.xml"
+  install -Dm644 packaging/linux/io.github.waayway.streamboat.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.waayway.streamboat.svg"
+
+  install -Dm644 packaging/linux/systemd/streamboatd.service \
+    "$pkgdir/usr/lib/systemd/system/streamboatd.service"
+  install -Dm644 packaging/linux/systemd/user/streamboatd.service \
+    "$pkgdir/usr/lib/systemd/user/streamboatd.service"
+
+  install -Dm644 LICENSES/Apache-2.0.txt "$pkgdir/usr/share/licenses/$pkgname/Apache-2.0.txt"
+  install -Dm644 LICENSES/GPL-3.0-only.txt "$pkgdir/usr/share/licenses/$pkgname/GPL-3.0-only.txt"
+}

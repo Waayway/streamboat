@@ -1,0 +1,31 @@
+# winget manifest template -- default locale manifest.
+
+PackageIdentifier: Waayway.streamboat
+PackageVersion: 0.0.1
+PackageLocale: en-US
+Publisher: streamboat contributors
+PublisherUrl: https://github.com/Waayway/streamboat
+PublisherSupportUrl: https://github.com/Waayway/streamboat/issues
+PackageName: streamboat
+PackageUrl: https://github.com/Waayway/streamboat
+License: GPL-3.0-only
+LicenseUrl: https://github.com/Waayway/streamboat/blob/main/LICENSES/GPL-3.0-only.txt
+Copyright: streamboat contributors
+ShortDescription: Play TIDAL with your own subscription; not affiliated with TIDAL
+Description: >-
+  streamboat is an open-source desktop client and command-line tool for
+  TIDAL, for people who already pay for a TIDAL subscription. It talks to
+  the same unofficial api.tidal.com API that other open-source TIDAL
+  clients use and needs your own active subscription to work. It is not
+  affiliated with, endorsed by, or sponsored by TIDAL. It is a player, not
+  a downloader: it never decrypts protected streams and never produces a
+  playable file that outlives your subscription.
+Moniker: streamboat
+Tags:
+  - tidal
+  - music
+  - streaming
+  - flac
+  - audio-player
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

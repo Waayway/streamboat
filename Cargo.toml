@@ -16,7 +16,7 @@ homepage = "https://github.com/Waayway/streamboat"
 
 [workspace.dependencies]
 streamboat-core = { path = "crates/streamboat-core" }
-streamboat-player = { path = "crates/streamboat-player" }
+streamboat-player = { path = "crates/streamboat-player", default-features = false }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

@@ -475,9 +475,8 @@ than memory (the API changed hard across 0.9-0.14, per D-013).
 - **Startup (task item 2)**: `ui::app::run()` loads `Context` (now `#[derive(Clone)]`, an additive
   change — every field it holds was already `Clone`, needed so the `Fn`-bound `boot` closure can
   `ctx.clone()` on each call instead of moving out of a capture), builds the platform engine via
-  `ui::engine_select::build` (`#[cfg(target_os = "linux")]` → `GstEngine`; a `compile_error!` fires
-  on any other target unless this crate's own `mpv` feature is on, which gates a call site for the
-  libmpv backend another agent is adding to `streamboat-player` — see that module's doc comment),
+  `ui::engine_select::build` (a thin call into `streamboat_player::default_engine`, so the shell
+  never names a backend; which one is compiled in follows this crate's `gstreamer`/`mpv` features),
   spawns `Player`, and opens the window. The app starts on `Screen::Login` and only flips to `Home`
   once an async `ApiClient::is_logged_in()` check resolves `true` (never optimistically shows a
   protected screen first).
@@ -818,10 +817,52 @@ that can run unattended:
   full, successful cross-target `cargo check` — a meaningfully higher bar
   than "compiles," but still short of "seen it work."
 
+## Packaging (D-041)
+
+`packaging/` holds every release artifact's source, and
+`crates/streamboat-desktop/Cargo.toml`/`crates/streamboat-server/Cargo.toml`
+carry `[package.metadata.deb]`/`[package.metadata.generate-rpm]` sections
+for their respective binaries — see `packaging/README.md` for the full
+per-artifact explanation, what was verified locally (both deb packages and
+both rpm packages were actually built and inspected in this repository's
+own dev environment; `dpkg-deb -c`/`rpm -qlp` confirm the file lists,
+`systemd-analyze verify` confirms both systemd units), and what could not
+be (no Windows or macOS machine exists in that environment; the WiX MSI,
+the DMG script and the winget manifests are validated as well-formed
+XML/YAML only).
+
+`.github/workflows/release.yml` builds all of it on a `vX.Y.Z` tag: Linux
+deb/rpm/AppImage/tarball on native x86_64 and aarch64 runners, a Windows
+MSI, a macOS DMG (arm64 and x86_64), and the `streamboatd` Docker image
+pushed to `ghcr.io`, all collected into one draft GitHub Release with a
+`SHA256SUMS` file. No code signing anywhere (D-042); no in-app updater
+(D-043); AUR/winget/Homebrew/Flathub submissions stay human-authored,
+outside CI (D-040, D-041) — see CONTRIBUTING.md's release checklist.
+
+The Windows and macOS build steps in `release.yml` run
+`cargo build -p streamboat-desktop -p streamboat-server --no-default-features
+--features streamboat-desktop/mpv,streamboat-server/mpv`: both binaries
+forward engine selection to `streamboat-player` through their own
+`gstreamer` (default) and `mpv` features and construct the engine through
+`streamboat_player::default_engine`, so no GStreamer symbol is referenced
+off Linux. The same invocation builds on Linux (against the distro libmpv)
+and is what CI's `mpv-only-build` check runs; the Windows and macOS jobs
+themselves have not run on a real runner yet.
+
+deb/rpm depend on the distro's own GStreamer packages for this first
+release rather than the `/opt/streamboat` vendored tree D-041 describes —
+`packaging/linux/vendor-gstreamer.sh` is the real, complete script for
+building that tree, just not wired into any job yet; `packaging/README.md`
+explains why, and the "Still open" list in `streamboat-decisions` still
+carries the question of whether that tree or the AppImage ends up the
+recommended Debian-stable install path.
+
 ## Not yet built (in decision order)
 
-the `streamboat://` handler for the desktop shell (D-024); the Flatpak Secret
-portal (D-026); the `org.freedesktop.ReserveDevice1` device-reservation
+the `streamboat://` handler for the desktop shell (D-024, though its OS
+handler registration is written in `packaging/linux/`, `packaging/windows/wix/`
+and `packaging/macos/` — the shell itself still needs to open a URL its OS
+hands it); the Flatpak Secret portal (D-026); the `org.freedesktop.ReserveDevice1` device-reservation
 handshake for the ALSA writer (`output-backends.md` §2, explicitly optional
 — `EBUSY` on open is handled with a bounded retry regardless); packaging
 (D-041); a `logout` command for `streamboatd` to hook the offline-cache wipe
@@ -829,7 +870,10 @@ into (D-022, otherwise built — see above); the mini-player window and tray
 icon (D-036, D-014); entity/Collection/lyrics screens (D-015;
 `ui::screens::placeholder` covers routing only); the control-API-backed
 remote-client `PlayerLink` and the single-instance lock (D-010,
-`RemoteLink`); the `streamboat://` handler registration per OS (D-024).
+`RemoteLink`); the `/opt/streamboat` vendored GStreamer tree actually wired
+into a deb/rpm job (the build script exists, see "Packaging" above); an
+AppUserModelID for Windows SMTC and a universal macOS build (both still-open
+packaging questions, see `streamboat-decisions`).
 
 `streamboat_player::default_engine`/`enumerate_output_devices`/
 `media_controls::spawn` (D-016, D-030 — see "Engine selection, device

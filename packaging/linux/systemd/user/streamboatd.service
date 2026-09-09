@@ -1,0 +1,70 @@
+# streamboat daemon (streamboatd) -- systemd --user unit.
+#
+# Install: ~/.config/systemd/user/streamboatd.service (a distro package
+# installs it to /usr/lib/systemd/user/streamboatd.service instead, which
+# `systemctl --user enable` picks up the same way). Enable with:
+#
+#   systemctl --user enable --now streamboatd
+#
+# This is the right unit for a logged-in desktop session (it starts once
+# you log in, stops on logout) *and*, combined with lingering, for a
+# genuinely headless box:
+#
+#   loginctl enable-linger "$USER"
+#
+# `loginctl enable-linger` starts a user manager (and this unit, once
+# enabled) at boot without an interactive login, and keeps it running after
+# you log out -- systemd also brings up a real D-Bus session bus at
+# $XDG_RUNTIME_DIR/bus in that mode, which is what streamboatd's MPRIS
+# adapter (Linux, D-030) needs. Without lingering, a `--user` unit is tied
+# to an active login session and is the wrong choice for a server that
+# nobody logs into. For that case, use the system unit
+# (packaging/linux/systemd/streamboatd.service) plus a dedicated user
+# instead, and treat MPRIS registration as optional there (it fails
+# non-fatally with no session bus).
+#
+# D-011 (docs/DECISIONS.md): Linux gets a real daemon; Windows and macOS get
+# always-on playback through the desktop app's tray mode instead.
+
+[Unit]
+Description=streamboat daemon (headless TIDAL playback)
+Documentation=https://github.com/Waayway/streamboat
+After=default.target sound.target
+
+[Service]
+Type=simple
+# A distro package installs the binary at a fixed prefix; a `cargo install`
+# or from-source build typically lands it in ~/.cargo/bin instead -- adjust
+# to match how streamboatd actually got onto this machine.
+ExecStart=/usr/bin/streamboatd
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+
+# The unit inherits the caller's own $HOME/$XDG_* environment, which is what
+# streamboat-core's directory resolution (config::AppDirs) uses by default;
+# no STREAMBOAT_HOME override is needed here the way the system unit needs
+# one.
+
+# --- Hardening (a subset of the system unit's -- this unit legitimately
+# needs its own $HOME for config/cache/state, so ProtectHome/ProtectSystem
+# are deliberately left off here) ---
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+# liborc (GStreamer's SIMD JIT) compiles code at runtime -- do not turn this on.
+MemoryDenyWriteExecute=no
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

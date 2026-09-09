@@ -1,0 +1,61 @@
+# Maintainer: streamboat contributors <streamboat@users.noreply.github.com>
+#
+# shellcheck shell=bash disable=SC2034,SC2154
+# (PKGBUILD variables are read by, and pkgdir/srcdir are provided by,
+# makepkg itself -- not by this script.)
+#
+# streamboat-bin -- prebuilt binaries from the GitHub Releases tarball
+# (D-041), for people who would rather not build the Cargo workspace
+# locally. Same runtime dependencies as packaging/aur/PKGBUILD (system
+# GStreamer, D-041) since these binaries were themselves built and linked
+# against the same set on a comparable Arch environment in CI.
+
+pkgname=streamboat-bin
+pkgver=0.0.1
+pkgrel=1
+pkgdesc="Play TIDAL with your own subscription; not affiliated with TIDAL (prebuilt binaries)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Waayway/streamboat"
+license=('Apache-2.0' 'GPL-3.0-only')
+depends=(
+  'gstreamer'
+  'gst-plugins-base'
+  'gst-plugins-good'
+  'gst-plugins-bad'
+  'gst-libav'
+  'alsa-lib'
+)
+provides=('streamboat' 'streamboatd')
+conflicts=('streamboat')
+
+# The release workflow (.github/workflows/release.yml) publishes one tarball
+# per architecture, named streamboat-vX.Y.Z-linux-<arch>.tar.gz, containing
+# both binaries plus the packaging/linux assets below at the top level.
+source_x86_64=("$pkgname-$pkgver.tar.gz::https://github.com/Waayway/streamboat/releases/download/v$pkgver/streamboat-v$pkgver-linux-x86_64.tar.gz")
+source_aarch64=("$pkgname-$pkgver.tar.gz::https://github.com/Waayway/streamboat/releases/download/v$pkgver/streamboat-v$pkgver-linux-aarch64.tar.gz")
+
+# Replace with the real per-architecture checksums from the release's
+# SHA256SUMS file when cutting a release. Never publish a PKGBUILD with
+# sha256sums left as SKIP.
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+  install -Dm755 streamboat "$pkgdir/usr/bin/streamboat"
+  install -Dm755 streamboatd "$pkgdir/usr/bin/streamboatd"
+
+  install -Dm644 io.github.waayway.streamboat.desktop \
+    "$pkgdir/usr/share/applications/io.github.waayway.streamboat.desktop"
+  install -Dm644 io.github.waayway.streamboat.metainfo.xml \
+    "$pkgdir/usr/share/metainfo/io.github.waayway.streamboat.metainfo.xml"
+  install -Dm644 io.github.waayway.streamboat.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.waayway.streamboat.svg"
+
+  install -Dm644 streamboatd.service \
+    "$pkgdir/usr/lib/systemd/system/streamboatd.service"
+  install -Dm644 streamboatd-user.service \
+    "$pkgdir/usr/lib/systemd/user/streamboatd.service"
+
+  install -Dm644 LICENSES-Apache-2.0.txt "$pkgdir/usr/share/licenses/$pkgname/Apache-2.0.txt"
+  install -Dm644 LICENSES-GPL-3.0-only.txt "$pkgdir/usr/share/licenses/$pkgname/GPL-3.0-only.txt"
+}

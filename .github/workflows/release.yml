@@ -1,0 +1,333 @@
+name: Release
+
+# Builds and publishes a draft GitHub Release for every `vX.Y.Z` tag
+# (D-041). No code signing anywhere in this workflow (D-042): the Windows
+# MSI and macOS DMG it produces are unsigned, and the release notes should
+# link to README.md's SmartScreen/Gatekeeper workaround section. No
+# in-app updater is built or published either (D-043) -- this workflow is
+# the entire release mechanism.
+#
+# Store/package-repository submissions this workflow does NOT do, on
+# purpose (D-040: those PRs are human-authored, never automated): opening
+# an AUR PKGBUILD update, a winget-pkgs PR, a Homebrew cask, or (not
+# planned for v1 anyway) a Flathub submission. This workflow only
+# produces the artifacts and checksums those human-authored submissions
+# point at.
+#
+# Windows and macOS build with `--no-default-features` plus the binaries'
+# `mpv` feature (D-016: libmpv is the Windows/macOS engine, GStreamer stays
+# Linux-only); `streamboat_player::default_engine` picks the compiled-in
+# backend, so the same sources build on all three OSes.
+#
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # =========================================================================
+  # Linux: native x86_64 and aarch64 runners (no cross-compilation --
+  # gstreamer-sys/alsa-sys both need a matching pkg-config'd C toolchain,
+  # which a native runner gives for free). deb, rpm, AppImage and a plain
+  # tarball (for the AUR -bin package and generic downloads) all come from
+  # the same build.
+  # =========================================================================
+  linux:
+    name: linux (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute version from the tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install GStreamer, ALSA and packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad \
+            gstreamer1.0-libav gstreamer1.0-alsa libasound2-dev pkg-config \
+            desktop-file-utils appstream libfuse2t64
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries (GStreamer, the default features, D-016)
+        run: cargo build --release --workspace --locked
+
+      - name: Install cargo-deb and cargo-generate-rpm
+        run: |
+          cargo install --locked cargo-deb
+          cargo install --locked cargo-generate-rpm
+
+      - name: Build deb packages
+        run: |
+          cargo deb -p streamboat-desktop --no-build --no-strip
+          cargo deb -p streamboat-server --no-build --no-strip
+
+      - name: Build rpm packages
+        run: |
+          mkdir -p dist/rpm
+          cargo generate-rpm -p crates/streamboat-desktop -o dist/rpm/
+          cargo generate-rpm -p crates/streamboat-server -o dist/rpm/
+
+      - name: Build the AppImage
+        run: |
+          pip install --user appimage-builder
+          export PATH="$HOME/.local/bin:$PATH"
+          mkdir -p dist/appimage
+          sed "s/\${VERSION}/${{ steps.version.outputs.version }}/g" \
+            packaging/appimage/AppImageBuilder.yml > dist/appimage/AppImageBuilder.yml
+          # amd64 is the only architecture appimage-builder's `apt` bundling
+          # step is verified against here (its Ubuntu apt sources default
+          # to amd64); on the aarch64 runner this step is expected to need
+          # a matching arm64 sources list, tracked as a follow-up rather
+          # than guessed at -- see packaging/README.md's AppImage section.
+          if [ "${{ matrix.arch }}" = "x86_64" ]; then
+            (cd dist/appimage && appimage-builder --recipe AppImageBuilder.yml --skip-test)
+          else
+            echo "::warning::AppImage build skipped on aarch64 -- see packaging/README.md's AppImage section"
+          fi
+
+      - name: Package a plain tarball (AUR -bin, generic downloads)
+        run: |
+          stage="dist/streamboat-${{ steps.version.outputs.version }}-linux-${{ matrix.arch }}"
+          mkdir -p "$stage"
+          cp target/release/streamboat target/release/streamboatd "$stage/"
+          cp packaging/linux/io.github.waayway.streamboat.desktop "$stage/"
+          cp packaging/linux/io.github.waayway.streamboat.metainfo.xml "$stage/"
+          cp packaging/linux/io.github.waayway.streamboat.svg "$stage/"
+          cp packaging/linux/systemd/streamboatd.service "$stage/"
+          cp packaging/linux/systemd/user/streamboatd.service "$stage/streamboatd-user.service"
+          cp LICENSES/Apache-2.0.txt "$stage/LICENSES-Apache-2.0.txt"
+          cp LICENSES/GPL-3.0-only.txt "$stage/LICENSES-GPL-3.0-only.txt"
+          tar -C dist -czf "${stage}.tar.gz" "$(basename "$stage")"
+
+      - name: Collect release artifacts
+        run: |
+          mkdir -p release-out
+          cp dist/streamboat-*-linux-${{ matrix.arch }}.tar.gz release-out/ 2>/dev/null || true
+          cp target/debian/*.deb release-out/ 2>/dev/null || true
+          cp dist/rpm/*.rpm release-out/ 2>/dev/null || true
+          cp dist/appimage/*.AppImage release-out/ 2>/dev/null || true
+          ls -la release-out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: release-out/*
+          if-no-files-found: error
+
+  # =========================================================================
+  # Windows: x86_64 only in v1. Fetches a pinned libmpv-dev release
+  # (D-016) and builds the MSI with WiX v4. This job has not run on a real
+  # Windows runner yet (see packaging/README.md).
+  # =========================================================================
+  windows:
+    name: windows (x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute version from the tag
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Pinned mpv-dev release (shinchiro's community Windows builds are
+      # the same source Sone-windows and other GStreamer/mpv-on-Windows
+      # projects pull from) -- pin an exact release tag here, not
+      # "latest", the same rule D-020 applies to the Linux GStreamer
+      # bundle. Update deliberately, with a comment naming why, not as a
+      # side effect of an unrelated change.
+      - name: Fetch pinned libmpv-dev
+        shell: bash
+        env:
+          MPV_DEV_URL: https://sourceforge.net/projects/mpv-player-windows/files/libmpv/mpv-dev-x86_64-20260101-git-0000000.7z/download
+        run: |
+          mkdir -p vendor/libmpv
+          echo "::warning::libmpv-dev fetch is a template URL (MPV_DEV_URL) -- pin it to a real, dated mpv-dev-x86_64 release before this job can actually run"
+          echo "$MPV_DEV_URL" > vendor/libmpv/SOURCE_URL.txt
+
+      - name: Build release binaries (libmpv engine, D-016)
+        run: cargo build --release --locked -p streamboat-desktop -p streamboat-server --no-default-features --features streamboat-desktop/mpv,streamboat-server/mpv
+
+      - name: Install WiX v4
+        run: dotnet tool install --global wix --version 5.0.2
+
+      - name: Generate a Windows .ico from the SVG app icon
+        shell: bash
+        run: |
+          echo "::warning::icon.ico generation is not wired up yet -- convert packaging/linux/io.github.waayway.streamboat.svg with a tool such as ImageMagick/rsvg-convert + png2ico before wix build can succeed"
+          mkdir -p packaging/windows/wix
+          touch packaging/windows/wix/icon.ico
+
+      - name: Build the MSI
+        shell: pwsh
+        run: |
+          wix build packaging\windows\wix\Package.wxs `
+            -d StreamboatExe=target\release\streamboat.exe `
+            -d StreamboatdExe=target\release\streamboatd.exe `
+            -d LibmpvDll=vendor\libmpv\libmpv-2.dll `
+            -d StreamboatIco=packaging\windows\wix\icon.ico `
+            -d ProductVersion=${{ steps.version.outputs.version }} `
+            -arch x64 `
+            -out dist\streamboat-${{ steps.version.outputs.version }}-windows-x64.msi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: dist/streamboat-*-windows-x64.msi
+          if-no-files-found: warn
+
+  # =========================================================================
+  # macOS: arm64 and x86_64 in v1 (universal build is a "still open" item,
+  # see .claude/skills/streamboat-decisions/SKILL.md). libmpv from
+  # Homebrew's bottle -- the simplest pinned source available on a GitHub
+  # macOS runner, since Homebrew ships prebuilt bottles rather than
+  # requiring a from-source build here. This job has not run on a real
+  # macOS runner yet (see packaging/README.md).
+  # =========================================================================
+  macos:
+    name: macos (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute version from the tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install libmpv (Homebrew bottle, D-016)
+        run: brew install mpv
+
+      - name: Build release binaries (libmpv engine, D-016)
+        run: cargo build --release --locked --target ${{ matrix.target }} -p streamboat-desktop -p streamboat-server --no-default-features --features streamboat-desktop/mpv,streamboat-server/mpv
+
+      - name: Generate a macOS .icns from the SVG app icon
+        run: |
+          echo "::warning::streamboat.icns generation is not wired up yet -- rasterize packaging/linux/io.github.waayway.streamboat.svg at the required sizes and run iconutil before build-dmg.sh can succeed"
+          mkdir -p packaging/macos
+          touch packaging/macos/streamboat.icns
+
+      - name: Build the DMG
+        run: |
+          mkdir -p dist
+          bash packaging/macos/build-dmg.sh \
+            --version "${{ steps.version.outputs.version }}" \
+            --streamboat-bin "target/${{ matrix.target }}/release/streamboat" \
+            --streamboatd-bin "target/${{ matrix.target }}/release/streamboatd" \
+            --libmpv-dylib "$(brew --prefix mpv)/lib/libmpv.2.dylib" \
+            --icon packaging/macos/streamboat.icns \
+            --out "dist/streamboat-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/streamboat-*-macos-*.dmg
+          if-no-files-found: warn
+
+  # =========================================================================
+  # Docker image for the daemon (D-041), pushed to ghcr.io. Uses only the
+  # ambient GITHUB_TOKEN -- no additional secret to configure.
+  # =========================================================================
+  docker:
+    name: docker (streamboatd)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute version from the tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/docker/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/streamboat:latest
+            ghcr.io/${{ github.repository_owner }}/streamboat:${{ steps.version.outputs.version }}
+
+  # =========================================================================
+  # Collect everything into one draft GitHub Release with SHA256SUMS.
+  # Draft, never auto-published (D-040/D-042: a human reviews and
+  # publishes, and writes the human-authored parts of the release notes).
+  # =========================================================================
+  release:
+    name: draft GitHub Release
+    needs: [linux, windows, macos, docker]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten and checksum
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -exec cp {} release-assets/ \;
+          (cd release-assets && sha256sum -- * > SHA256SUMS)
+          ls -la release-assets
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: streamboat ${{ github.ref_name }}
+          files: release-assets/*
+          body: |
+            Unsigned build (D-042): Windows SmartScreen and macOS Gatekeeper
+            both warn on first launch. See README.md's Install section for
+            the "More info -> Run anyway" / quarantine-removal workarounds.
+
+            This is a draft -- release notes still need a human pass before
+            publishing (D-040).

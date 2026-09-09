@@ -1,0 +1,31 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=streamboat
+GenericName=Music Player
+Comment=Play TIDAL with your own subscription — not affiliated with TIDAL
+Icon=io.github.waayway.streamboat
+Exec=streamboat %u
+TryExec=streamboat
+Terminal=false
+NoDisplay=false
+StartupNotify=true
+StartupWMClass=streamboat
+Categories=AudioVideo;Audio;Music;Player;
+Keywords=TIDAL;Music;Streaming;Player;FLAC;Lossless;
+MimeType=x-scheme-handler/streamboat;
+X-PulseAudio-Properties=media.role=music
+
+# streamboat claims its own `streamboat://` scheme (D-007, D-024) for PKCE
+# login callbacks and shareable deep links. It never registers `tidal://`:
+# that scheme is already claimed by TIDAL's own desktop app and by other
+# open-source clients (High Tide, Sone), and OS handler registration is
+# last-writer-wins — see docs/DECISIONS.md D-007 and the
+# headless-and-tidal-connect daemon-architecture reference. streamboat still
+# *parses* pasted tidal.com/listen.tidal.com/tidal:// content links so they
+# open correctly; it just never claims the scheme as a handler.
+#
+# NOTE: the iced desktop shell (D-013) is not built yet (see
+# docs/architecture.md, "Not yet built"). Until then, launching this entry
+# runs the `streamboat` CLI binary with no subcommand, which prints its
+# --help text rather than opening a window.

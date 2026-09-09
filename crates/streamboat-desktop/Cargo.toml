@@ -12,17 +12,17 @@ name = "streamboat"
 path = "src/main.rs"
 
 [features]
-default = []
-# The libmpv engine backend for Windows/macOS (D-016) is being built by
-# another agent in `streamboat-player`. This feature only exists so the
-# desktop shell's `cfg`-gated call site (`src/ui/engine_select.rs`) has
-# something to turn on once that backend lands; it does nothing on its own
-# today. See that module's doc comment for the exact compile-time gate.
-mpv = []
+default = ["gstreamer"]
+# Engine selection (D-016) forwarded to streamboat-player: GStreamer (with
+# the ALSA writer and MPRIS) is the Linux build; libmpv (with SMTC and
+# NowPlaying) is the Windows/macOS build. Release builds off Linux use
+# `--no-default-features --features streamboat-desktop/mpv`.
+gstreamer = ["streamboat-player/gstreamer", "streamboat-player/alsa-direct", "streamboat-player/mpris"]
+mpv = ["streamboat-player/mpv", "streamboat-player/smtc", "streamboat-player/nowplaying"]
 
 [dependencies]
 streamboat-core.workspace = true
-streamboat-player.workspace = true
+streamboat-player = { workspace = true, default-features = false }
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
@@ -39,3 +39,58 @@ iced = { workspace = true, features = ["tokio", "image", "svg", "advanced", "deb
 
 [dev-dependencies]
 iced_test.workspace = true
+
+# Packaging metadata (D-041). deb/rpm depend on the distro's own GStreamer
+# for this first cut, not the /opt/streamboat vendored tree D-041 describes
+# -- see packaging/README.md "Why deb/rpm depend on the distro's GStreamer
+# for now" and packaging/linux/vendor-gstreamer.sh for the follow-up. The
+# plugin packages below are dlopen'd by GStreamer's registry scan at
+# runtime, not linked directly, so `cargo deb`'s automatic `dpkg-shlibdeps`
+# pass (the `$auto` token) cannot discover them on its own; they are listed
+# explicitly instead, mirroring exactly what .github/workflows/ci.yml
+# installs and has verified actually runs the workspace's own test suite.
+[package.metadata.deb]
+name = "streamboat"
+maintainer = "streamboat contributors <streamboat@users.noreply.github.com>"
+copyright = "2026, streamboat contributors"
+section = "sound"
+priority = "optional"
+extended-description = """\
+streamboat is a desktop client and command-line tool for TIDAL, for people \
+who already pay for a TIDAL subscription. It talks to the same unofficial \
+api.tidal.com API that other open-source TIDAL clients use and needs your \
+own active subscription -- it is not affiliated with, endorsed by, or \
+sponsored by TIDAL. It is a player, not a downloader: it never decrypts \
+protected streams and never produces a playable file that outlives your \
+subscription."""
+depends = "$auto, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, gstreamer1.0-alsa"
+assets = [
+    { source = "target/release/streamboat", dest = "usr/bin/streamboat", mode = "755" },
+    { source = "../../packaging/linux/io.github.waayway.streamboat.desktop", dest = "usr/share/applications/io.github.waayway.streamboat.desktop", mode = "644" },
+    { source = "../../packaging/linux/io.github.waayway.streamboat.metainfo.xml", dest = "usr/share/metainfo/io.github.waayway.streamboat.metainfo.xml", mode = "644" },
+    { source = "../../packaging/linux/io.github.waayway.streamboat.svg", dest = "usr/share/icons/hicolor/scalable/apps/io.github.waayway.streamboat.svg", mode = "644" },
+]
+
+[package.metadata.generate-rpm]
+name = "streamboat"
+summary = "Play TIDAL with your own subscription; not affiliated with TIDAL"
+assets = [
+    { source = "target/release/streamboat", dest = "/usr/bin/streamboat", mode = "755" },
+    { source = "../../packaging/linux/io.github.waayway.streamboat.desktop", dest = "/usr/share/applications/io.github.waayway.streamboat.desktop", mode = "644" },
+    { source = "../../packaging/linux/io.github.waayway.streamboat.metainfo.xml", dest = "/usr/share/metainfo/io.github.waayway.streamboat.metainfo.xml", mode = "644" },
+    { source = "../../packaging/linux/io.github.waayway.streamboat.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.waayway.streamboat.svg", mode = "644" },
+]
+
+# `dpkg`'s shlib-based dependency discovery has no rpm equivalent wired up
+# by default here, so the same dlopen'd GStreamer plugin set is listed
+# explicitly, plus the shared libraries auto-req (ldd-based, the default
+# --auto-req mode) will not find because they too are dlopen'd rather than
+# linked. Distro package names below are Fedora's; adjust per the actual
+# target (see packaging/README.md).
+[package.metadata.generate-rpm.requires]
+gstreamer1 = "*"
+"gstreamer1-plugins-base" = "*"
+"gstreamer1-plugins-good" = "*"
+"gstreamer1-plugins-bad-free" = "*"
+"gstreamer1-libav" = "*"
+alsa-lib = "*"

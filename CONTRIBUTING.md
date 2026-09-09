@@ -36,3 +36,41 @@ message your own, and review what you submit as if you had typed it.
   crates only (`streamboat-player`, `streamboat-server`, `streamboat-desktop`),
   never in the Apache-2.0 `streamboat-core`.
 - No contributor agreement is required (D-006).
+
+## Release checklist
+
+`.github/workflows/release.yml` builds and drafts a GitHub Release on every
+`vX.Y.Z` tag push (D-041): Linux (deb, rpm, AppImage, AUR-ready tarball),
+Windows (MSI), macOS (DMG, arm64 and x86_64), and the `streamboatd` Docker
+image (`ghcr.io/waayway/streamboat`). See `packaging/README.md` for what
+each artifact is and its known gaps -- most importantly, the Windows/macOS
+build currently fails at compile time until `streamboat-desktop`'s and
+`streamboat-server`'s `main.rs` pick `MpvEngine` on those platforms instead
+of hardcoding `GstEngine` (D-016's last wiring step, not yet done).
+
+The workflow only produces artifacts and a `SHA256SUMS` file. Everything
+below it is a human, per D-040 -- **every store or package-repository
+submission PR is written and opened by a person, never by CI or an agent**:
+
+1. Confirm `cargo fmt --all -- --check`, `cargo clippy --workspace
+   --all-targets -- -D warnings`, and `cargo test --workspace` are green on
+   the commit being tagged.
+2. Bump `version` in the root `Cargo.toml` (`[workspace.package]`) and add a
+   dated `<release version="...">` entry to
+   `packaging/linux/io.github.waayway.streamboat.metainfo.xml` describing
+   what changed, in the same commit.
+3. Tag `vX.Y.Z` and push the tag; watch the release workflow's jobs.
+4. Once the draft release has every expected artifact, write the
+   human-authored parts of the release notes yourself (the workflow's own
+   note about unsigned binaries can stay) and publish it.
+5. **AUR**: update `pkgver`/`sha256sums` in `packaging/aur/PKGBUILD` and
+   `PKGBUILD-bin` from the tag and the release's `SHA256SUMS`, and push
+   both to their AUR git repos yourself.
+6. **winget**: fill in the real `InstallerSha256` in
+   `packaging/windows/winget/Waayway.streamboat.installer.yaml` from
+   `SHA256SUMS`, and open the `microsoft/winget-pkgs` PR yourself.
+7. Flathub, a Homebrew cask: not planned for this release (D-041); revisit
+   per `packaging/README.md`.
+
+None of steps 5-7 run in CI, on purpose -- an agent must not open, describe,
+or comment on any of those PRs even if asked to "finish the release."

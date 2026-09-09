@@ -1,0 +1,19 @@
+# winget manifest template -- version manifest.
+#
+# Not submitted anywhere by this repository (D-040: any store/package
+# submission PR is opened and written by a human, never by CI or an
+# agent). This is the template a maintainer copies into a
+# microsoft/winget-pkgs PR at manifests/w/Waayway/streamboat/<version>/,
+# with the placeholders below filled in from a tagged release. See
+# packaging/README.md's Windows section for the submission checklist,
+# including the two requirements most likely to fail a first submission
+# (silent install switches and declaring Scope -- both already handled by
+# the installer manifest in this directory) and the note on
+# unofficial-API clients and winget's "Potentially Unwanted Application"
+# check.
+
+PackageIdentifier: Waayway.streamboat
+PackageVersion: 0.0.1
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

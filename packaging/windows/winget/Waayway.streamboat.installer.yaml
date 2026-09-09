@@ -1,0 +1,30 @@
+# winget manifest template -- installer manifest.
+#
+# PackageIdentifier/PackageVersion must match the version manifest
+# (Waayway.streamboat.yaml) in this directory exactly. InstallerUrl and
+# InstallerSha256 are placeholders filled in from the tagged release's
+# SHA256SUMS file (.github/workflows/release.yml) -- never publish a real
+# submission with these left as-is.
+#
+# Scope: user matches packaging/windows/wix/Package.wxs's per-user install
+# (no UAC prompt); InstallerSwitches below give winget's automated
+# validation pipeline the silent/unattended install every submission needs
+# to pass (msiexec's own switches, since InstallerType is msi).
+
+PackageIdentifier: Waayway.streamboat
+PackageVersion: 0.0.1
+InstallerType: msi
+InstallModes:
+  - silent
+  - silentWithProgress
+InstallerSwitches:
+  Silent: "/quiet"
+  SilentWithProgress: "/passive"
+Scope: user
+UpgradeBehavior: install
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/Waayway/streamboat/releases/download/v0.0.1/streamboat-v0.0.1-windows-x64.msi
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: installer
+ManifestVersion: 1.6.0
