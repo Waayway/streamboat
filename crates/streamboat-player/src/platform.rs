@@ -235,7 +235,7 @@ pub fn engine_version() -> String {
     #[cfg(all(target_os = "linux", feature = "gstreamer"))]
     {
         match crate::gst::ensure_init() {
-            Ok(()) => format!("gstreamer {}", gstreamer::version_string()),
+            Ok(()) => gstreamer::version_string().to_string(),
             Err(e) => format!("gstreamer (failed to initialise: {e})"),
         }
     }

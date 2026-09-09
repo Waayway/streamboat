@@ -18,6 +18,8 @@ task actually touches, after those two:
 - `tech-stack-evaluation` — the stack research and scoring; the owner's actual choices differ in
   places (see `streamboat-decisions`).
 - `streamboat-engineering-baseline` — CI, secrets, packaging, licensing, i18n/a11y.
+- `iced-ui` — the pinned iced 0.14 API as it actually is, plus the headless simulator; load before
+  touching `crates/streamboat-desktop/src/ui/`.
 
 ## Owner decisions (fixed — do not re-litigate)
 
@@ -38,8 +40,10 @@ task actually touches, after those two:
 Rust workspace under `crates/` (`streamboat-core` Apache-2.0; `streamboat-player`,
 `streamboat-server`, `streamboat-desktop` GPL-3.0-only). `docs/architecture.md` says what is built
 and what is next. Before pushing: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D
-warnings`, `cargo test --workspace` (CI needs GStreamer dev packages, no secrets, no TIDAL account;
-`STREAMBOAT_GST_SINK=fakesink` for audio tests).
+warnings`, `STREAMBOAT_GST_SINK=fakesink cargo test --workspace`, `cargo test -p streamboat-player
+--features mpv`, and the Windows/macOS-shaped build `cargo build -p streamboat-desktop -p
+streamboat-server --no-default-features --features streamboat-desktop/mpv,streamboat-server/mpv`
+(CI runs all of these; it needs GStreamer and libmpv dev packages, no secrets, no TIDAL account).
 
 ## Repo conventions
 

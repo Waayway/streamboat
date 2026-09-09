@@ -49,21 +49,53 @@ pub fn key_slot(storage: KeyStorage) -> Arc<dyn KeySlot> {
     key_slot_named(storage, KEYRING_USER)
 }
 
-impl Context {
-    /// Resolve directories, load settings and the device identity, resolve
-    /// credentials and open the token store.
+/// Everything on disk that does not need TIDAL client credentials:
+/// directories, settings, the device identity and the token store. The
+/// commands that only inspect or maintain local state (`keyring status`,
+/// `pins`, `debug-bundle`) load this, so a box with no credential
+/// configured yet can still be diagnosed and cleaned up.
+#[derive(Clone)]
+pub struct LocalContext {
+    pub dirs: AppDirs,
+    pub settings: Settings,
+    pub device: DeviceIdentity,
+    pub store: Arc<EncryptedFileStore>,
+}
+
+impl LocalContext {
+    /// Resolve directories, load settings and the device identity, and open
+    /// the token store — no credentials needed.
     pub fn load() -> Result<Self> {
         let dirs = AppDirs::resolve()?;
         dirs.ensure()?;
         let settings = Settings::load(&dirs.settings_path())?;
         let device = DeviceIdentity::load_or_create(&dirs.device_path())?;
-        let creds = ClientCredentials::resolve(&settings)?;
         let store = Arc::new(EncryptedFileStore::open(
             dirs.token_path(),
             dirs.key_path(),
             key_slot(settings.key_storage),
             settings.key_storage,
         )?);
+        Ok(Self {
+            dirs,
+            settings,
+            device,
+            store,
+        })
+    }
+}
+
+impl Context {
+    /// Resolve directories, load settings and the device identity, resolve
+    /// credentials and open the token store.
+    pub fn load() -> Result<Self> {
+        let LocalContext {
+            dirs,
+            settings,
+            device,
+            store,
+        } = LocalContext::load()?;
+        let creds = ClientCredentials::resolve(&settings)?;
         let api = ApiClient::builder(creds, store.clone())
             .user_agent_override(settings.user_agent_override.clone())
             .country_code(settings.country_code.clone())

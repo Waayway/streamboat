@@ -32,13 +32,17 @@ const DEFAULT_PORT: u16 = 4747;
     about = "streamboat headless daemon (control API, MPRIS, streaming privileges)"
 )]
 struct Cli {
+    /// Quality ceiling (LOW, HIGH, LOSSLESS, HI_RES_LOSSLESS); defaults to
+    /// the `quality_ceiling` setting.
     #[arg(long)]
     quality: Option<AudioQuality>,
     /// ALSA device, for example `hw:1,0`.
     #[arg(long)]
     device: Option<String>,
+    /// Open `--device` exclusively for bit-perfect output (D-017).
     #[arg(long, requires = "device")]
     exclusive: bool,
+    /// Initial volume, 0.0 to 1.0 (ignored while an exclusive output is active).
     #[arg(long, default_value_t = 1.0)]
     volume: f32,
     /// Speak the legacy JSON-lines protocol on stdin/stdout instead of

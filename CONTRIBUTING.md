@@ -50,18 +50,19 @@ message your own, and review what you submit as if you had typed it.
 `vX.Y.Z` tag push (D-041): Linux (deb, rpm, AppImage, AUR-ready tarball),
 Windows (MSI), macOS (DMG, arm64 and x86_64), and the `streamboatd` Docker
 image (`ghcr.io/waayway/streamboat`). See `packaging/README.md` for what
-each artifact is and its known gaps -- most importantly, the Windows/macOS
-build currently fails at compile time until `streamboat-desktop`'s and
-`streamboat-server`'s `main.rs` pick `MpvEngine` on those platforms instead
-of hardcoding `GstEngine` (D-016's last wiring step, not yet done).
+each artifact is and its known gaps -- most importantly, the Windows and
+macOS jobs (libmpv engine, `--no-default-features --features
+streamboat-desktop/mpv,streamboat-server/mpv`) have not yet run on a real
+Windows or macOS runner; the same invocation is proven on Linux by CI.
 
 The workflow only produces artifacts and a `SHA256SUMS` file. Everything
 below it is a human, per D-040 -- **every store or package-repository
 submission PR is written and opened by a person, never by CI or an agent**:
 
 1. Confirm `cargo fmt --all -- --check`, `cargo clippy --workspace
-   --all-targets -- -D warnings`, and `cargo test --workspace` are green on
-   the commit being tagged.
+   --all-targets -- -D warnings`, `STREAMBOAT_GST_SINK=fakesink cargo test
+   --workspace` and `cargo test -p streamboat-player --features mpv` are
+   green on the commit being tagged (CI's `check` job runs exactly these).
 2. Bump `version` in the root `Cargo.toml` (`[workspace.package]`) and add a
    dated `<release version="...">` entry to
    `packaging/linux/io.github.waayway.streamboat.metainfo.xml` describing

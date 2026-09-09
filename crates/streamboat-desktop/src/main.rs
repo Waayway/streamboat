@@ -10,7 +10,7 @@ use anyhow::{Context as _, bail};
 use clap::{Parser, Subcommand};
 use streamboat_core::auth::device_code::{start_device_flow, wait_for_device_token};
 use streamboat_core::auth::pkce::{PkceSession, capture_code_loopback, code_from_redirect};
-use streamboat_core::bootstrap::Context;
+use streamboat_core::bootstrap::{Context, LocalContext};
 use streamboat_core::proto::{Command, Event, OutputConfig, PinKind, PlayItem};
 use streamboat_core::{AudioQuality, StreamSource};
 use streamboat_player::offline::OfflineCache;
@@ -358,7 +358,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Keyring { action } => {
-            let ctx = Context::load()?;
+            let ctx = LocalContext::load()?;
             match action {
                 KeyringAction::Status => {
                     println!("key location: {}", ctx.store.key_location());
@@ -641,7 +641,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Pins => {
-            let ctx = Context::load()?;
+            let ctx = LocalContext::load()?;
             let cache = OfflineCache::open(&ctx.dirs, &ctx.settings, &ctx.device.client_unique_key)
                 .await
                 .context("opening the offline cache")?;
@@ -702,7 +702,7 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::DebugBundle { out } => {
-            let ctx = Context::load()?;
+            let ctx = LocalContext::load()?;
             let out_path = out.unwrap_or_else(|| {
                 std::env::current_dir().unwrap_or_default().join(format!(
                     "streamboat-debug-{}.zip",
