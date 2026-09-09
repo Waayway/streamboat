@@ -10,6 +10,8 @@
 pub mod engine;
 #[cfg(feature = "gstreamer")]
 pub mod gst;
+#[cfg(all(feature = "mpris", target_os = "linux"))]
+pub mod mpris;
 pub mod player;
 
 pub use engine::{Engine, EngineEvent, LoadItem};

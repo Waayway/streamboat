@@ -86,10 +86,20 @@ streamboat play 12345 --device hw:1,0 --exclusive   # bit-perfect: no mixing, no
 `streamboat play --search "..."` plays the first search result. `RUST_LOG=info`
 prints the signal path (decoder, sink, device format) when a track starts.
 
-The daemon speaks the same Command/Event protocol as JSON lines on stdin and
-stdout for now (`streamboatd --device hw:1,0 --exclusive`, then
-`{"type":"play","items":[{"track_id":12345}]}`); the HTTP + WebSocket control
-API and MPRIS adapter follow.
+`streamboatd` hosts an HTTP + WebSocket control API by default, on
+`127.0.0.1:4747`: `GET /health` (no token needed), `GET /v1/state`,
+`POST /v1/commands` (a `Command` JSON body), and `GET /v1/events` (a
+WebSocket: a full state snapshot on connect, then every `Event` wrapped as
+`{"revision": n, "event": {...}}`, also accepting inbound `Command` JSON).
+Every route but `/health` needs `Authorization: Bearer <token>` — the token
+is generated on first start into a 0600 file under the data directory and
+its path is printed at startup. `--listen 0.0.0.0:<port>` or `--lan` opts
+into exposing it beyond localhost (logged loudly); `streamboatd --stdio`
+keeps the original JSON-lines transport on stdin/stdout
+(`{"type":"play","items":[{"track_id":12345}]}`). On Linux, `streamboatd`
+also registers an MPRIS2 player (`org.mpris.MediaPlayer2.streamboat`) for
+media keys and desktop "now playing" widgets, when a D-Bus session is
+reachable.
 
 Tokens are stored encrypted (AES-256-GCM) in the data directory. The 32-byte
 master key goes to the OS keyring (Secret Service, Credential Manager,
@@ -104,8 +114,8 @@ keyring, `streamboat keyring to-file` does the reverse. `key_storage` in
 
 ```
 crates/streamboat-core      Apache-2.0  API client, login, token store, manifests, protocol types
-crates/streamboat-player    GPL-3.0     Engine trait, GStreamer backend, queue and playback
-crates/streamboat-server    GPL-3.0     streamboatd
+crates/streamboat-player    GPL-3.0     Engine trait, GStreamer backend, queue, playback, MPRIS
+crates/streamboat-server    GPL-3.0     streamboatd: HTTP+WS control API, stdio fallback
 crates/streamboat-desktop   GPL-3.0     streamboat (CLI now, iced shell next)
 docs/DECISIONS.md                       what was decided and why
 docs/research/                          the fact-checked research the decisions rest on

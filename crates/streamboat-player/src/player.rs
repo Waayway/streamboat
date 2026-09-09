@@ -75,6 +75,13 @@ impl PlayerHandle {
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
     }
+    /// Publish an event the player itself did not originate (headless login's
+    /// `AuthRequired`/`AuthOk`, for instance) on the same broadcast every
+    /// subscriber already listens on, so every front end — the control API,
+    /// the stdio protocol, MPRIS — sees one unified event stream.
+    pub fn publish(&self, ev: Event) {
+        let _ = self.events.send(ev);
+    }
 }
 
 struct Entry {

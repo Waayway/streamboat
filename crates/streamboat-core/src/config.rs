@@ -69,6 +69,38 @@ impl AppDirs {
     pub fn token_path(&self) -> PathBuf {
         self.data.join("tokens.bin")
     }
+    /// The control API's bearer token (D-030), under the data dir like
+    /// `tokens.bin` rather than config, since it is a generated credential.
+    pub fn control_token_path(&self) -> PathBuf {
+        self.data.join("control-token")
+    }
+}
+
+/// Load the control API's bearer token, generating one on first use: 32
+/// random bytes, hex-encoded, written to a 0600 file. `streamboatd` requires
+/// `Authorization: Bearer <token>` on every control-API route but
+/// `GET /health` (D-030, D-031). The file is kept forever; delete it to force
+/// a new token (any client holding the old one is then locked out).
+pub fn load_or_create_control_token(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => {
+            let token = s.trim().to_string();
+            if token.is_empty() {
+                return Err(Error::Config(format!(
+                    "control token file {} is empty",
+                    path.display()
+                )));
+            }
+            Ok(token)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let bytes: [u8; 32] = rand::random();
+            let token = hex::encode(bytes);
+            fsutil::atomic_write(path, token.as_bytes(), 0o600)?;
+            Ok(token)
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// User-editable settings. Secrets in here are the user's own choice
@@ -169,5 +201,34 @@ impl DeviceIdentity {
             }
             Err(e) => Err(e.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_token_is_generated_once_and_persisted_0600() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control-token");
+        let first = load_or_create_control_token(&path).unwrap();
+        assert_eq!(first.len(), 64, "32 random bytes, hex-encoded");
+        let second = load_or_create_control_token(&path).unwrap();
+        assert_eq!(first, second, "the token must survive a restart");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn control_token_rejects_an_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control-token");
+        std::fs::write(&path, b"").unwrap();
+        assert!(load_or_create_control_token(&path).is_err());
     }
 }

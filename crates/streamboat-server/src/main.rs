@@ -1,10 +1,12 @@
-//! `streamboatd`: the headless daemon. This spike speaks the Command/Event
-//! protocol as JSON lines on stdin/stdout, which is the same contract the
-//! HTTP+WebSocket control API (D-030) will carry next. It links no GUI
-//! toolkit; CI builds it in a container without one to keep it that way.
+//! `streamboatd`: the headless daemon. Two front doors over the same
+//! Command/Event protocol (`streamboat_core::proto`): by default, the
+//! HTTP + WebSocket control API (D-030, D-031, `streamboat_server::api`);
+//! with `--stdio`, the JSON-lines transport the playable spike shipped
+//! first. Links no GUI toolkit; CI builds it in a container without one to
+//! keep it that way.
 
-use std::sync::Arc;
-use std::sync::mpsc;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::{Arc, mpsc};
 
 use anyhow::Context as _;
 use clap::Parser;
@@ -15,14 +17,21 @@ use streamboat_core::privileges::{StreamingPrivileges, hostname_display_name};
 use streamboat_core::proto::{Command, Event, OutputConfig};
 use streamboat_core::reporting::PlayReporter;
 use streamboat_core::scrobble::{LastfmScrobbler, ListenBrainzScrobbler, ScrobbleHub, Scrobbler};
-use streamboat_player::{GstEngine, Player, PlayerConfig, PlayerDeps};
+use streamboat_player::{GstEngine, Player, PlayerConfig, PlayerDeps, PlayerHandle};
+use streamboat_server::api::{self, ApiState};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::sync::broadcast;
+
+/// Unclaimed by any control-API precedent this project surveyed
+/// (`headless-and-tidal-connect/references/daemon-architecture.md` §2); not
+/// an owner decision, just streamboat's own pick. Override with `--listen`.
+const DEFAULT_PORT: u16 = 4747;
 
 #[derive(Parser)]
 #[command(
     name = "streamboatd",
     version,
-    about = "streamboat headless daemon (stdio protocol)"
+    about = "streamboat headless daemon (control API, MPRIS, streaming privileges)"
 )]
 struct Cli {
     #[arg(long)]
@@ -34,6 +43,26 @@ struct Cli {
     exclusive: bool,
     #[arg(long, default_value_t = 1.0)]
     volume: f32,
+    /// Speak the legacy JSON-lines protocol on stdin/stdout instead of
+    /// hosting the HTTP + WebSocket control API.
+    #[arg(long)]
+    stdio: bool,
+    /// Address for the control API. Defaults to `127.0.0.1:4747`. Anything
+    /// other than a loopback address is a LAN opt-in (see `--lan`) and is
+    /// logged loudly, with the token file's path, at startup.
+    #[arg(long)]
+    listen: Option<SocketAddr>,
+    /// Acknowledge exposing the control API beyond localhost (D-030). If
+    /// `--listen` is not also given, this switches the bind address to
+    /// `0.0.0.0` on the default port.
+    #[arg(long)]
+    lan: bool,
+    /// Extra `Host` header values the control API accepts, beyond
+    /// `localhost`/`127.0.0.1`/`::1` and (once bound beyond localhost) the
+    /// literal bind address — for a LAN hostname or reverse-proxy name.
+    /// Repeatable.
+    #[arg(long = "allow-host")]
+    allow_host: Vec<String>,
 }
 
 #[tokio::main]
@@ -46,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let cli = Cli::parse();
     let ctx = Context::load()?;
-    let output = match (cli.device, cli.exclusive) {
+    let output = match (cli.device.clone(), cli.exclusive) {
         (Some(d), true) => OutputConfig::Exclusive { device: d },
         (d, _) => OutputConfig::Shared { device: d },
     };
@@ -115,52 +144,118 @@ async fn main() -> anyhow::Result<()> {
             scrobbler,
         },
     );
-    let mut events = handle.subscribe();
 
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
-    // Headless login: announce the device code as an event so a remote can
-    // render its own QR, then confirm.
-    if !ctx.api.is_logged_in().await {
-        let api = ctx.api.clone();
-        let out = out_tx.clone();
-        let privileges = privileges.clone();
-        tokio::spawn(async move {
-            match start_device_flow(&api).await {
-                Ok(auth) => {
-                    let _ = out.send(Event::AuthRequired {
-                        verification_url: auth.verification_url(),
-                        user_code: auth.user_code.clone(),
-                        expires_in_secs: auth.expires_in,
-                    });
-                    match wait_for_device_token(&api, &auth, || true).await {
-                        Ok(t) => {
-                            let _ = out.send(Event::AuthOk {
-                                user_id: t.user_id,
-                                country_code: t.country_code,
-                            });
-                            // The privileges socket was already retrying
-                            // against no token; kick it into an immediate
-                            // reconnect now that one exists (§6 item 7).
-                            privileges.notify_token_refreshed();
-                        }
-                        Err(e) => {
-                            let _ = out.send(Event::Error {
-                                message: format!("login failed: {e}"),
-                                track_id: None,
-                            });
-                        }
-                    }
-                }
-                Err(e) => {
-                    let _ = out.send(Event::Error {
-                        message: format!("login failed: {e}"),
-                        track_id: None,
-                    });
-                }
-            }
-        });
+    // MPRIS registration lives in the engine/player layer (D-030) so it
+    // works the same way in daemon mode; it logs and does nothing useful
+    // when there is no D-Bus session (a headless box, this CI), never
+    // failing the daemon.
+    #[cfg(all(feature = "mpris", target_os = "linux"))]
+    streamboat_player::mpris::spawn(handle.clone());
+
+    if cli.stdio {
+        // Subscribe before kicking off headless login: `PlayerHandle::publish`
+        // (used for `AuthRequired`/`AuthOk` below) only reaches subscribers
+        // that already exist at send time, so this order is load-bearing,
+        // not cosmetic.
+        let events = handle.subscribe();
+        spawn_login(&ctx, &handle, privileges.clone());
+        run_stdio(handle, events).await
+    } else {
+        let (state, addr) =
+            control_api_state(&ctx, handle.clone(), cli.listen, cli.lan, cli.allow_host)?;
+        spawn_login(&ctx, &handle, privileges.clone());
+        let app = api::router(state);
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        // Log the address actually bound, not the requested one — they
+        // differ whenever `--listen` asks for port 0.
+        tracing::info!(listen = %listener.local_addr()?, "control API listening");
+        axum::serve(listener, app).await?;
+        Ok(())
+    }
+}
+
+/// Resolve the bind address, load or create the bearer token, build the
+/// Host-header allowlist, and construct [`ApiState`] — which subscribes to
+/// the player's event broadcast synchronously, before returning, for the
+/// same reason `main` orders things the way it does above.
+fn control_api_state(
+    ctx: &Context,
+    handle: PlayerHandle,
+    listen: Option<SocketAddr>,
+    lan: bool,
+    extra_hosts: Vec<String>,
+) -> anyhow::Result<(ApiState, SocketAddr)> {
+    let mut addr = listen.unwrap_or_else(|| SocketAddr::from((Ipv4Addr::LOCALHOST, DEFAULT_PORT)));
+    if lan && addr.ip().is_loopback() {
+        addr.set_ip(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
     }
 
+    let token_path = ctx.dirs.control_token_path();
+    let token = streamboat_core::config::load_or_create_control_token(&token_path)?;
+    tracing::info!(path = %token_path.display(), "control API bearer token");
+
+    let mut allowed_hosts = api::default_allowed_hosts();
+    if !addr.ip().is_loopback() {
+        allowed_hosts.push(addr.ip().to_string());
+        tracing::warn!(
+            listen = %addr,
+            token_path = %token_path.display(),
+            "control API is bound beyond localhost: anyone on this network who obtains the \
+             token at the path above can control playback. Pass --allow-host to also accept a \
+             LAN hostname or reverse-proxy name."
+        );
+    }
+    allowed_hosts.extend(extra_hosts);
+
+    Ok((ApiState::new(handle, token, allowed_hosts), addr))
+}
+
+/// Headless login (unchanged from the stdio-only spike): announce the
+/// device code as an `Event`, on the same broadcast every front end reads
+/// from, so a remote can render its own QR.
+fn spawn_login(ctx: &Context, handle: &PlayerHandle, privileges: Arc<StreamingPrivileges>) {
+    let api = ctx.api.clone();
+    let login_handle = handle.clone();
+    tokio::spawn(async move {
+        if api.is_logged_in().await {
+            return;
+        }
+        match start_device_flow(&api).await {
+            Ok(auth) => {
+                login_handle.publish(Event::AuthRequired {
+                    verification_url: auth.verification_url(),
+                    user_code: auth.user_code.clone(),
+                    expires_in_secs: auth.expires_in,
+                });
+                match wait_for_device_token(&api, &auth, || true).await {
+                    Ok(t) => {
+                        login_handle.publish(Event::AuthOk {
+                            user_id: t.user_id,
+                            country_code: t.country_code,
+                        });
+                        // The privileges socket was already retrying against
+                        // no token; kick it into an immediate reconnect now
+                        // that one exists (daemon-architecture.md §6 item 7).
+                        privileges.notify_token_refreshed();
+                    }
+                    Err(e) => login_handle.publish(Event::Error {
+                        message: format!("login failed: {e}"),
+                        track_id: None,
+                    }),
+                }
+            }
+            Err(e) => login_handle.publish(Event::Error {
+                message: format!("login failed: {e}"),
+                track_id: None,
+            }),
+        }
+    });
+}
+
+async fn run_stdio(
+    handle: PlayerHandle,
+    mut events: broadcast::Receiver<Event>,
+) -> anyhow::Result<()> {
     let mut stdout = tokio::io::stdout();
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     handle.send(Command::GetState);
@@ -180,12 +275,11 @@ async fn main() -> anyhow::Result<()> {
             },
             ev = events.recv() => match ev {
                 Ok(ev) => write_event(&mut stdout, &ev).await?,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                Err(broadcast::error::RecvError::Lagged(n)) => {
                     tracing::warn!("dropped {n} events for a slow reader");
                 }
                 Err(_) => break,
             },
-            Some(ev) = out_rx.recv() => write_event(&mut stdout, &ev).await?,
         }
     }
     Ok(())

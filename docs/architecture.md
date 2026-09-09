@@ -7,10 +7,56 @@ implementation choices made while building the first milestone (D-044).
 
 | Crate | Licence | Contents |
 | --- | --- | --- |
-| `streamboat-core` | Apache-2.0 | `http` (authenticated client, single-flight and cross-process refresh, 429 gate), `auth::device_code`, `auth::pkce`, `token_store` (AES-256-GCM file, `SBTK` header, keyring-held master key), `manifest` (BTS/EMU/DASH parsing, refusal rule), `api` (sessions, tracks, `playbackinfopostpaywall`, quality cascade, plus the catalogue/library surface below), `proto` (Command/Event), `config`, `credentials` (device-code and PKCE pairs), `bootstrap`, `privileges` (the Pushkin streaming-privileges websocket, D-033), `reporting` (play reporting to `ec.tidal.com` and the server-anchored clock, D-027), `scrobble` (Last.fm/ListenBrainz, D-037) |
-| `streamboat-player` | GPL-3.0-only | `engine::Engine` trait, `gst::GstEngine` (playbin3), `player::Player` (queue, prefetch, Command→Event loop, and the optional `PlayerDeps` wiring for the three modules above) |
-| `streamboat-server` | GPL-3.0-only | `streamboatd`: stdio JSON-lines transport for the protocol; headless login as `auth_required`/`auth_ok` events |
+| `streamboat-core` | Apache-2.0 | `http` (authenticated client, single-flight and cross-process refresh, 429 gate), `auth::device_code`, `auth::pkce`, `token_store` (AES-256-GCM file, `SBTK` header, keyring-held master key), `manifest` (BTS/EMU/DASH parsing, refusal rule), `api` (sessions, tracks, `playbackinfopostpaywall`, quality cascade, plus the catalogue/library surface below), `proto` (Command/Event), `config` (`AppDirs`, `Settings`, the control API's bearer-token file), `credentials` (device-code and PKCE pairs), `bootstrap`, `privileges` (the Pushkin streaming-privileges websocket, D-033), `reporting` (play reporting to `ec.tidal.com` and the server-anchored clock, D-027), `scrobble` (Last.fm/ListenBrainz, D-037) |
+| `streamboat-player` | GPL-3.0-only | `engine::Engine` trait, `gst::GstEngine` (playbin3), `player::Player` (queue, prefetch, Command→Event loop, `PlayerHandle::publish` for externally-sourced events, and the optional `PlayerDeps` wiring for the three modules above), `mpris` (Linux, feature `mpris`, default on: `org.mpris.MediaPlayer2.streamboat`) |
+| `streamboat-server` | GPL-3.0-only | `streamboatd`: `api` (the HTTP + WebSocket control API, see below) hosted by default; `--stdio` keeps the original JSON-lines transport; headless login as `auth_required`/`auth_ok` events on the same broadcast every front end reads; constructs the privileges socket, play reporter and scrobblers from `Settings` |
 | `streamboat-desktop` | GPL-3.0-only | `streamboat`: CLI subcommands (login [--pkce], logout, whoami, search, resolve, play, devices, keyring, paths); the iced shell is not built yet |
+
+## Control API (D-030, D-031)
+
+`streamboatd` hosts an `axum` HTTP + WebSocket server over the same
+`PlayerHandle` the stdio transport and MPRIS use. Bound to `127.0.0.1:4747`
+by default — streamboat's own pick (unclaimed by any control-API precedent
+`headless-and-tidal-connect/references/daemon-architecture.md` §2 surveys;
+not an owner decision, override with `--listen`). `--listen 0.0.0.0:<port>` or
+`--lan` is the explicit LAN opt-in; either logs a warning naming the bind
+address and the token file's path at startup. `--allow-host <name>` adds
+extra `Host` header values beyond `localhost`/`127.0.0.1`/`::1` and (once
+exposed) the literal bind address.
+
+A random 32-byte token, hex-encoded, is generated on first start into a
+0600 file at `<data dir>/control-token`
+(`streamboat_core::config::load_or_create_control_token`) and printed at
+startup. Every route but `GET /health` requires
+`Authorization: Bearer <token>`; every route, `/health` included, is
+rejected (403) unless its `Host` header matches the allowlist above — a
+loopback bind and a token alone do not stop DNS rebinding
+(`headless-and-tidal-connect/references/daemon-architecture.md` §3).
+
+Routes:
+
+- `GET /health` → `{version, protocol_version, capabilities: [...]}` —
+  unauthenticated (still Host-checked), for capability negotiation.
+- `GET /v1/state` → the current `PlayerState` snapshot.
+- `POST /v1/commands` → a `Command` JSON body, enqueued and acknowledged
+  with 202; the outcome arrives as an `Event`, not in the response.
+- `GET /v1/events` → upgrades to a WebSocket. The first message is always
+  a full `State` snapshot; every message after that is one `Event`. Every
+  message is wrapped `{"revision": n, "event": {...}}`, `revision`
+  monotonically increasing for the daemon's lifetime. **Reconnect rule**:
+  a client that sees a gap in `revision` should request a new snapshot —
+  either by reconnecting (a fresh connection always opens with one) or by
+  sending a `{"type":"get_state"}` command on the same socket. The socket
+  also accepts inbound `Command` JSON text messages, applied the same way
+  `POST /v1/commands` does.
+
+Tests: `crates/streamboat-server/tests/api.rs`, an in-process `axum` server
+(ephemeral port) over the `FakeEngine` pattern
+(`crates/streamboat-server/tests/common/mod.rs`) and a one-track wiremock
+TIDAL, driven by real `reqwest` and `tokio-tungstenite` clients — health
+without a token, 401 without/with the wrong token, Host-header rejection,
+a POST command changing `/v1/state`, the WS snapshot-then-events envelope
+with strictly increasing revisions, and an inbound WS command.
 
 ## Data flow
 
@@ -227,16 +273,24 @@ reuses one id for both anyway, the cheapest safe move the reference names).
 - `streamboat-player`: the GStreamer backend over generated WAV files through
   `fakesink` (single track, gapless hand-over, error paths); the Player against
   a fake engine and an in-process TIDAL (queue, skip-with-event, exclusive
-  volume policy, JSON round trip).
+  volume policy, JSON round trip); `mpris` unit tests cover pure mapping only
+  (`TrackSummary` → `Metadata`, `PlaybackStatus` mapping, the exclusive-mode
+  volume rule) — CI has no D-Bus session bus, so registering a real `Player`
+  is not exercised there.
+- `streamboat-server`: `tests/api.rs` (see "Control API" above) — health,
+  auth, Host allowlisting, a command changing state, and both directions of
+  the WebSocket, all over real sockets against an in-process daemon.
 - CI: fmt, clippy `-D warnings`, tests, release build; a Debian container job
-  builds `streamboatd` without GUI libraries and asserts none are linked.
+  builds `streamboatd` without GUI libraries and asserts none are linked —
+  `axum`, `tokio-tungstenite` and `mpris-server`/`zbus` are all pure Rust and
+  link no system D-Bus or GUI library, so this still passes.
 
 ## Not yet built (in decision order)
 
 the `streamboat://` handler for the desktop shell (D-024); the Flatpak Secret
 portal (D-026); the libmpv backend for Windows and macOS (D-016); the ALSA writer
 thread with format read-back and the reopen-on-format-change policy (D-017,
-D-018); the HTTP + WebSocket control API and MPRIS adapter (D-030);
+D-018); SMTC/NowPlayingInfoCenter (MPRIS is done for Linux, D-030);
 streaming privileges, play reporting and scrobbling wired into the
 `streamboat` CLI/desktop shell rather than only `streamboatd` (D-033, D-027,
 D-037 — the modules and the daemon wiring exist; see the section above); the
