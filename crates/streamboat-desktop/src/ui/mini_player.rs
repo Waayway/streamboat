@@ -1,4 +1,4 @@
-//! The floating mini-player window (D-036, task item 1): a second iced
+//! The floating mini-player window (D-036): a second iced
 //! window over the same [`crate::ui::app::App`] state — art, title/artists,
 //! previous/play-pause/next, a thin seek bar, the quality badge, and a
 //! button to restore the main window. Toggled from the playback bar
@@ -15,7 +15,7 @@ use streamboat_core::proto::{PlaybackStatus, PlayerState};
 use crate::ui::design::Tokens;
 use crate::ui::format::quality_badge;
 
-/// The window's fixed logical size (task item 1: "compact"). Not
+/// The window's fixed, compact logical size. Not
 /// resizable — see `ui::app`'s window settings for this window.
 pub const SIZE: iced::Size = iced::Size::new(300.0, 132.0);
 
@@ -95,7 +95,7 @@ pub fn view<'a>(
         .on_release(Message::SeekReleased)
         .width(Length::Fill)
         .style(move |theme: &Theme, status| {
-            // A thin rail (task item 1: "thin seek bar") — the default
+            // A thin rail — the default
             // handle/rail proportions read as too heavy at this window's
             // scale, so this shrinks the rail width only.
             let mut style = slider::default(theme, status);

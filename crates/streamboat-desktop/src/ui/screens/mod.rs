@@ -1,7 +1,7 @@
-//! Every screen: Login, Home, Explore, Search, Now Playing and Settings from
-//! the previous wave, plus this wave's entity pages (Album, Artist,
-//! Playlist, Mix, Track, Video), My Collection and Lyrics. The mini-player
-//! is a sibling agent's concern, not this module's.
+//! Every screen: Login, Home, Explore, Search, Now Playing, Settings, the
+//! entity pages (Album, Artist, Playlist, Mix, Track, Video), My
+//! Collection and Lyrics. The mini-player lives in its own top-level
+//! `ui::mini_player` module, not among these screens.
 
 pub mod album;
 pub mod artist;

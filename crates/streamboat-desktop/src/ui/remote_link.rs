@@ -20,7 +20,7 @@
 //!   is set automatically by `reqwest`/`tokio-tungstenite` from the request
 //!   URL's authority — connecting straight to `http://<bind-addr>/...`
 //!   already sends exactly the bind address as `Host`, which is what the
-//!   task brief asks for; no override is needed.
+//!   allowlist check needs; no override is needed.
 //! - Reconnects with a fresh snapshot on any revision gap or disconnect,
 //!   with capped exponential backoff (`docs/architecture.md`'s reconnect
 //!   rule, `headless-and-tidal-connect/references/daemon-architecture.md`
@@ -502,8 +502,9 @@ mod tests {
     /// first sends revision 1 then jumps to revision 5 (a gap); the second
     /// (which only a client that actually reconnected will ever reach)
     /// sends revision 100. Seeing all three revisions in order proves the
-    /// gap was both forwarded (task brief: "the event is still valid data")
-    /// and caused an immediate reconnect that landed on a fresh snapshot.
+    /// gap was both forwarded (a detected gap does not discard the event
+    /// that revealed it — it is still valid data) and caused an immediate
+    /// reconnect that landed on a fresh snapshot.
     #[tokio::test]
     async fn reconnects_immediately_on_a_detected_revision_gap_and_gets_a_fresh_snapshot() {
         use futures_util::SinkExt as _;

@@ -223,8 +223,9 @@ unsafe fn erase<T: objc2::Message>(v: Retained<T>) -> Retained<AnyObject> {
 }
 
 /// Rebuilds and sets the whole `nowPlayingInfo` dictionary — title, artist,
-/// album, duration, elapsed time and playback rate, the exact set this task
-/// asks for. Resent in full on every call (mirroring `mpris.rs`'s
+/// album, duration, elapsed time and playback rate, the set macOS's Control
+/// Center and lock screen need to render transport controls. Resent in full
+/// on every call (mirroring `mpris.rs`'s
 /// `apply_state`, which also always resends the whole `Metadata`) rather
 /// than mutating an existing dictionary in place, since `NSDictionary` here
 /// is the immutable, from-scratch-each-time flavour. `None` (nothing played

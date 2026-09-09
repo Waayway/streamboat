@@ -1,4 +1,4 @@
-//! The Video entity page (task item 1): metadata only, marked "video
+//! The Video entity page: metadata only, marked "video
 //! playback is not supported yet" per D-038 — streamboat shows video
 //! entities as unplayable rather than hiding them or pretending a play
 //! button would work.

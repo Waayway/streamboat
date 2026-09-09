@@ -37,12 +37,12 @@ existed while this directory was written.
   `desktop-file-utils`) -- passes clean.
 - **`io.github.waayway.streamboat.metainfo.xml`** -- AppStream metadata
   (D-007). Carries the plain "requires a paid TIDAL subscription; not
-  affiliated with TIDAL" summary/description the task asked for, the same
-  play-reporting disclosure sentence README.md's "Play reporting" section
-  uses, GPL-3.0-only as `<project_license>`, and an explicit placeholder
-  `<screenshots>` entry with a comment explaining why: the iced desktop
-  shell (D-013) doesn't exist yet, so there is nothing to screenshot.
-  **Replace that placeholder with a real, hosted screenshot before any
+  affiliated with TIDAL" summary/description, the same play-reporting
+  disclosure sentence README.md's "Play reporting" section uses,
+  GPL-3.0-only as `<project_license>`, and an explicit placeholder
+  `<screenshots>` entry with a comment explaining why: no real, hosted
+  screenshot of the running iced desktop shell (D-013) has been captured
+  yet. **Replace that placeholder with a real, hosted screenshot before any
   store submission** -- Flathub's `metainfo-missing-screenshots` lint rule
   is never waived, even though Flathub itself isn't planned for v1
   (D-041). Validated locally with `appstreamcli validate --no-net` (apt
@@ -194,13 +194,13 @@ exist yet either), and universal vs. per-architecture install scope.
   separate GStreamer-specific plugin binary). `${VERSION}` is a plain
   placeholder substituted with `sed` before the real tool ever reads the
   file, the same substitute-before-use approach `Info.plist` and the WiX
-  `-d` variables use, kept deliberately free of any custom YAML tag so
-  `python3 -c "import yaml"` (this task's own validation bar) can parse it
-  as-is. Validated locally as parseable YAML; never run through the real
-  `appimage-builder` (needs a mounted apt sandbox and FUSE, and a
-  meaningful test needs real GStreamer plugin packages resolved against a
-  live Ubuntu mirror -- more than this sandbox's `bash -n`/`python3 -c
-  "import yaml"` bar covers). `.github/workflows/release.yml` runs it for
+  `-d` variables use, kept deliberately free of any custom YAML tag so a
+  plain `python3 -c "import yaml"` parse can validate it as-is. Validated
+  locally as parseable YAML; never run through the real `appimage-builder`
+  (needs a mounted apt sandbox and FUSE, and a meaningful test needs real
+  GStreamer plugin packages resolved against a live Ubuntu mirror -- more
+  than a no-network, no-FUSE environment's `bash -n`/`python3 -c "import
+  yaml"` check covers). `.github/workflows/release.yml` runs it for
   real on the x86_64 leg; the aarch64 leg logs a warning and skips it for
   now rather than guessing at an arm64 apt-sources config that has never
   been tried -- a genuine follow-up, not an oversight.

@@ -219,12 +219,12 @@ impl<'a, Message, Theme, Renderer> Simulator<...> {
   press+release) and returns the target; `ui.into_messages()` drains every `Message` the simulated
   interaction produced, for feeding into the screen's own `update` in the test to assert on resulting
   state — this project's screen tests stick to `find`-only assertions (render correctness) since none
-  of the wave-1 screens needed interaction-simulation to prove out, but the capability is there for
+  of them needed interaction-simulation to prove out, but the capability is there for
   a future test that needs it.
 
 ## 8. Multi-window: `iced::daemon` and the `window` module (`iced-0.14.0/src/daemon.rs`, `iced_runtime-0.14.0/src/window.rs`, `iced_core-0.14.0/src/window/*.rs`)
 
-Verified for streamboat's D-036 mini-player wave (a second, always-on-top window over the same
+Verified for streamboat's D-036 mini-player (a second, always-on-top window over the same
 `App` state) by reading the pinned sources directly, the same way §1-§8 were.
 
 ```rust
@@ -310,8 +310,8 @@ pub fn daemon<State, Message, Theme, Renderer>(
 
 ## 9. Modals (`stack!`), programmatic scroll (`operation::scroll_to`), and eager-vs-lazy futures
 
-Verified building the Entity/Collection/Lyrics wave's "add to playlist" picker and the Lyrics
-screen's auto-scroll.
+Verified building the "add to playlist" picker (`ui::actions`) and the Lyrics screen's
+auto-scroll.
 
 **`stack!`** (`iced_widget-0.14.2/src/lib.rs`'s macro, or the `stack(children)` free function in
 `helpers.rs`) layers children back-to-front; each child is converted with `Element::from`, so an

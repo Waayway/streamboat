@@ -1,7 +1,6 @@
 //! Pure view-model helpers with no `iced` dependency, so they are plain
-//! `#[test]`-able functions per the task brief ("plain unit tests for pure
-//! view-model helpers: time formatting, feed section to card mapping,
-//! message routing").
+//! `#[test]`-able functions: time formatting, feed section to card mapping,
+//! message routing.
 
 use streamboat_core::models::{AudioMode, AudioQuality, FeedItem, FeedSection, PageModuleV1};
 use streamboat_core::proto::StreamInfo;
@@ -273,9 +272,9 @@ fn raw_item_to_card(value: &serde_json::Value) -> Option<FeedCard> {
         subtitle,
         image_id,
         // v1 items are raw JSON with no confirmed per-item type field
-        // (`api/pages.rs`'s doc comment); routing to an entity page is
-        // NEXT-wave work once that shape is captured against a live
-        // account, so these cards render without a click target for now.
+        // (`api/pages.rs`'s doc comment); routing to an entity page is not
+        // built yet — it needs that shape captured against a live account
+        // first, so these cards render without a click target for now.
         entity: None,
     })
 }

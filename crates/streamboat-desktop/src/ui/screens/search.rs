@@ -1,4 +1,4 @@
-//! Search (task item 3): all types with a type filter, debounced input.
+//! Search: all types with a type filter, debounced input.
 
 use std::time::Duration;
 
@@ -80,12 +80,12 @@ pub enum Message {
 
 pub enum Effect {
     PlayTrack(u64),
-    /// Queue task item 3's "play-next/add-last" without interrupting
-    /// playback (`Command::Enqueue`).
+    /// Queue a play-next/add-last action without interrupting playback
+    /// (`Command::Enqueue`).
     Enqueue(u64, streamboat_core::proto::QueuePosition),
     Navigate(EntityRef),
     ImagesNeeded(Vec<String>),
-    /// Task item 5: the query parsed as a `tidal.com`/`listen.tidal.com`/
+    /// The query parsed as a `tidal.com`/`listen.tidal.com`/
     /// `tidal://`/`streamboat://` content link instead of a search term —
     /// `ui::app` opens the linked screen (and, for a playlist, starts
     /// playback per D-039) instead of running a search for it.
@@ -104,7 +104,7 @@ impl State {
                     self.loading = false;
                     return (Task::none(), Vec::new());
                 }
-                // Task item 5: a pasted content link opens the linked
+                // A pasted content link opens the linked
                 // screen instead of running a search for it.
                 if let Some(link) = parse_content_link(self.query.trim()) {
                     return (Task::none(), vec![Effect::OpenDeepLink(link)]);

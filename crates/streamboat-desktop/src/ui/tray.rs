@@ -1,4 +1,4 @@
-//! System tray (D-014, task item 2): Show/Hide, Play/Pause, Next, Previous,
+//! System tray (D-014): Show/Hide, Play/Pause, Next, Previous,
 //! Quit, and a "now playing" tooltip. Linux uses `ksni` (StatusNotifierItem
 //! over D-Bus, no GTK dependency, version verified against its real
 //! 0.3.6 crate source on 2026-09-09 — see below); Windows/macOS use
@@ -8,9 +8,9 @@
 //! about window lifecycle or `Command` construction lives in the
 //! platform-specific code, so [`tray_event_to_command`] — the one place
 //! that maps a click to a [`Command`] — is plain, D-Bus-free logic,
-//! testable (and tested, task item 6) without a session bus or a display.
+//! testable (and tested) without a session bus or a display.
 //!
-//! The tray fails soft everywhere per the task brief: no SNI host, no
+//! The tray fails soft everywhere: no SNI host, no
 //! session bus, or (on the other platforms) no icon/menu backend available
 //! all end in a logged warning and an event stream that simply never
 //! yields anything — never a startup failure, and `ui::app::run` never
@@ -65,7 +65,7 @@ pub enum TrayEvent {
 
 /// The menu entries every backend below builds, in order — one list so
 /// Linux and Windows/macOS can never drift into offering a different set
-/// (task item 2's fixed "Show/Hide, Play/Pause, Next, Previous, Quit").
+/// (the fixed six: "Show/Hide, Play/Pause, Next, Previous, Quit").
 const MENU_ENTRIES: &[(&str, TrayEvent)] = &[
     ("Show", TrayEvent::ShowMain),
     ("Hide", TrayEvent::HideMain),
@@ -75,7 +75,7 @@ const MENU_ENTRIES: &[(&str, TrayEvent)] = &[
     ("Quit", TrayEvent::Quit),
 ];
 
-/// The one pure mapping this module exists to keep pure (task item 6):
+/// The one pure mapping this module exists to keep pure:
 /// which [`Command`] a tray event sends, or `None` for the three window/
 /// process-lifecycle events (`ShowMain`/`HideMain`/`Quit`) that are not
 /// `Command`s at all — `ui::app::update` handles those directly against
@@ -89,7 +89,7 @@ pub fn tray_event_to_command(event: TrayEvent) -> Option<Command> {
     }
 }
 
-/// "Now playing" text for the tray's tooltip/title (task item 2). Kept here
+/// "Now playing" text for the tray's tooltip/title. Kept here
 /// (not duplicated per backend) since both platform paths want the exact
 /// same string.
 pub fn now_playing_text(title: Option<&str>, artists: Option<&str>) -> String {
@@ -312,7 +312,7 @@ mod other {
     /// `tray_icon::Icon::from_rgba` needs raw RGBA bytes, not a path or a
     /// named freedesktop icon the way `ksni::Tray::icon_name` gets to use
     /// on Linux. A real glyph is follow-up design work, not something this
-    /// wave's plumbing needs to block on.
+    /// tray's plumbing needs to block on.
     fn placeholder_icon() -> Result<tray_icon::Icon, tray_icon::BadIcon> {
         const SIZE: u32 = 16;
         let mut rgba = Vec::with_capacity((SIZE * SIZE * 4) as usize);
@@ -350,9 +350,9 @@ mod tests {
     #[test]
     fn every_menu_entry_maps_to_something_ui_app_can_act_on() {
         // Not every entry maps to a `Command` (Show/Hide/Quit legitimately
-        // don't), but every one of the fixed six from the task brief must
-        // at least be present and distinct — this catches an accidental
-        // duplicate or a dropped entry in `MENU_ENTRIES`.
+        // don't), but every one of the fixed six in `MENU_ENTRIES` must at
+        // least be present and distinct — this catches an accidental
+        // duplicate or a dropped entry there.
         let events: Vec<TrayEvent> = MENU_ENTRIES.iter().map(|(_, e)| *e).collect();
         let mut unique = events.clone();
         unique.sort_by_key(|e| format!("{e:?}"));

@@ -1,4 +1,4 @@
-//! Login (task item 3): device-code flow with the code, verification URL,
+//! Login: device-code flow with the code, verification URL,
 //! an "open browser" button and polling; PKCE flow with either the paste or
 //! the loopback capture, reusing the exact auth helpers the CLI already
 //! uses (`streamboat_core::auth::{device_code, pkce}`). Errors show inline.

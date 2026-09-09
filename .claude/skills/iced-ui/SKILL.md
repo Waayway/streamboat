@@ -85,8 +85,8 @@ separately as `iced_test = "=0.14.0"` (see below for why it's a separate crate a
    which tries wgpu first and falls back to tiny-skia (pure CPU rasterisation) if wgpu's `Headless::new`
    fails.** In a container with no GPU/display, wgpu headless init fails and the fallback to
    tiny-skia succeeds silently — the simulator works fine with zero display server, confirmed by
-   running it in this repo's own sandboxed agent container. Nothing about a headless UI test needs
-   `xvfb` or any display; it needs the `iced_test` dev-dependency and nothing else runtime-side.
+   running it in a container with no GPU or display attached. Nothing about a headless UI test
+   needs `xvfb` or any display; it needs the `iced_test` dev-dependency and nothing else runtime-side.
 10. **`checkbox`/`pick_list` constructor argument order is easy to get backwards.**
     `checkbox(is_checked: bool) -> Checkbox` takes *only* the boolean; the label is a separate
     builder method, `.label(text)`. `pick_list(options: L, selected: Option<V>, on_selected: impl Fn(T)
@@ -116,8 +116,8 @@ separately as `iced_test = "=0.14.0"` (see below for why it's a separate crate a
     `Into<alignment::Horizontal>`/`Into<alignment::Vertical>`, one more conversion than `center_x`/
     `center_y` ask for). `stack!`'s children each go through `Element::from`, so anything that
     already satisfies `Into<Element>` (a `Container`, another already-built `Element`) drops straight
-    in with no extra wrapping. streamboat's "add to playlist" picker (task item 3) is exactly this
-    shape: `stack![base_ui, dimmed_container_with_the_picker_inside]`.
+    in with no extra wrapping. streamboat's "add to playlist" picker (`ui::actions`, overlaid by
+    `ui::app`) is exactly this shape: `stack![base_ui, dimmed_container_with_the_picker_inside]`.
 14. **A `scrollable` can be scrolled programmatically, but only by a stable `widget::Id`, and the
     operation lives at `iced::widget::operation`, not on `scrollable` itself.** Give the scrollable
     `.id(iced::widget::Id::new("some-name"))`, then return
@@ -130,8 +130,8 @@ separately as `iced_test = "=0.14.0"` (see below for why it's a separate crate a
     always wants `AbsoluteOffset<Option<f32>>` (an axis left `None` is untouched) — don't reach for
     the bare-`f32` shape when *setting* a position, only when reading one back. There is no way to
     ask a `Simulator` "did this actually scroll" — the operation itself is one of the things this
-    project's own headless tests cannot verify (see the Lyrics screen's auto-scroll, task item 4: the
-    pure line-selection logic is tested, the `scroll_to` call it drives is not).
+    project's own headless tests cannot verify (see the Lyrics screen's auto-scroll: the pure
+    line-selection logic is tested, the `scroll_to` call it drives is not).
 15. **`Task::perform(future, f)` runs `future`'s constructor eagerly, at the call site, before the
     `Task` is ever polled by anything** — an async function's body is lazy (nothing inside it runs
     until polled), but anything evaluated *before* the first `.await` inside a plain (non-async-fn)
@@ -169,7 +169,8 @@ separately as `iced_test = "=0.14.0"` (see below for why it's a separate crate a
     window, so restoring one is `set_mode(id, Windowed).chain(gain_focus(id))` (`Task::chain`, not
     `batch`, so the un-hide is guaranteed to land first). Full signatures and the always-on-top
     (`window::Level::AlwaysOnTop`) and close/open-event-subscription details are in
-    `references/iced-0.14-api-notes.md` §8, verified for streamboat's D-036 mini-player wave.
+    `references/iced-0.14-api-notes.md` §8, verified against streamboat's D-036 mini-player
+    (`ui::mini_player`).
 
 ## Owner-context notes
 
@@ -189,13 +190,14 @@ separately as `iced_test = "=0.14.0"` (see below for why it's a separate crate a
   variable in `ui::app::run` that outlives the blocking `.run()` call) — the two runtimes coexist
   fine since nothing here needs "the current runtime" for anything beyond the initial `Player::spawn`
   call itself.
-- Keyboard shortcuts (task item 4) go through `iced::event::listen_with`, matched on
-  `iced::keyboard::Event::KeyPressed` — space, ctrl+f and escape are exactly the three this wave
-  wires up; media keys are explicitly MPRIS's job later, not this subscription's.
-- Per-screen state that depends on an id (an album, a playlist, a track — the Entity/Collection/
-  Lyrics wave, task items 1-2, 4) does **not** live in the `Nav`/`Screen` stack itself — `Screen`
-  only carries the id, never the loaded data. `ui::app::App` keeps one `EntityScreen` enum field
-  (`None` or exactly one loaded entity screen's `State`) rebuilt from scratch by a single
+- Keyboard shortcuts go through `iced::event::listen_with`, matched on
+  `iced::keyboard::Event::KeyPressed` — space, ctrl+f, ctrl+m, ctrl+q and escape are the five keys
+  `ui::app::keyboard_shortcut` maps to a `Shortcut` variant; media keys are explicitly MPRIS's job
+  later, not this subscription's.
+- Per-screen state that depends on an id (an album, a playlist, a track — the Album/Artist/
+  Playlist/Mix/Track/Video entity pages) does **not** live in the `Nav`/`Screen` stack itself —
+  `Screen` only carries the id, never the loaded data. `ui::app::App` keeps one `EntityScreen` enum
+  field (`None` or exactly one loaded entity screen's `State`) rebuilt from scratch by a single
   `sync_entity_screen` helper every time navigation changes, compared against the *current*
   `Screen::Entity`'s id so revisiting the same id via back/forward doesn't refetch. My Collection and
   the Lyrics screen's current track are different again — persistent `App` fields like Home/Explore/
@@ -204,9 +206,6 @@ separately as `iced_test = "=0.14.0"` (see below for why it's a separate crate a
   the user ever opens the Lyrics screen). Three different lifetimes, three different homes for the
   state — reach for the one that actually matches what keys the data, not "wherever the last screen
   put its `State` field."
-  `iced::keyboard::Event::KeyPressed` — space, ctrl+f, ctrl+m, ctrl+q and escape are the five this
-  and the multi-window wave wire up; media keys are explicitly MPRIS's job later, not this
-  subscription's.
 - Multi-window (D-036): `ui::app::run` builds the shell with `iced::daemon(...)` instead of
   `iced::application(...)` — see pitfall #13 and `references/iced-0.14-api-notes.md` §8 for the
   pinned facts this rests on. `App` stores both the main window's `window::Id` (known synchronously

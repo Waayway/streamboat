@@ -1,7 +1,7 @@
-//! The notification banner area (task item 6): `Event::Warning`,
+//! The notification banner area: `Event::Warning`,
 //! `Event::Error` and `Event::PlaybackTakenOver { by }` each push one
-//! dismissible, auto-expiring banner instead of the previous silent match
-//! arms in `ui::app`. A takeover banner additionally carries a resume
+//! dismissible, auto-expiring banner instead of being matched with a
+//! silent no-op in `ui::app`. A takeover banner additionally carries a resume
 //! button that sends a user-intent `Command::Resume` (D-033: never resend a
 //! claim automatically — only a real button press counts).
 

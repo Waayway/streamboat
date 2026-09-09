@@ -1,20 +1,19 @@
-//! The shared per-track action row (task item 3): play now, play next, add
-//! to end of queue, favourite toggle, add to playlist, go to album/artist.
-//! Every entity list this wave adds (album tracks, artist top tracks,
-//! playlist items, mix items, My Collection tracks) renders one row per
-//! track through [`track_action_row`] so the actions — and their wiring —
-//! stay in exactly one place. `wrap` is a plain function pointer (the same
+//! The shared per-track action row: play now, play next, add to end of
+//! queue, favourite toggle, add to playlist, go to album/artist. Every
+//! entity list (album tracks, artist top tracks, playlist items, mix
+//! items, My Collection tracks) renders one row per track through
+//! [`track_action_row`] so the actions — and their wiring — stay in
+//! exactly one place. `wrap` is a plain function pointer (the same
 //! "generic over each screen's own split `Message` type" idiom
 //! `ui::widgets::feed_sections` already uses), so no boxed closures are
 //! needed to embed this in five different `Message` enums.
 //!
 //! [`TrackAction::PlayNext`]/[`TrackAction::AddLast`] both map onto the
 //! existing [`streamboat_core::proto::Command::Enqueue`] with
-//! [`streamboat_core::proto::QueuePosition::Next`]/`Last` — the task brief's
-//! "if play-next needs a new additive `Command::PlayNext`, add it" turned
-//! out not to apply, since `Enqueue{position: Next}` already *is* that
-//! command; adding a second one would just be two names for the same
-//! `Player` behaviour (`crates/streamboat-player/src/player.rs`'s
+//! [`streamboat_core::proto::QueuePosition::Next`]/`Last` rather than a
+//! new, additive `Command::PlayNext`, since `Enqueue{position: Next}`
+//! already *is* that command; adding a second one would just be two names
+//! for the same `Player` behaviour (`crates/streamboat-player/src/player.rs`'s
 //! `Command::Enqueue` arm inserts at `index + 1` for `Next`).
 //!
 //! This module also owns the "add to playlist" picker
@@ -186,7 +185,7 @@ fn fmt_err(e: Error) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// "Add to playlist" picker (task item 3), a modal `ui::app` overlays.
+// "Add to playlist" picker, a modal `ui::app` overlays.
 
 pub struct PickerState {
     pub track_id: u64,

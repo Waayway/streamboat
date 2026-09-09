@@ -1,10 +1,10 @@
-//! Now Playing (task item 3): large art, title/artists/album, seek bar,
+//! Now Playing: large art, title/artists/album, seek bar,
 //! quality badge, and a queue list with reorder-by-buttons plus play-next/
 //! add-last for anything already queued. Sends
 //! [`streamboat_core::proto::Command::Seek`]/`MoveQueueItem`/
 //! `RemoveQueueItem` straight through `ui::app`'s `PlayerLink` — this
 //! screen has no state of its own beyond what `PlayerState` already reports
-//! (task item 1's "the only engine seam").
+//! — `PlayerLink` (D-010) is the only engine seam.
 
 use iced::widget::{button, column, container, image, row, scrollable, slider, text};
 use iced::{Alignment, Border, Element, Length, Theme};

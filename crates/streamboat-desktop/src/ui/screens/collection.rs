@@ -1,4 +1,4 @@
-//! My Collection (task item 2): tabs for tracks / albums / artists /
+//! My Collection: tabs for tracks / albums / artists /
 //! playlists / mixes, the documented per-list sort orders, paging with
 //! load-more through `api/pagination` helpers, favourite/unfavourite from
 //! every card and row, a "create playlist" dialog, and a playlists-and-

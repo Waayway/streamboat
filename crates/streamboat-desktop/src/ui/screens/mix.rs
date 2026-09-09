@@ -1,4 +1,4 @@
-//! The Mix entity page (task item 1): items list, play-all. Mixes have no
+//! The Mix entity page: items list, play-all. Mixes have no
 //! dedicated metadata endpoint beyond the v1 per-mix page
 //! (`ApiClient::mix_page`) for the title, and `ApiClient::mix_items`
 //! (best-effort shape, see that method's doc comment) for the track list
@@ -93,10 +93,10 @@ impl State {
                 (Task::none(), Vec::new())
             }
             Message::ItemsLoaded(Ok(items)) => {
-                // No artwork is rendered on this list (task item 1 asks only
-                // for "items list, play-all"), so unlike the other entity
-                // screens this does not emit `Effect::ImagesNeeded` — nothing
-                // would ever read the cache entries it would produce.
+                // No artwork is rendered on this list — it's an items-list-and
+                // -play-all view only — so unlike the other entity screens
+                // this does not emit `Effect::ImagesNeeded`; nothing would
+                // ever read the cache entries it would produce.
                 self.items = items;
                 (Task::none(), Vec::new())
             }
