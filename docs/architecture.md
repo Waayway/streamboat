@@ -203,7 +203,7 @@ GStreamer, not libmpv, on Linux in production).
   including the very first one for whatever `load()` just set as current,
   which otherwise races a `set_next` call landing on the successor slot
   before that first `StartFile` is even processed on the event thread —
-  hit and fixed during this work, see the field's doc comment in `mpv.rs`.
+  resolved by that flag, see its doc comment in `mpv.rs` for the detail.
 - **Exclusive output (D-017)**: `audio-exclusive=yes` plus the platform
   AO — `wasapi` (Windows), mpv's dedicated `coreaudio_exclusive` AO
   (macOS — hog mode via direct device access, not `coreaudio` +
@@ -243,8 +243,8 @@ GStreamer, not libmpv, on Linux in production).
 ## Engine selection, device enumeration and media controls (D-016, D-030)
 
 `streamboat-player::platform` and `streamboat-player::media_controls` are
-what `streamboatd` (and, once it exists, the desktop shell — see the note in
-"Not yet built" below) call instead of naming `GstEngine`/`MpvEngine` or an
+what `streamboatd` and the desktop shell (`ui::engine_select`,
+`ui::app::run_as_local_instance`) call instead of naming `GstEngine`/`MpvEngine` or an
 individual OS adapter directly, so engine/adapter selection lives in one
 place:
 
@@ -292,7 +292,7 @@ SMTC integration at all"); a bare `MediaPlayer` instance creates its own
 implicit message-only window, so this works from a plain background thread
 with no window of streamboat's own. `RoInitialize(RO_INIT_MULTITHREADED)`
 once per thread (every WinRT call needs an apartment first — the
-`Win32_System_WinRT` feature beyond the four the task named is for exactly
+`Win32_System_WinRT` feature, beyond the four core `windows` features above, is for exactly
 this), `ButtonPressed` mapped to Play/Pause/Stop/Next/Previous `Command`s,
 `DisplayUpdater` (`MusicProperties` title/artist/album, a thumbnail from the
 album-cover URL via `RandomAccessStreamReference::CreateFromUri`),
@@ -312,7 +312,7 @@ rate of `1.0` — mirroring `mpris.rs`'s own "always resend the whole
 `Metadata`" style) and `MPRemoteCommandCenter`'s play/pause/toggle/next/
 previous/`changePlaybackPosition` commands, each `addTargetWithHandler`'d
 with a `block2::RcBlock` that sends a `Command` through the plain `Send`
-handle. **Open, not resolved by this change**: `os-integration.md` §1 notes
+handle. **Still open**: `os-integration.md` §1 notes
 `souvlaki`'s own README says macOS now-playing integration "requires an
 AppDelegate/winit event loop" — a bare `streamboatd` has none. This is
 written correctly against the documented Objective-C contract and registers
@@ -325,7 +325,7 @@ once it has one, is where this is most likely to work fully.
 neither `smtc.rs` nor `nowplaying.rs` has ever run against a real SMTC
 popup or Control Center; both are written from the `windows`/`objc2*`
 crates' own published, generated bindings (checked line-by-line against
-each crate's actual source for this change, not from memory) rather than
+each crate's actual source, not from memory) rather than
 from a live build, the same standing `mpv.rs`'s own Windows/macOS AO option
 values already carry.
 
@@ -375,7 +375,7 @@ missing/empty response) and the transport-level ETag flow.
 
 Three new `streamboat-core` modules, wired into `streamboat-player::Player`
 through a `PlayerDeps` struct whose fields all default to `None` — a `Player`
-with no dependencies configured behaves exactly as it did before this work,
+with no dependencies configured behaves exactly as it did without them,
 which is what every pre-existing player test relies on.
 
 - **`privileges`** — `StreamingPrivileges`: `POST {api_base}v1/rt/connect`
@@ -424,11 +424,11 @@ which is what every pre-existing player test relies on.
   `scrobble: ScrobbleSettings` (`lastfm`/`listenbrainz`, each `enabled: bool`
   default `false` plus its credentials) on `config::Settings`.
 
-`streamboatd` (`streamboat-server`) constructs all three from `Context` and
-passes them to `Player::spawn` — the headless daemon is where Pushkin
-matters from day one (no user watching a silent revocation). The
-`streamboat` CLI spike still passes `PlayerDeps::default()`; wiring the
-desktop shell up the same way is follow-up work, tracked below.
+`streamboatd` (`streamboat-server`), the `streamboat` CLI's `play` command, and the desktop shell
+each construct all three (plus the offline cache, D-022) from `Context` through the shared
+`PlayerDeps::for_context` helper and pass them to `Player::spawn` — the headless daemon is where
+Pushkin matters from day one (no user watching a silent revocation), but every front end gets the
+same behaviour.
 
 Left uncertain by the reference material, not invented: the event-batch
 endpoint's *response* shape (only its AWS-SQS-style *request* shape is
@@ -446,8 +446,8 @@ reuses one id for both anyway, the cheapest safe move the reference names).
 `crates/streamboat-desktop/src/ui/` (loaded by `main.rs`'s `mod ui;`; `streamboat` with no
 subcommand calls `ui::run()`, every existing CLI subcommand is unchanged). Pinned to
 `iced = "=0.14.0"` exactly, features `tokio`, `image`, `svg`, `advanced`, `debug` — see the
-`iced-ui` skill for the pinned-API facts this and the multi-window wave verified against the
-actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, per D-013).
+`iced-ui` skill for the pinned-API facts the shell (including its multi-window code) is verified
+against the actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, per D-013).
 
 - **Architecture**: `ui::app::App` is the top-level state, now built with `iced::daemon(...)`
   instead of `iced::application(...)` (D-036) so it can own more than one window — see "Multi-window
@@ -456,7 +456,7 @@ actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, pe
   a full snapshot and dwarfs every other variant), `Nav`, `LoginCheck`, `ImageFetched`,
   `KeyShortcut`, `MiniPlayer`, `Tray`, `WindowCloseRequested`, `WindowClosed`, `ShowRequested` and
   `ReadyToExit`. `ui::nav::{Screen, Nav}` is the navigation stack (`go_to`/`back`/`forward`, back
-  pushes history and clears forward, matching the task brief). `ui::design::Tokens` is the
+  pushes history and clears forward). `ui::design::Tokens` is the
   design-token struct (background/surface/elevated/accent/text/muted/warning/danger/success/border
   colours, a radius/spacing/type scale) with `dark()` (default) and `light()` constructors;
   `Tokens::iced_theme` builds the `iced::Theme::custom` palette stock widgets style against, while
@@ -494,8 +494,8 @@ actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, pe
   (`ui::instance::show_request_events`, an `iced::Subscription::run_with` built only while
   `Decision::Local`) and answers a touch the same way the tray's "Show" does — unhide and focus the
   main window. Deliberately not built: the MPRIS-bus-name variant of D-010's lock (the decision
-  names two mechanisms; this wave always takes the portable-lock-file branch, which D-010 already
-  permits on its own) and a `POST /v1/show` control-API route (the task considered it, but it would
+  names two mechanisms; the code always takes the portable-lock-file branch, which D-010 already
+  permits on its own) and a `POST /v1/show` control-API route (rejected: it would
   require the GUI to bind a listener, contradicting D-031 — the filesystem touch is the
   `Command`-free alternative D-031 leaves room for).
 - **Multi-window and the mini-player (D-036)**: `App::boot` opens the main window itself via
@@ -544,14 +544,14 @@ actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, pe
 - **OS media controls from the shell**: `ui::app::run_as_local_instance` calls
   `streamboat_player::media_controls::spawn(handle.clone())`, the same call `streamboatd`'s
   `main.rs` makes — MPRIS on Linux, SMTC on Windows, NowPlaying on macOS.
-- **Screens this wave**: Login (`ui::screens::login` — device-code and PKCE-paste/PKCE-loopback,
+- **Screens**: Login (`ui::screens::login` — device-code and PKCE-paste/PKCE-loopback,
   reusing `auth::device_code`/`auth::pkce` exactly as the CLI does; errors inline), Home
   (`ui::screens::home` — v2 `home/feed` sections, the tab bar from `header.vibes.items`, cursor
   paging, per-section "View all" via `expand_section`), Explore (`ui::screens::explore` — the v1
   `pages/explore` shape, same graceful-unknown-module rendering), Search (`ui::screens::search` —
   all types, a type filter, 300ms-debounced input), Now Playing (`ui::screens::now_playing` — large
   art, seek, quality badge, the queue list with move-up/move-down/remove buttons over
-  `Command::MoveQueueItem`/`RemoveQueueItem`, a Lyrics button routing to the placeholder), the
+  `Command::MoveQueueItem`/`RemoveQueueItem`, a Lyrics button routing to the Lyrics screen), the
   persistent playback bar (`ui::playback_bar` — art/title/artist/transport/seek/volume/badges/queue,
   signal-path and mini-player toggles; the volume slider dims and grows a tooltip while `OutputConfig::is_exclusive()`,
   per D-017, rather than becoming inert — it still sends `SetVolume`, which the Player already
@@ -560,9 +560,10 @@ actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, pe
   and prints "lossy source, bit-perfect not applicable" for AAC/lossy tiers per D-036), and Settings
   (`ui::screens::settings` — quality ceiling, output device + exclusive toggle, ReplayGain mode,
   play-reporting toggle with the D-027 disclosure text, credentials, key storage, theme, logout).
-  The mini-player window and the tray are a sibling wave's concern, not started here (no second
-  `iced` window is opened by anything below).
-- **Entity, Collection and Lyrics screens (D-015; this wave's task items 1-2, 4)** replace the old
+  The mini-player window and the tray are covered separately above (see "Multi-window and the
+  mini-player" and "Window lifecycle and tray"); no second `iced` window is opened by anything
+  below.
+- **Entity, Collection and Lyrics screens (D-015)** replace the old
   `ui::screens::placeholder` routes (now deleted): Album (`ui::screens::album` — cover, title,
   artist links, year/track-count/duration, quality/explicit badges, a track list through the
   shared action row below, play-all/shuffle, a favourite toggle backed by `favorite_ids()`, a
@@ -578,7 +579,7 @@ actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, pe
   move item up/down (both index-based through `api/playlists.rs`'s ETag-precondition helpers,
   passing `None` so each call fetches its own fresh etag rather than risking a stale cached one),
   and delete behind a two-step confirmation banner), Mix (`ui::screens::mix` — `mix_page` for the
-  title (the new `ApiClient::mix_page`, added this wave: `pages/mix?mixId=`, `tidal-client-features`
+  title (`ApiClient::mix_page`: `pages/mix?mixId=`, `tidal-client-features`
   browse-pages-screens.md §4's "note the required query param") and `mix_items` for the track list,
   items list, play-all), Track (`ui::screens::track` — fetches the track to learn its album id,
   then reuses `album::content_with_highlight` (the album view split out of its page/scrollable
@@ -589,7 +590,7 @@ actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, pe
   like Home/Explore/Search, not a per-visit `Entity`-style screen: five tabs (Tracks/Albums/
   Artists/Playlists/Mixes & Radio), each loading lazily on first visit; Tracks/Albums/Artists/Mixes
   page 50 at a time with their documented `api/library.rs` sort orders (`ItemOrder`/`AlbumOrder`/
-  `ArtistOrder`/`MixOrder`, each given a `Display` impl this wave purely for the `pick_list` label —
+  `ArtistOrder`/`MixOrder`, each given a `Display` impl purely for the `pick_list` label —
   the wire value stays `as_str()`); Playlists uses `playlists_and_favorite_playlists` (client-side
   name/recency sort, since that endpoint takes no `order` param) plus a "Folders" section from
   `collection_folders_all` rendered as best-effort `name`/`title` labels, since no reference this
@@ -604,21 +605,23 @@ actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, pe
   navigating there directly; `Event::Position` is also forwarded into the lyrics screen's own
   `update` on every tick to keep the highlighted line and scroll position correct even while some
   other screen is showing.
-- **The shared per-track action row (task item 3)**: `ui::actions::track_action_row` — Play/Next/
+- **The shared per-track action row**: `ui::actions::track_action_row` — Play/Next/
   Queue/♥·♡/"+ List" buttons, plus Album/Artist buttons the caller can omit (the Album screen's own
   tracks omit "Album"; the Artist screen's top tracks omit "Artist") — used by every list above
-  except Search's older inline buttons (unchanged this wave) and Mix (no favourite state needed
-  there beyond what the row itself tracks). `TrackAction::PlayNext`/`AddLast` both resolve to the
-  *existing* `Command::Enqueue{position: Next|Last}` — the task brief's "add `Command::PlayNext` if
-  needed" turned out not to apply, since `Enqueue{Next}` already inserts right after the playing
+  except Search's own separate inline buttons. Mix uses it too, but — unlike Album/Artist/Playlist,
+  which each also carry their own container-level favourite toggle — needs no separate favourite
+  state of its own, since the row's own per-track favourite is all a Mix needs.
+  `TrackAction::PlayNext`/`AddLast` both resolve to the
+  *existing* `Command::Enqueue{position: Next|Last}` rather than a dedicated `Command::PlayNext`,
+  since `Enqueue{Next}` already inserts right after the playing
   index in `Player::handle_command`; a second command would just be a second name for the same
   behaviour. "Add to playlist" opens `ui::actions::PickerState`, a small modal `App` renders as a
-  `stack!` overlay (task item 3) over whichever screen opened it: one `playlists_and_favorite_playlists`
+  `stack!` overlay over whichever screen opened it: one `playlists_and_favorite_playlists`
   fetch, click a playlist, `playlist_add_tracks` with `None` for the etag. Every entity/Collection
   screen converts its own `Effect` enum into one shared `app::EntityEffect` via `From`, so `App` has
   exactly one `apply_entity_effect` instead of six near-identical copies of "send `Command::Play`,
   navigate, prefetch artwork, or open the picker."
-- **The notification banner (task item 6)**: `ui::banner` replaces the previously-silent
+- **The notification banner**: `ui::banner` replaces the previously-silent
   `Event::Warning`/`Event::Error`/`Event::PlaybackTakenOver` arms in `App::handle_player_event` —
   each pushes a dismissible entry that auto-expires after 8 seconds
   (`Task::perform(async { tokio::time::sleep(...).await }, ...)`, deliberately lazy — calling
@@ -626,7 +629,7 @@ actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, pe
   polled it yet, which is exactly the shape a plain `#[test]` exercises). A takeover banner
   ("Playback started on `<by>`.") carries a Resume button that sends `Command::Resume` — genuine
   user intent, never automatic, per D-033.
-- **Deep links (task item 5)**: pasting a `tidal.com`/`listen.tidal.com`/`tidal://`/`streamboat://`
+- **Deep links**: pasting a `tidal.com`/`listen.tidal.com`/`tidal://`/`streamboat://`
   link into the Search field (`api::images::parse_content_link`) opens the linked screen instead of
   running a search for it (`screens::search::Effect::OpenDeepLink`); `Screen::from_content_link`
   (added to `ui::nav`, which already owned every `Screen`/`EntityRef` variant) does the mapping,
@@ -634,8 +637,8 @@ actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, pe
   shared playlist link additionally fetches every track id (`playlist_items_all`) and starts
   playback (D-039). The same path is reachable from the command line: `streamboat open <url>`, or a
   bare link as `streamboat`'s only argument (rewritten to `open <url>` by `main` before `clap` ever
-  parses it) — the one change this wave makes to `main.rs`/`ui::app::run` beyond what task item 5
-  required, per the task brief's explicit carve-out for that subcommand.
+  parses it) — the only change deep-link handling makes to `main.rs`/`ui::app::run` beyond the
+  screen-navigation logic itself, kept deliberately narrow to that one subcommand.
 - **Image cache**: `ui::images::ImageCache`, a hand-rolled insertion-order-bounded map (not a true
   read-touches-recency LRU — `peek`, the only read `view` code calls, deliberately never reorders,
   since `view` only ever holds `&ImageCache`; eviction order is "oldest inserted," which is
@@ -644,18 +647,18 @@ actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, pe
   inside `Task::perform`, decoding via the `image` crate on a `tokio::task::spawn_blocking` thread
   (CPU-bound decode off both the UI thread and the async executor's worker), producing an
   `iced::widget::image::Handle::from_rgba` the update thread only ever moves, never decodes.
-- **Keyboard (task item 4)**: `iced::event::listen_with` matched against
+- **Keyboard**: `iced::event::listen_with` matched against
   `keyboard::Event::KeyPressed` — space toggles play/pause, escape goes back one step in the nav
   stack, ctrl+f navigates to Search (it does not additionally force text-input focus — no
   `Task`-returning focus helper was found on `iced_widget::text_input` in 0.14.2's public API; see
   the `iced-ui` skill §9), ctrl+m toggles the mini-player window, ctrl+q quits (D-014, `App::quit`).
   Media keys are explicitly out of scope here (MPRIS, above).
-- **Additive core/player changes this wave required**: `streamboat_core::instance_lock` (new
+- **Additive core/player support for the single-instance lock and decoder probe**: `streamboat_core::instance_lock` (new
   module: `InstanceLock`, `write_control_address`/`read_control_address`, `request_show`/
   `show_request_mtime`); three new `AppDirs` path methods (`instance_lock_path`,
   `control_address_path`, `show_request_path`); `streamboat_player::probe` (new module,
   `DecoderSupport`). All new items, no changed behaviour on anything that existed before.
-- **Additive core/player changes the previous wave required** (unchanged by this one): `Context:
+- **Additive core/player support for Settings, theming and queue management**: `Context:
   Clone`; `config::{ThemePreference, ReplayGainMode}` plus two new `Settings` fields (`theme`,
   `replay_gain_mode`) and one (`play_reporting_enabled`, default `true` per D-027) — all three
   persisted by the Settings screen; `KeyStorage: Display`; `PkceSession: Debug` (hand-written,
@@ -666,7 +669,7 @@ actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, pe
   `Warning` event instead of the ordinary index bookkeeping). None of this changes any existing
   variant's behaviour — every change is a new field, a new trait impl, or a new enum variant with a
   new match arm.
-- **Additive core changes the Entity/Collection/Lyrics wave required**: `ApiClient::mix_page`
+- **Additive core support for the Mix screen and library sort-order labels**: `ApiClient::mix_page`
   (`api/pages.rs`, `pages/mix?mixId=`, for the Mix screen's title/subtitle — track listing still
   comes from the already-existing `mix_items`); `Display` impls on `api::library::{ItemOrder,
   AlbumOrder, ArtistOrder, MixOrder}` (a human `pick_list` label distinct from each enum's existing
@@ -676,9 +679,9 @@ actual 0.14 sources rather than memory (the API changed hard across 0.9-0.14, pe
 ## Offline cache (D-022)
 
 `streamboat-player::offline` (GPL-3.0-only; the file-format and crypto
-helpers have no player dependency but stayed in this crate rather than
-`streamboat-core`, since the task's own scope named this crate and nothing
-in them needs to be Apache-licensed on its own). Guardrails and how each is
+helpers have no player dependency but stay in this crate rather than
+`streamboat-core`, since D-022 scopes the offline cache to `streamboat-player`
+and nothing in them needs to be Apache-licensed on its own). Guardrails and how each is
 enforced:
 
 - **Explicit, user-initiated pins only.** The only entry points are
@@ -768,7 +771,7 @@ enforced:
   front end (the CLI) reads `OfflineCache::list_pins()` directly instead of
   waiting for a reply on the protocol.
 
-Left untested (see the task report for the full list): the DASH segment
+Left untested: the DASH segment
 planner has no test against a real multi-representation TIDAL manifest,
 only the synthetic single-`SegmentTimeline` shape `manifest.rs`'s own tests
 use; wiping the cache on a subscription-terminal sub-status
@@ -785,7 +788,7 @@ into.
 
 TIDAL's own formula (`min(10^((gain+4)/20), 1/peak)`) still lives only in
 the engines (`gst.rs`'s `volume` audio-filter, `mpv.rs`'s `volume`
-property) — this wave changed only *which numbers* feed it, in
+property) — ReplayGain mode selection changes only *which numbers* feed it, in
 `streamboat-player::player`:
 
 - `StreamInfo` gained `album_replay_gain_db`/`album_peak_amplitude`
@@ -805,8 +808,7 @@ property) — this wave changed only *which numbers* feed it, in
 - `Command::SetReplayGainMode { mode }` (additive) switches live: the
   currently-playing entry keeps whatever gain its own `load()` already
   applied (both engines document ReplayGain as applied once per `load()`,
-  not re-applied at a gapless hand-over — this wave did not change that
-  boundary), but a successor already sitting in `engine.set_next()` is
+  not re-applied at a gapless hand-over — that boundary is unchanged), but a successor already sitting in `engine.set_next()` is
   recomputed from its cached `ResolvedStream` and re-handed over
   immediately, with no extra network round trip.
 - `SignalPath` gained `replaygain_mode: String` (additive) — the engines
@@ -894,8 +896,8 @@ works as long as it matches what `OutputConfig::Snapcast.port` connects to.)
 - `streamboat snapcast-discover` (`streamboat-desktop/src/snapcast_discover.rs`):
   mDNS browse for `_snapcast._tcp` (what snapserver actually advertises,
   per the cited reference) and `_snapcast-tcp._tcp` (not in that reference
-  at all — searched defensively anyway per this task's own brief; finding
-  nothing under it is expected, not a bug). `mdns-sd` 0.21.3, the version
+  at all — searched defensively anyway, in case a build or fork advertises
+  under that name; finding nothing under it is expected, not a bug). `mdns-sd` 0.21.3, the version
   current as of this writing and confirmed directly against crates.io
   rather than trusted from memory.
 
@@ -914,8 +916,8 @@ through `mdns_sd::ServiceInfo::new(..).as_resolved_service()` (the type is
 one off-network). **Not verified here — no snapserver in this
 environment**: an actual round trip against real `snapserver`/Snapweb (the
 stream showing up with metadata and working transport controls), the
-libmpv/FIFO pump path end to end (no test requires it — the task's own test
-list scopes the TCP-format test to the GStreamer path), and real-network
+libmpv/FIFO pump path end to end (no test requires it — the TCP-format test
+is scoped to the GStreamer path only), and real-network
 mDNS discovery.
 
 ## Crash dumps, logging and the debug bundle (D-029)
@@ -966,10 +968,12 @@ at all.
   logic in `streamboat_core::diagnostics::bundle`): one zip (the `zip` crate,
   pinned, `deflate`-only feature set — "one archive format, one crate," not
   a `tar`+`flate2` pair) containing `environment.txt` (resolved
-  config/data/cache/runtime dirs, OS/arch, `gst::version_string()` — gathered
-  by the CLI itself, since `streamboat-core` cannot depend on GStreamer,
-  D-004; libmpv's version is not included yet, since the desktop crate's own
-  `mpv` feature is still a stub, see "Not yet built"), `settings.redacted.json`
+  config/data/cache/runtime dirs, OS/arch, and — since `streamboat-core`
+  cannot depend on the player crate, D-004 — the compiled-in engine's version
+  (`streamboat_player::engine_version()`: GStreamer's own version string on
+  Linux, the libmpv client API version on Windows/macOS) and the
+  decoder-probe result (`streamboat_player::probe::probe()`), both gathered
+  by the `streamboat debug-bundle` command itself), `settings.redacted.json`
   (`Settings::to_redacted_json` — every credential field, including the
   client ids themselves, reduced to an `_set: bool`; everything else, quality
   ceiling, output config, ReplayGain mode, theme, play-reporting flag,
@@ -980,10 +984,7 @@ at all.
   of the data dir, never the data dir itself — it cannot pick up
   `tokens.bin`, `control-token`, or `offline/` even by a future bug that
   adds a new file next to them, only one that adds it *inside*
-  `logs/`/`crashes/`. `streamboat-core` never depends on the player crate,
-  so the engine version (`streamboat_player::engine_version`) and the
-  decoder-probe result (`streamboat_player::probe::probe`) are added to
-  `environment.txt` by the `streamboat debug-bundle` command itself.
+  `logs/`/`crashes/`.
 
 Tests: the redactor over synthetic lines (each known pattern masked, plain
 text and an already-redacted line both left alone); the crash-report writer
@@ -1109,11 +1110,11 @@ line is redacted inside the archive too, not just excluded by name).
   cover pure mapping only (`PlaybackStatus`/`MediaPlaybackStatus`/
   `MPNowPlayingPlaybackState` conversion, the exclusive-mode volume-is-the-
   engine's-problem rule) and are compiled only on their own OS — neither
-  runs anywhere in this change, see "Cross-target type-checking" below.
+  runs anywhere here, see "Cross-target type-checking" below.
 - `streamboat-server`: `tests/api.rs` (see "Control API" above) — health,
   auth, Host allowlisting, a command changing state, and both directions of
   the WebSocket, all over real sockets against an in-process daemon.
-- `streamboat-desktop`: 96 tests (`cargo test -p streamboat-desktop`), all inline
+- `streamboat-desktop`: 111 tests (`cargo test -p streamboat-desktop`), all inline
   `#[cfg(test)]` (this crate is bin-only, no `lib.rs`, so there is no separate
   `tests/` integration-test target). iced 0.14's `iced_test` headless simulator
   (`simulator(view(...))`, `ui.find("text")`, confirmed to fall back to the
@@ -1152,27 +1153,9 @@ line is redacted inside the archive too, not just excluded by name).
   `update` (play-all's track-id order, an item removal/reorder updating the
   local list, a confirmed delete bubbling `Effect::Deleted`), and a track
   row's favourite toggle updating local state on a successful API result.
-  **Not verified without a display** (this container has none): the actual
-  `iced::application(...).run()` event loop, window creation, real mouse/keyboard
-  delivery through winit, whether `iced::widget::operation::scroll_to` actually
-  scrolls the Lyrics screen's line list to the right offset (the pure
-  `highlighted_index` helper it's driven by is tested; the scroll operation
-  itself is not, the same way `Simulator` cannot drive a real click sequence
-  through a `stack!` overlay to verify the add-to-playlist picker's dimmed
-  backdrop blocks clicks to what's behind it), and anything about visual
-  layout beyond what `ui.find("...")` widget-tree assertions can see (no
-  pixel/snapshot tests were taken here, though `Simulator::snapshot` exists
-  for a future pass that adds them).
-  Platform wave: the mini-player (`ui::mini_player`) renders "nothing
+  The mini-player (`ui::mini_player`) renders "nothing
   playing," the current track/quality badge, and that its restore button emits
-  `Message::Restore` on click. Plain `#[test]`s (no simulator) cover the pure
-  view-model helpers — `mmss`/`quality_badge`/`bit_perfect_applicable`
-  formatting, `feed_section_to_view`/`page_module_to_view`'s known-vs-unknown-type
-  mapping, the `Nav` back/forward stack (five cases: push+clear-forward,
-  round-trip, no-op on empty history, dropping the stale forward branch after a
-  fresh `go_to`, no-op on navigating to the current screen), the `ImageCache`'s
-  insert/evict/re-insert behaviour, `Tokens::dark()`/`light()` (distinct
-  colours, shared scale), the `Settings`⇄`settings::State` round trip,
+  `Message::Restore` on click. Plain `#[test]`s (no simulator) also cover
   `ui::tray::tray_event_to_command`'s pure mapping (every fixed menu entry
   present and distinct, PlayPause/Next/Previous map to their `Command`,
   Show/Hide/Quit correctly map to none), and `ui::instance::decide`'s three
@@ -1194,8 +1177,13 @@ line is redacted inside the archive too, not just excluded by name).
   **Not verified without a display or a session/D-Bus bus** (this container
   has neither): the actual `iced::daemon(...).run()` event loop, real window
   creation/hide/show/focus and multi-window behaviour, real mouse/keyboard
-  delivery through winit, anything about visual layout beyond what
-  `ui.find("...")` widget-tree assertions can see (no pixel/snapshot tests
+  delivery through winit, whether `iced::widget::operation::scroll_to`
+  actually scrolls the Lyrics screen's line list to the right offset (the
+  pure `highlighted_index` helper it's driven by is tested; the scroll
+  operation itself is not, the same way `Simulator` cannot drive a real click
+  sequence through a `stack!` overlay to verify the add-to-playlist picker's
+  dimmed backdrop blocks clicks to what's behind it), anything about visual
+  layout beyond what `ui.find("...")` widget-tree assertions can see (no pixel/snapshot tests
   were taken here, though `Simulator::snapshot` exists for a future pass that
   adds them), the Linux tray's actual D-Bus/`ksni` registration (`mpris.rs`'s
   own D-Bus registration has the same gap), and the Windows/macOS tray-icon
@@ -1207,8 +1195,7 @@ line is redacted inside the archive too, not just excluded by name).
   `target_os`-gated) dependencies of `streamboat-desktop`'s `Cargo.toml`, and
   `gstreamer-rs`'s `glib-sys` needs a real GLib pkg-config sysroot for the
   target platform, which this environment does not have — a pre-existing gap
-  unrelated to the tray work, not something this wave changed or attempted
-  to fix.
+  unrelated to the tray implementation, not something addressed here.
 - `streamboat-core::diagnostics` (D-029): the redactor over synthetic lines
   covering every pattern plus plain text and idempotence; a real panic on a
   spawned thread producing a crash report with every field, including a
@@ -1260,10 +1247,10 @@ line is redacted inside the archive too, not just excluded by name).
   combination — see below for exactly what that does and does not prove,
   and why macOS has no equivalent CI job.
 
-## Cross-target type-checking (D-016, this task)
+## Cross-target type-checking (D-016)
 
-Run by hand for this change (`rustup target add x86_64-pc-windows-gnu
-aarch64-apple-darwin`), and as the new `cross-check` CI job for the half
+Run by hand (`rustup target add x86_64-pc-windows-gnu
+aarch64-apple-darwin`), and as the `cross-check` CI job for the half
 that can run unattended:
 
 - **`cargo check -p streamboat-player --target x86_64-pc-windows-gnu
@@ -1271,23 +1258,23 @@ that can run unattended:
   `gcc-mingw-w64-x86-64` installed first: `streamboat-core`'s `reqwest`/
   `tokio-tungstenite` pull in `ring`, whose build script compiles C
   regardless of target, even at `cargo check` time — this is not specific
-  to `libmpv2-sys` (which also builds cleanly here) or to anything new in
-  this change, it is just the first time this workspace has cross-checked a
+  to `libmpv2-sys` (which also builds cleanly here), it is just the first
+  time this workspace has cross-checked a
   non-Linux target at all. With that toolchain present the whole
   dependency graph — `libmpv2-sys`/`libmpv2`, `windows` 0.62.2 with every
-  feature this task uses, and `smtc.rs` itself — type-checks with zero
-  errors and exactly one warning, pre-existing and unrelated to this
-  change (`streamboat-core::fsutil`'s `unused import: File`, live only on
-  a non-Linux target; not touched here since `streamboat-core` is outside
-  this task's scope — flagged for whoever next touches that module).
+  feature `smtc.rs` uses, and `smtc.rs` itself — type-checks with zero
+  errors and exactly one warning, pre-existing and unrelated to `smtc.rs`
+  (`streamboat-core::fsutil`'s `unused import: File`, live only on
+  a non-Linux target; not fixed here since `streamboat-core` is a separate
+  crate outside `streamboat-player`'s scope — flagged for whoever next touches that module).
 - **`cargo check -p streamboat-player --target aarch64-apple-darwin
   --no-default-features --features mpv,nowplaying` (or `nowplaying` alone)
-  — fails before reaching any of this task's code, in or out of CI.** Same
+  — fails before reaching any of `mpv.rs`/`nowplaying.rs`, in or out of CI.** Same
   `ring` build script, but this time it invokes the *host's* `cc` with
   macOS-only flags (`-arch arm64`, `-mmacosx-version-min=11.0`) that a
   plain Linux `cc` does not understand — cross-compiling `ring`'s C needs a
   real Apple SDK/`osxcross`-class toolchain, not just a Rust target added
-  via `rustup`, and installing one is out of scope for this change (and
+  via `rustup`, and installing one is out of scope here (and
   arguably for a CI runner at all — Apple's SDK terms are the same reason
   no reference client in this project's research vendors one). This blocks
   before `objc2`/`nowplaying.rs` are reached at all, on either feature
@@ -1307,13 +1294,13 @@ that can run unattended:
   pinned versions on this target; it is not evidence that the full crate
   builds for macOS (blocked by `ring`, above) or that `MPNowPlayingInfoCenter`/
   `MPRemoteCommandCenter` behave as documented against a live Objective-C
-  runtime — no macOS machine of any kind was available to this change.
+  runtime — no macOS machine of any kind is available here.
 - **Untested no differently than `mpv.rs`'s existing Windows/macOS AO
   option values**: neither `smtc.rs` nor `nowplaying.rs` has run against a
   real SMTC popup, Control Center, or `MPRemoteCommandCenter` callback.
   Both are written from the `windows`/`objc2*` crates' own published,
   generated bindings, checked line-by-line against each crate's actual
-  source for this change (not from memory) and, for `smtc.rs`, against a
+  source (not from memory) and, for `smtc.rs`, against a
   full, successful cross-target `cargo check` — a meaningfully higher bar
   than "compiles," but still short of "seen it work."
 
@@ -1386,9 +1373,7 @@ Windows/macOS (D-034, Unix-only so far — `start_snapcast_pump` returns a
 clear error there rather than a silent no-op); a verified round trip
 against a real `snapserver`/Snapweb for both the Snapcast output and the
 `snapcast-plugin`/`snapcast-discover` subcommands (no snapserver in this
-environment); libmpv's own version string in `streamboat debug-bundle`'s
-`environment.txt` (D-029 — gated on the desktop crate's `mpv` feature
-actually linking `libmpv2`, which it does not yet, see above).
+environment).
 
 `streamboat_player::default_engine`/`enumerate_output_devices`/
 `media_controls::spawn` (D-016, D-030 — see "Engine selection, device

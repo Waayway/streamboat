@@ -84,10 +84,6 @@ jobs:
         run: desktop-file-validate packaging/linux/io.github.waayway.streamboat.desktop
       - name: Validate the AppStream metainfo
         run: appstreamcli validate --no-net packaging/linux/io.github.waayway.streamboat.metainfo.xml
-      - name: Verify the systemd system unit
-        run: systemd-analyze verify --recursive-errors=no packaging/linux/systemd/streamboatd.service
-      - name: Verify the systemd user unit
-        run: systemd-analyze verify --user --recursive-errors=no packaging/linux/systemd/user/streamboatd.service
       - name: Shell-check the packaging scripts
         run: |
           sudo apt-get install -y --no-install-recommends shellcheck
@@ -111,6 +107,13 @@ jobs:
           cargo install --locked cargo-deb
           cargo install --locked cargo-generate-rpm
       - run: cargo build --release -p streamboat-desktop -p streamboat-server
+      # `systemd-analyze verify` checks that a unit's ExecStart binary exists,
+      # so the freshly built daemon is installed where the units point first.
+      - name: Verify the systemd units against the built daemon
+        run: |
+          sudo install -m755 target/release/streamboatd /usr/bin/streamboatd
+          systemd-analyze verify --recursive-errors=no packaging/linux/systemd/streamboatd.service
+          systemd-analyze verify --user --recursive-errors=no packaging/linux/systemd/user/streamboatd.service
       - name: Dry-run the deb metadata (no packaging of a fresh build)
         run: |
           cargo deb -p streamboat-desktop --no-build --no-strip

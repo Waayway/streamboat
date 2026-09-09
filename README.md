@@ -222,8 +222,9 @@ exactly what is sent.
 
 Streaming privileges (TIDAL allows one playing device per account at a time)
 and scrobbling to Last.fm/ListenBrainz (D-037, both off until you supply
-credentials in `settings.json`) are built the same way; neither is wired into
-the CLI spike yet outside `streamboatd`.
+credentials in `settings.json`) are built the same way, and wired into every
+front end — `streamboatd`, the `streamboat` CLI's `play` command, and the
+desktop shell — through the same `PlayerDeps::for_context` helper.
 
 ## Offline pins
 

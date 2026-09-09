@@ -5,10 +5,10 @@ description: Read this first for any task in the streamboat repository — befor
 
 # streamboat overview
 
-streamboat is a new open-source TIDAL client. The goal, stated by the owner, is to eventually do
+streamboat is an open-source TIDAL client. The goal, stated by the owner, is to eventually do
 everything the native TIDAL client does — desktop and headless — for people who already pay for
-TIDAL. It is not built yet: as of this writing the repository holds only a README, a `.claude/skills/`
-research base, and `docs/research/` reports. No stack, no code, no architecture has been chosen.
+TIDAL. The stack is decided and the first release's decided scope is built — see "Status" below
+and `docs/architecture.md` for the full inventory.
 
 This skill is the map. Read it before doing anything else in this repository. It does not contain
 the deep facts themselves — those live in the seven topic skills indexed below and the research

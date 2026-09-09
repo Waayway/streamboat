@@ -9,8 +9,8 @@
 //! for its streaming port 1704 (`mpd-and-multiroom.md` §2, itself citing
 //! `badaix/snapcast`'s own `server/etc/snapserver.conf`). `_snapcast-tcp._tcp`
 //! is not in that reference at all — it is searched anyway, defensively,
-//! per this task's own brief, in case a build or fork advertises under that
-//! name; finding nothing under it is expected and not a bug.
+//! in case a build or fork advertises under that name; finding nothing
+//! under it is expected and not a bug.
 
 use std::net::IpAddr;
 use std::time::Duration;

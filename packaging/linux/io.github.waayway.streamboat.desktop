@@ -25,7 +25,9 @@ X-PulseAudio-Properties=media.role=music
 # *parses* pasted tidal.com/listen.tidal.com/tidal:// content links so they
 # open correctly; it just never claims the scheme as a handler.
 #
-# NOTE: the iced desktop shell (D-013) is not built yet (see
-# docs/architecture.md, "Not yet built"). Until then, launching this entry
-# runs the `streamboat` CLI binary with no subcommand, which prints its
-# --help text rather than opening a window.
+# Launching this entry runs the `streamboat` binary with no subcommand,
+# which opens the iced desktop shell (D-013); a `streamboat://` URL passed
+# via `%u` is handled the same way `streamboat open <url>` is on the command
+# line (see docs/architecture.md, "Desktop shell (iced)"). What is not yet
+# built is the running shell being handed a link opened while it is already
+# running — see docs/architecture.md, "Not yet built".
