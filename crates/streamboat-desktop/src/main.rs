@@ -13,7 +13,7 @@ use streamboat_core::auth::pkce::{PkceSession, capture_code_loopback, code_from_
 use streamboat_core::bootstrap::Context;
 use streamboat_core::proto::{Command, Event, OutputConfig, PlayItem};
 use streamboat_core::{AudioQuality, StreamSource};
-use streamboat_player::{GstEngine, Player, PlayerConfig};
+use streamboat_player::{GstEngine, Player, PlayerConfig, PlayerDeps};
 
 #[derive(Parser)]
 #[command(
@@ -373,7 +373,17 @@ async fn run(cmd: Cmd) -> anyhow::Result<()> {
                 output,
                 volume,
             };
-            let handle = Player::spawn(ctx.api.clone(), Box::new(engine), rx, cfg);
+            // Streaming privileges, play reporting and scrobbling are not
+            // yet wired into the CLI spike (D-033, D-027, D-037 are built
+            // but not yet plumbed through `Context`); every dependency here
+            // is `None`, which is exactly what makes them optional.
+            let handle = Player::spawn(
+                ctx.api.clone(),
+                Box::new(engine),
+                rx,
+                cfg,
+                PlayerDeps::default(),
+            );
             let mut events = handle.subscribe();
             handle.send(Command::Play {
                 items: ids

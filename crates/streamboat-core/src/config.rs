@@ -73,7 +73,7 @@ impl AppDirs {
 
 /// User-editable settings. Secrets in here are the user's own choice
 /// (a self-supplied client secret), which is why the file is written 0600.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Device-code client pair; overrides the environment / build-time value (D-023).
@@ -97,6 +97,33 @@ pub struct Settings {
     pub user_agent_override: Option<String>,
     /// ISO country code override; normally taken from the session.
     pub country_code: Option<String>,
+    /// Report finished plays to TIDAL (D-027). On by default, disclosed in
+    /// README.md and the setting itself; see `reporting::PlayReporter` for
+    /// exactly what is sent and when it is suppressed.
+    pub play_reporting: bool,
+    /// Scrobbling to Last.fm and ListenBrainz (D-037), each backend off
+    /// until its credentials are supplied.
+    pub scrobble: crate::scrobble::ScrobbleSettings,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            client_id: None,
+            client_secret: None,
+            pkce_client_id: None,
+            pkce_client_secret: None,
+            pkce_redirect_uri: None,
+            key_storage: crate::token_store::KeyStorage::default(),
+            quality_ceiling: None,
+            output: None,
+            user_agent_override: None,
+            country_code: None,
+            // D-027: on by default, unlike every other opt-in field here.
+            play_reporting: true,
+            scrobble: crate::scrobble::ScrobbleSettings::default(),
+        }
+    }
 }
 
 impl Settings {

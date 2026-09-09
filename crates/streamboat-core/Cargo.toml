@@ -26,6 +26,11 @@ sha2.workspace = true
 hex.workspace = true
 fd-lock.workspace = true
 keyring = { workspace = true, optional = true }
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+async-trait.workspace = true
+md-5.workspace = true
+httpdate.workspace = true
 
 [features]
 default = ["keyring"]

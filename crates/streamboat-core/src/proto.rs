@@ -184,6 +184,14 @@ pub enum Event {
         message: String,
         track_id: Option<u64>,
     },
+    /// The streaming-privileges websocket ("Pushkin") reported that another
+    /// device claimed the account's one playback slot: playback has been
+    /// paused (D-033). `by` is TIDAL's `clientDisplayName` for that device.
+    /// Front ends should show "playback started on `<by>`" and must never
+    /// resend a claim automatically after this.
+    PlaybackTakenOver {
+        by: String,
+    },
     /// Login needed; a remote can render its own QR from this.
     AuthRequired {
         verification_url: String,

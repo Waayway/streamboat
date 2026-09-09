@@ -13,7 +13,7 @@ pub mod gst;
 pub mod player;
 
 pub use engine::{Engine, EngineEvent, LoadItem};
-pub use player::{Player, PlayerConfig, PlayerHandle};
+pub use player::{Player, PlayerConfig, PlayerDeps, PlayerHandle};
 
 #[cfg(feature = "gstreamer")]
 pub use gst::GstEngine;

@@ -642,6 +642,26 @@ impl ApiClient {
         }
     }
 
+    /// `GET /v1/ping`: an unauthenticated liveness probe with no other
+    /// documented use (`tidal-api` play-logging-and-privileges.md §4).
+    /// TIDAL's own clients use it purely to read the response's `Date`
+    /// header and anchor event timestamps to server time rather than the
+    /// local clock (`@tidal-music/true-time`); returns that header's raw
+    /// value (RFC 7231 IMF-fixdate) for the caller to parse.
+    pub async fn ping_server_date(&self) -> Result<String> {
+        let url = self
+            .inner
+            .api_base
+            .join("v1/ping")
+            .map_err(|e| Error::Config(format!("bad v1/ping url: {e}")))?;
+        let resp = self.inner.http.get(url).send().await?;
+        resp.headers()
+            .get(reqwest::header::DATE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .ok_or_else(|| Error::Manifest("v1/ping response carried no Date header".into()))
+    }
+
     /// Unauthenticated POST of a form to the auth host (device flow, refresh).
     pub(crate) async fn post_auth_form(
         &self,

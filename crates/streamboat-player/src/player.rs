@@ -7,17 +7,41 @@
 //! soon as the current track starts (gapless); volume is refused with a
 //! warning while an exclusive output is active (D-017).
 
+use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
 use std::time::Duration;
 
 use streamboat_core::models::{Track, TrackSummary};
+use streamboat_core::privileges::{PrivilegesEvent, StreamingPrivileges};
 use streamboat_core::proto::{
     Command, Event, OutputConfig, PlaybackStatus, PlayerState, QueuePosition, StreamInfo,
 };
+use streamboat_core::reporting::{PlayEvent, PlayReporter, REPORT_THRESHOLD_MS};
+use streamboat_core::scrobble::{ScrobbleTrack, Scrobbler};
 use streamboat_core::{ApiClient, AudioQuality, ResolvedStream};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::engine::{Engine, EngineEvent, LoadItem};
+
+/// Optional trait objects the player reports plays and claims streaming
+/// privileges through. Every field defaults to `None` (used by every
+/// existing test): a `Player` with no dependencies configured behaves
+/// exactly as before this module existed.
+#[derive(Default)]
+pub struct PlayerDeps {
+    /// The streaming-privileges ("Pushkin") client. `claim()` is called on
+    /// genuine user intent only (D-033) — see the `Command::Play`/`Next`/
+    /// `Previous`/`Resume` handlers below.
+    pub privileges: Option<Arc<StreamingPrivileges>>,
+    /// The event stream from the same [`StreamingPrivileges`] instance
+    /// (from [`StreamingPrivileges::spawn`]); kept separate from the
+    /// handle above because the receiver is not `Clone`.
+    pub privileges_events: Option<mpsc::UnboundedReceiver<PrivilegesEvent>>,
+    /// Reports finished/skipped plays to TIDAL (D-027).
+    pub reporter: Option<Arc<PlayReporter>>,
+    /// Scrobbles to Last.fm/ListenBrainz (D-037).
+    pub scrobbler: Option<Arc<dyn Scrobbler>>,
+}
 
 #[derive(Debug, Clone)]
 pub struct PlayerConfig {
@@ -80,16 +104,30 @@ pub struct Player {
     next_item_id: u64,
     prefetched_for: Option<u64>,
     buffering_paused: bool,
+    privileges: Option<Arc<StreamingPrivileges>>,
+    privileges_events: Option<mpsc::UnboundedReceiver<PrivilegesEvent>>,
+    reporter: Option<Arc<PlayReporter>>,
+    scrobbler: Option<Arc<dyn Scrobbler>>,
+    /// Server-anchored start time of the currently loaded entry, taken as
+    /// soon as it starts (`EngineEvent::Started`) and consumed the moment
+    /// it stops being current — by a natural `EngineEvent::Finished` or by
+    /// a command that skips it — so a play is reported/scrobbled exactly
+    /// once. `None` whenever there is no [`PlayReporter`] configured.
+    track_report_start_ms: Option<u64>,
 }
 
 impl Player {
     /// Start the player on the current tokio runtime. `engine_rx` is the
-    /// channel the engine was constructed with.
+    /// channel the engine was constructed with; `deps` are the optional
+    /// streaming-privileges/reporting/scrobbling dependencies (all `None`
+    /// keeps today's behaviour exactly, which is what every existing test
+    /// relies on).
     pub fn spawn(
         api: ApiClient,
         engine: Box<dyn Engine>,
         engine_rx: std_mpsc::Receiver<EngineEvent>,
         cfg: PlayerConfig,
+        deps: PlayerDeps,
     ) -> PlayerHandle {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (events, _) = broadcast::channel(512);
@@ -122,9 +160,95 @@ impl Player {
             next_item_id: 1,
             prefetched_for: None,
             buffering_paused: false,
+            privileges: deps.privileges,
+            privileges_events: deps.privileges_events,
+            reporter: deps.reporter,
+            scrobbler: deps.scrobbler,
+            track_report_start_ms: None,
         };
         tokio::spawn(player.run());
         PlayerHandle { cmd_tx, events }
+    }
+
+    /// Send `USER_ACTION` on the privileges socket, if one is configured.
+    /// Call only from a handler for a command that is genuine user intent
+    /// (D-033) — never from an internal transition like gapless hand-over,
+    /// resume-after-buffering, or an error-driven skip.
+    fn claim_privileges(&self) {
+        if let Some(p) = &self.privileges {
+            p.claim();
+        }
+    }
+
+    /// Reports a play and scrobbles the track that just stopped being
+    /// current — either it finished naturally (`EngineEvent::Finished`,
+    /// still `self.index`-current at that point) or a command is about to
+    /// skip it. Must be called before `self.index`/`self.position_ms` are
+    /// changed by the caller. A no-op whenever nothing was ever started
+    /// (`track_report_start_ms` is `None`) or no `PlayReporter`/`Scrobbler`
+    /// is configured.
+    async fn note_play_ended(&mut self) {
+        let Some(start_ms) = self.track_report_start_ms.take() else {
+            return;
+        };
+        let Some(i) = self.index else { return };
+        let Some(entry) = self.queue.get(i) else {
+            return;
+        };
+        let Some(resolved) = entry.resolved.clone() else {
+            return;
+        };
+        let played_ms = self.position_ms;
+        let track_id = entry.track.id;
+        let session_id = entry.session_id.clone();
+        let summary = entry.summary.clone();
+        if let Some(r) = self.reporter.clone() {
+            let event = PlayEvent {
+                track_id,
+                streaming_session_id: session_id,
+                asset_presentation: if resolved.info.preview {
+                    "PREVIEW"
+                } else {
+                    "FULL"
+                }
+                .to_string(),
+                audio_quality: resolved.info.quality,
+                audio_mode: resolved.info.audio_mode,
+                start_timestamp_ms: start_ms,
+                end_timestamp_ms: start_ms.saturating_add(played_ms),
+                start_position_s: 0.0,
+                end_position_s: played_ms as f64 / 1000.0,
+                source: None,
+            };
+            r.record(event).await;
+        }
+        if let Some(s) = self.scrobbler.clone() {
+            // No dedicated scrobble threshold is documented for streamboat;
+            // reusing TIDAL's own 30s play-reporting threshold (D-027) is a
+            // deliberate, conservative stand-in rather than a made-up rule.
+            if played_ms > REPORT_THRESHOLD_MS {
+                let track = ScrobbleTrack {
+                    artist: summary.artists.clone(),
+                    title: summary.title.clone(),
+                    album: Some(summary.album.clone()).filter(|a| !a.is_empty()),
+                    duration_s: summary.duration_ms.map(|d| (d / 1000) as u32),
+                    track_number: None,
+                    mbid: None,
+                };
+                s.scrobble(&track, start_ms / 1000).await;
+            }
+        }
+    }
+
+    /// Resolves to the next privileges event, or never, when none is
+    /// configured — lets `run`'s `select!` treat the channel as optional.
+    async fn recv_privileges(
+        rx: &mut Option<mpsc::UnboundedReceiver<PrivilegesEvent>>,
+    ) -> Option<PrivilegesEvent> {
+        match rx {
+            Some(r) => r.recv().await,
+            None => std::future::pending().await,
+        }
     }
 
     async fn run(mut self) {
@@ -153,8 +277,45 @@ impl Player {
                     None => break,
                     Some(ev) => self.handle_engine_event(ev).await,
                 },
+                priv_ev = Self::recv_privileges(&mut self.privileges_events) => {
+                    match priv_ev {
+                        Some(ev) => self.handle_privileges_event(ev).await,
+                        None => self.privileges_events = None,
+                    }
+                },
                 _ = tick.tick() => self.tick(),
             }
+        }
+    }
+
+    /// Reacts to the streaming-privileges socket (D-033): pause and
+    /// announce a takeover, never re-claim automatically. Every other
+    /// event is informational only — nothing here needs to react to
+    /// `Connected`/`Reconnect`/`Disconnected` beyond what
+    /// `StreamingPrivileges` itself already logs.
+    async fn handle_privileges_event(&mut self, ev: PrivilegesEvent) {
+        if let PrivilegesEvent::Revoked {
+            client_display_name,
+        } = ev
+        {
+            if matches!(
+                self.status,
+                PlaybackStatus::Playing | PlaybackStatus::Buffering
+            ) {
+                match self.engine.pause() {
+                    Ok(()) => self.status = PlaybackStatus::Paused,
+                    Err(e) => self.emit(Event::Warning {
+                        message: format!("pausing after a privileges takeover: {e}"),
+                    }),
+                }
+            }
+            self.emit(Event::Warning {
+                message: format!("playback paused: playback started on {client_display_name}"),
+            });
+            self.emit(Event::PlaybackTakenOver {
+                by: client_display_name,
+            });
+            self.emit_state();
         }
     }
 
@@ -241,6 +402,7 @@ impl Player {
     async fn handle_command(&mut self, cmd: Command) {
         match cmd {
             Command::Play { items } => {
+                self.note_play_ended().await;
                 let _ = self.engine.stop();
                 self.prefetched_for = None;
                 let ids: Vec<u64> = items.iter().map(|i| i.track_id).collect();
@@ -252,6 +414,8 @@ impl Player {
                     self.emit(Event::EndOfQueue);
                     self.emit_state();
                 } else {
+                    // User-issued `Play`: genuine intent (D-033).
+                    self.claim_privileges();
                     self.start_from(0).await;
                 }
             }
@@ -292,13 +456,19 @@ impl Player {
             Command::Resume => {
                 if self.status == PlaybackStatus::Paused {
                     match self.engine.play() {
-                        Ok(()) => self.status = PlaybackStatus::Playing,
+                        // A user pressing resume: genuine intent (D-033) —
+                        // never called from the buffering-pause path below.
+                        Ok(()) => {
+                            self.status = PlaybackStatus::Playing;
+                            self.claim_privileges();
+                        }
                         Err(e) => self.emit(Event::Warning {
                             message: e.to_string(),
                         }),
                     }
                 } else if self.status == PlaybackStatus::Stopped && !self.queue.is_empty() {
                     let i = self.index.unwrap_or(0);
+                    self.claim_privileges();
                     self.start_from(i).await;
                     return;
                 }
@@ -312,6 +482,7 @@ impl Player {
                 Box::pin(self.handle_command(next)).await;
             }
             Command::Stop => {
+                self.note_play_ended().await;
                 let _ = self.engine.stop();
                 self.prefetched_for = None;
                 self.status = PlaybackStatus::Stopped;
@@ -320,8 +491,11 @@ impl Player {
                 self.emit_state();
             }
             Command::Next => {
+                self.note_play_ended().await;
                 let next = self.index.map(|i| i + 1).unwrap_or(0);
                 if next < self.queue.len() {
+                    // User-issued `Next`: genuine intent (D-033).
+                    self.claim_privileges();
                     self.start_from(next).await;
                 } else {
                     let _ = self.engine.stop();
@@ -338,7 +512,12 @@ impl Player {
                         });
                     }
                 }
-                Some(i) => self.start_from(i - 1).await,
+                Some(i) => {
+                    self.note_play_ended().await;
+                    // User-issued `Previous`: genuine intent (D-033).
+                    self.claim_privileges();
+                    self.start_from(i - 1).await;
+                }
                 None => {}
             },
             Command::Seek { position_ms } => {
@@ -418,6 +597,7 @@ impl Player {
                 self.emit_state();
             }
             Command::ClearQueue => {
+                self.note_play_ended().await;
                 let _ = self.engine.stop();
                 self.queue.clear();
                 self.index = None;
@@ -556,6 +736,22 @@ impl Player {
                     .map(|r| r.info.clone())
                     .unwrap_or_default();
                 self.stream = Some(stream.clone());
+                self.track_report_start_ms = match &self.reporter {
+                    Some(r) => Some(r.now_ms().await),
+                    None => None,
+                };
+                if let Some(s) = self.scrobbler.clone() {
+                    let summary = self.queue[i].summary.clone();
+                    let track = ScrobbleTrack {
+                        artist: summary.artists,
+                        title: summary.title,
+                        album: Some(summary.album).filter(|a| !a.is_empty()),
+                        duration_s: summary.duration_ms.map(|d| (d / 1000) as u32),
+                        track_number: None,
+                        mbid: None,
+                    };
+                    s.now_playing(&track).await;
+                }
                 self.emit(Event::TrackStarted {
                     track: self.queue[i].summary.clone(),
                     stream,
@@ -571,6 +767,9 @@ impl Player {
                         track_id: self.queue[i].track.id,
                     });
                 }
+                // Still `self.index`-current here: a gapless hand-over's
+                // `Started` for the successor has not been processed yet.
+                self.note_play_ended().await;
             }
             EngineEvent::EndOfStream => {
                 let next = self.index.map(|i| i + 1).unwrap_or(0);

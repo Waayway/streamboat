@@ -12,7 +12,7 @@ use streamboat_core::proto::{Command, Event, OutputConfig, PlayItem, PlaybackSta
 use streamboat_core::token_store::{MemoryTokenStore, TokenSet, now_secs};
 use streamboat_core::{ApiClient, AudioQuality, AuthFlow, ClientCredentials, StreamSource};
 use streamboat_player::engine::{EngineError, EngineResult};
-use streamboat_player::{Engine, EngineEvent, LoadItem, Player, PlayerConfig};
+use streamboat_player::{Engine, EngineEvent, LoadItem, Player, PlayerConfig, PlayerDeps};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -214,6 +214,7 @@ async fn plays_a_queue_gaplessly_and_ends() {
         Box::new(engine),
         rx,
         PlayerConfig::default(),
+        PlayerDeps::default(),
     );
     let mut events = handle.subscribe();
     assert!(handle.send(Command::Play {
@@ -259,6 +260,7 @@ async fn unplayable_track_is_skipped_with_an_error_event() {
             quality_ceiling: AudioQuality::Lossless,
             ..Default::default()
         },
+        PlayerDeps::default(),
     );
     let mut events = handle.subscribe();
     handle.send(Command::Play {
@@ -284,7 +286,13 @@ async fn volume_is_refused_in_exclusive_mode() {
         },
         ..Default::default()
     };
-    let handle = Player::spawn(client(&server), Box::new(engine), rx, cfg);
+    let handle = Player::spawn(
+        client(&server),
+        Box::new(engine),
+        rx,
+        cfg,
+        PlayerDeps::default(),
+    );
     let mut events = handle.subscribe();
     handle.send(Command::SetVolume { volume: 0.5 });
     let w = next_matching(&mut events, |e| matches!(e, Event::Warning { .. })).await;

@@ -24,7 +24,10 @@ mod fsutil;
 pub mod http;
 pub mod manifest;
 pub mod models;
+pub mod privileges;
 pub mod proto;
+pub mod reporting;
+pub mod scrobble;
 pub mod token_store;
 
 pub use api::{ResolvedStream, StreamSource};

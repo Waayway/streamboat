@@ -112,6 +112,27 @@ docs/research/                          the fact-checked research the decisions 
 .claude/skills/                         repo knowledge for coding agents
 ```
 
+## Play reporting
+
+By default, streamboat reports a track to TIDAL as "played" once you have
+listened to more than 30 seconds of it, the same way TIDAL's own apps do, so
+Recently Played and Home personalisation behave the way you'd expect (D-027).
+This is disclosed, not hidden: it never fires for a preview clip, it is
+dropped rather than retried if TIDAL's backend rejects it as malformed, and
+its timestamps come from TIDAL's own clock (`GET /v1/ping`), not your
+machine's. What it says about the *device* sending it follows the credential
+your session is actually using: with your own client id it identifies itself
+honestly as streamboat; only with the community's shared "ecosystem" client id
+(D-023) does it describe that credential's real identity, TIDAL's Android
+client, the way Sone's does. Set `play_reporting: false` in `settings.json` to
+turn it off entirely. See `crates/streamboat-core/src/reporting.rs` for
+exactly what is sent.
+
+Streaming privileges (TIDAL allows one playing device per account at a time)
+and scrobbling to Last.fm/ListenBrainz (D-037, both off until you supply
+credentials in `settings.json`) are built the same way; neither is wired into
+the CLI spike yet outside `streamboatd`.
+
 ## Legal
 
 streamboat uses an API TIDAL does not document for third parties, under your

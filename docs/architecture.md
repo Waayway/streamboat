@@ -7,8 +7,8 @@ implementation choices made while building the first milestone (D-044).
 
 | Crate | Licence | Contents |
 | --- | --- | --- |
-| `streamboat-core` | Apache-2.0 | `http` (authenticated client, single-flight and cross-process refresh, 429 gate), `auth::device_code`, `auth::pkce`, `token_store` (AES-256-GCM file, `SBTK` header, keyring-held master key), `manifest` (BTS/EMU/DASH parsing, refusal rule), `api` (sessions, tracks, `playbackinfopostpaywall`, quality cascade, plus the catalogue/library surface below), `proto` (Command/Event), `config`, `credentials` (device-code and PKCE pairs), `bootstrap` |
-| `streamboat-player` | GPL-3.0-only | `engine::Engine` trait, `gst::GstEngine` (playbin3), `player::Player` (queue, prefetch, Command→Event loop) |
+| `streamboat-core` | Apache-2.0 | `http` (authenticated client, single-flight and cross-process refresh, 429 gate), `auth::device_code`, `auth::pkce`, `token_store` (AES-256-GCM file, `SBTK` header, keyring-held master key), `manifest` (BTS/EMU/DASH parsing, refusal rule), `api` (sessions, tracks, `playbackinfopostpaywall`, quality cascade, plus the catalogue/library surface below), `proto` (Command/Event), `config`, `credentials` (device-code and PKCE pairs), `bootstrap`, `privileges` (the Pushkin streaming-privileges websocket, D-033), `reporting` (play reporting to `ec.tidal.com` and the server-anchored clock, D-027), `scrobble` (Last.fm/ListenBrainz, D-037) |
+| `streamboat-player` | GPL-3.0-only | `engine::Engine` trait, `gst::GstEngine` (playbin3), `player::Player` (queue, prefetch, Command→Event loop, and the optional `PlayerDeps` wiring for the three modules above) |
 | `streamboat-server` | GPL-3.0-only | `streamboatd`: stdio JSON-lines transport for the protocol; headless login as `auth_required`/`auth_ok` events |
 | `streamboat-desktop` | GPL-3.0-only | `streamboat`: CLI subcommands (login [--pkce], logout, whoami, search, resolve, play, devices, keyring, paths); the iced shell is not built yet |
 
@@ -118,6 +118,76 @@ style; `crates/streamboat-core/tests/catalog.rs` covers pure parsing
 (including a feed section with an unknown `type`, null fields, and a
 missing/empty response) and the transport-level ETag flow.
 
+## Streaming privileges, play reporting and scrobbling (D-027, D-033, D-037)
+
+Three new `streamboat-core` modules, wired into `streamboat-player::Player`
+through a `PlayerDeps` struct whose fields all default to `None` — a `Player`
+with no dependencies configured behaves exactly as it did before this work,
+which is what every pre-existing player test relies on.
+
+- **`privileges`** — `StreamingPrivileges`: `POST {api_base}v1/rt/connect`
+  for a websocket URL (`tokio-tungstenite`, rustls/webpki-roots), then
+  `USER_ACTION {startedAt}` on `claim()`, `PRIVILEGED_SESSION_NOTIFICATION`
+  surfaced as `PrivilegesEvent::Revoked{client_display_name}`, `RECONNECT`
+  handled by reconnecting, and capped exponential backoff with full jitter
+  (`backoff_delay`, ceiling `MAX_DELAY = 60s`) on every other disconnect —
+  never the reference browser SDK's unconditional immediate retry.
+  `notify_token_refreshed()` forces a reconnect on the fresh token. `Player`
+  calls `claim()` only from `Play`/`Next`/`Previous`/`Resume` command
+  handlers, never from gapless hand-over or the buffering-pause/resume path,
+  and reacts to a revoke by pausing and emitting the new
+  `Event::PlaybackTakenOver { by }` (added additively to `proto.rs`)
+  alongside a `Warning`.
+- **`reporting`** — `PlayReporter`: builds the `ec.tidal.com/api/event-batch`
+  SQS-`SendMessageBatch`-shaped form POST (up to 10 events/batch) carrying
+  the documented `playback_session` JSON body and its nine-key `Headers`
+  attribute, gated by the 30-second-played threshold and PREVIEW
+  suppression, timestamped from `ServerClock` (`GET /v1/ping`'s `Date`
+  header, cached and refreshed hourly), persisted to a JSON queue file
+  under the data dir (atomic write) that survives a restart, retried on a
+  network error or 5xx, and dropped permanently — never retried — on a
+  `BatchResultErrorEntry` or another 4xx. The event's `client`/header
+  identity follows the credential actually in use
+  (`ApiClient::credentials().source`): the maintainer-embedded default pair
+  (`CredentialSource::BuildTime`) gets Sone's pinned Android identity,
+  because for that specific credential it is true; a user-supplied pair
+  gets streamboat's own honest identity instead (`platform_name()`,
+  `crate::VERSION`) — D-027's "the payload must follow the credential in
+  use." `Player` calls `record()` from `EngineEvent::Finished` (still
+  `self.index`-current at that point, before a gapless successor's
+  `Started` is processed) and from every command that skips the current
+  track before that (`Play`, `Next`, `Previous`, `Stop`, `ClearQueue`).
+- **`scrobble`** — one `Scrobbler` trait (`now_playing`, `scrobble`),
+  `LastfmScrobbler` (session-key auth, `md5(sorted params) + secret`
+  signing, `track.updateNowPlaying`/`track.scrobble`) and
+  `ListenBrainzScrobbler` (`Authorization: Token <user_token>`,
+  `submit-listens` with `playing_now`/`single`), each with its own
+  persistent, retrying queue for `scrobble()` (`now_playing` is an unqueued
+  best-effort ping — by the time a retry would land it is stale anyway).
+  `ScrobbleHub` fans out to every backend that is both `enabled` and has a
+  full credential set, and is itself what `Player` holds as
+  `Option<Arc<dyn Scrobbler>>`.
+- **Settings**: `play_reporting: bool` (default `true`, D-027) and
+  `scrobble: ScrobbleSettings` (`lastfm`/`listenbrainz`, each `enabled: bool`
+  default `false` plus its credentials) on `config::Settings`.
+
+`streamboatd` (`streamboat-server`) constructs all three from `Context` and
+passes them to `Player::spawn` — the headless daemon is where Pushkin
+matters from day one (no user watching a silent revocation). The
+`streamboat` CLI spike still passes `PlayerDeps::default()`; wiring the
+desktop shell up the same way is follow-up work, tracked below.
+
+Left uncertain by the reference material, not invented: the event-batch
+endpoint's *response* shape (only its AWS-SQS-style *request* shape is
+documented; `reporting::parse_batch_response` parses the standard
+`SendMessageBatchResultEntry`/`BatchResultErrorEntry` XML shape that request
+format implies, and trusts an HTTP 2xx when the body doesn't parse as that);
+`os-version` in the reporting headers (left empty rather than guessed); and
+whether `x-tidal-streamingsessionid` must actually equal the reported
+`playbackSessionId` for a play to surface in Recently Played (Sone's plays
+surface without ever sending that header at all — `reporting::PlayEvent`
+reuses one id for both anyway, the cheapest safe move the reference names).
+
 ## Environment variables
 
 | Variable | Effect |
@@ -145,7 +215,15 @@ missing/empty response) and the transport-level ETag flow.
   plus wiremock tests for every entity/list/search endpoint and the
   playlist-mutation ETag flow (including a dedicated reorder-sends-the-
   fetched-etag case, and a case that supplies its own etag to skip the
-  fetch).
+  fetch); `tests/privileges.rs` runs a real local `tokio-tungstenite`
+  websocket server (handshake, the `USER_ACTION` claim shape, a
+  `PRIVILEGED_SESSION_NOTIFICATION` revoke, `RECONNECT`) plus pure backoff-
+  ceiling tests; `tests/reporting.rs` covers the event-batch payload shape,
+  the 30s threshold, PREVIEW suppression, the disabled flag, drop-on-
+  sender-fault, retry-on-5xx and queue persistence across a restart, all
+  via wiremock; `tests/scrobble.rs` covers both backends' request shapes
+  (plus a known-vector test for the Last.fm signature, computed
+  independently with `md5sum` in the test's own comment).
 - `streamboat-player`: the GStreamer backend over generated WAV files through
   `fakesink` (single track, gapless hand-over, error paths); the Player against
   a fake engine and an in-process TIDAL (queue, skip-with-event, exclusive
@@ -158,6 +236,8 @@ missing/empty response) and the transport-level ETag flow.
 the `streamboat://` handler for the desktop shell (D-024); the Flatpak Secret
 portal (D-026); the libmpv backend for Windows and macOS (D-016); the ALSA writer
 thread with format read-back and the reopen-on-format-change policy (D-017,
-D-018); the HTTP + WebSocket control API and MPRIS adapter (D-030); the
-streaming-privileges websocket (D-033); the iced shell (D-013); play reporting
-(D-027); the offline cache (D-022); packaging (D-041).
+D-018); the HTTP + WebSocket control API and MPRIS adapter (D-030);
+streaming privileges, play reporting and scrobbling wired into the
+`streamboat` CLI/desktop shell rather than only `streamboatd` (D-033, D-027,
+D-037 — the modules and the daemon wiring exist; see the section above); the
+iced shell (D-013); the offline cache (D-022); packaging (D-041).
