@@ -11,7 +11,7 @@
 //! own, just one of two, so always taking that branch stays inside the
 //! decision rather than departing from it.
 //!
-//! Three files live under the runtime directory (`config::AppDirs::runtime`,
+//! Four files live under the runtime directory (`config::AppDirs::runtime`,
 //! `/run/user/<uid>/streamboat` on Linux):
 //!
 //! - `instance.lock` — the lock itself. Whichever process holds it — a
@@ -31,6 +31,16 @@
 //!   beyond "something changed" — no `POST /v1/show` route is added to the
 //!   control API, which would require the GUI to bind a listener and
 //!   contradict D-031's "only `streamboatd` binds a listener."
+//! - `open-request` — the same idea as `show-request`, carrying one payload:
+//!   a deep-link URL a second `streamboat <url>` invocation could not open
+//!   itself because another instance already holds the lock (D-010, D-024).
+//!   [`request_open`] writes it atomically before the second process touches
+//!   `show-request`/exits; the holder's own show-request poll
+//!   (`ui::instance::show_request_events` in `streamboat-desktop`) also
+//!   checks this file each tick and, via [`take_open_request`], consumes it
+//!   at most once — a plain read-then-delete, not a queue, since only one
+//!   second instance is ever racing to write it at a time (the instance lock
+//!   itself serializes "am I the only other one").
 
 use std::fs::{File, OpenOptions};
 use std::net::SocketAddr;
@@ -143,6 +153,32 @@ pub fn show_request_mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).ok()?.modified().ok()
 }
 
+/// Write a deep-link URL to the `open-request` file at `path`, atomically
+/// (D-010, D-024): a second `streamboat <url>` invocation that finds the
+/// lock held calls this — before touching `show-request`/exiting for the
+/// `FocusedOther` case, or before navigating locally for the remote-client
+/// case — so the running instance has the URL waiting for it the next time
+/// it polls (`ui::instance::show_request_events` in `streamboat-desktop`).
+pub fn request_open(path: &Path, url: &str) -> Result<()> {
+    Ok(fsutil::atomic_write(path, url.as_bytes(), 0o600)?)
+}
+
+/// Read and delete the `open-request` file at `path`, if present — a
+/// one-shot take, not a queue, since only one second instance is ever
+/// writing it at a time (the instance lock itself already serializes "am I
+/// the only other one"). `None` is the ordinary state: no second instance
+/// has ever asked to open a link.
+pub fn take_open_request(path: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let _ = std::fs::remove_file(path);
+    let url = contents.trim();
+    if url.is_empty() {
+        None
+    } else {
+        Some(url.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +235,39 @@ mod tests {
         // file) even though nothing reads its content back.
         request_show(&path).unwrap();
         assert!(show_request_mtime(&path).unwrap() >= first);
+    }
+
+    #[test]
+    fn open_request_round_trips_and_is_deleted_after_take() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("open-request");
+
+        // Absent before anything ever writes it.
+        assert_eq!(take_open_request(&path), None);
+
+        request_open(&path, "streamboat://album/123").unwrap();
+        assert!(path.exists(), "request_open must create the file");
+        assert_eq!(
+            take_open_request(&path),
+            Some("streamboat://album/123".to_string())
+        );
+
+        // Taken once: gone afterwards, both from disk and from a second take.
+        assert!(!path.exists(), "take_open_request must delete the file");
+        assert_eq!(take_open_request(&path), None);
+    }
+
+    #[test]
+    fn a_second_open_request_overwrites_the_first_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("open-request");
+
+        request_open(&path, "streamboat://track/1").unwrap();
+        request_open(&path, "streamboat://track/2").unwrap();
+
+        assert_eq!(
+            take_open_request(&path),
+            Some("streamboat://track/2".to_string())
+        );
     }
 }

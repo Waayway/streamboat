@@ -13,10 +13,48 @@ use streamboat_core::{ApiClient, AudioQuality};
 use crate::ui::design::Tokens;
 use crate::ui::widgets::{ChipTone, banner};
 
+/// `streamboat_player::snapcast` holds the fixed *audio* format
+/// (48000/16/stereo) both engine backends target, but not a default
+/// host/port — a snapserver address is always this screen's own field, so
+/// the fallback lives here instead, matching README.md's own example
+/// (`docs/architecture.md` "Multiroom: Snapcast output").
+const DEFAULT_SNAPCAST_HOST: &str = "127.0.0.1";
+const DEFAULT_SNAPCAST_PORT: u16 = 4953;
+
+/// The three output modes this screen offers (D-034): `OutputConfig` itself
+/// has no `Display`/pick-list-friendly shape, so this mirrors its variants
+/// one-for-one purely for the picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputMode {
+    Shared,
+    Exclusive,
+    Snapcast,
+}
+
+impl OutputMode {
+    pub const ALL: [OutputMode; 3] = [
+        OutputMode::Shared,
+        OutputMode::Exclusive,
+        OutputMode::Snapcast,
+    ];
+}
+
+impl std::fmt::Display for OutputMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            OutputMode::Shared => "Shared",
+            OutputMode::Exclusive => "Exclusive (bit-perfect)",
+            OutputMode::Snapcast => "Snapcast (multiroom)",
+        })
+    }
+}
+
 pub struct State {
     quality_ceiling: AudioQuality,
+    output_mode: OutputMode,
     output_device: String,
-    exclusive: bool,
+    snapcast_host: String,
+    snapcast_port: String,
     replay_gain_mode: ReplayGainMode,
     play_reporting_enabled: bool,
     theme: ThemePreference,
@@ -37,17 +75,30 @@ pub struct State {
 
 impl State {
     pub fn from_settings(settings: &Settings, key_location: String) -> Self {
-        let (exclusive, device) = match settings.output.clone().unwrap_or_default() {
-            OutputConfig::Exclusive { device } => (true, device),
-            OutputConfig::Shared { device } => (false, device.unwrap_or_default()),
-            // Snapcast output (D-034) has no toggle in this screen yet; fall
-            // back to the shared-mode default rather than lose the setting.
-            OutputConfig::Snapcast { .. } => (false, String::new()),
-        };
+        let (output_mode, output_device, snapcast_host, snapcast_port) =
+            match settings.output.clone().unwrap_or_default() {
+                OutputConfig::Exclusive { device } => (
+                    OutputMode::Exclusive,
+                    device,
+                    DEFAULT_SNAPCAST_HOST.to_string(),
+                    DEFAULT_SNAPCAST_PORT.to_string(),
+                ),
+                OutputConfig::Shared { device } => (
+                    OutputMode::Shared,
+                    device.unwrap_or_default(),
+                    DEFAULT_SNAPCAST_HOST.to_string(),
+                    DEFAULT_SNAPCAST_PORT.to_string(),
+                ),
+                OutputConfig::Snapcast { host, port } => {
+                    (OutputMode::Snapcast, String::new(), host, port.to_string())
+                }
+            };
         Self {
             quality_ceiling: settings.quality_ceiling(),
-            output_device: device,
-            exclusive,
+            output_mode,
+            output_device,
+            snapcast_host,
+            snapcast_port,
             replay_gain_mode: settings.replay_gain_mode,
             play_reporting_enabled: settings.play_reporting,
             theme: settings.theme,
@@ -87,14 +138,28 @@ impl State {
     /// [`OutputConfig`] to apply live through the player link.
     pub fn apply_to(&self, settings: &mut Settings) -> OutputConfig {
         settings.quality_ceiling = Some(self.quality_ceiling);
-        let output = if self.exclusive {
-            OutputConfig::Exclusive {
+        let output = match self.output_mode {
+            OutputMode::Exclusive => OutputConfig::Exclusive {
                 device: self.output_device.clone(),
-            }
-        } else {
-            OutputConfig::Shared {
+            },
+            OutputMode::Shared => OutputConfig::Shared {
                 device: (!self.output_device.is_empty()).then(|| self.output_device.clone()),
-            }
+            },
+            OutputMode::Snapcast => OutputConfig::Snapcast {
+                host: {
+                    let host = self.snapcast_host.trim();
+                    if host.is_empty() {
+                        DEFAULT_SNAPCAST_HOST.to_string()
+                    } else {
+                        host.to_string()
+                    }
+                },
+                port: self
+                    .snapcast_port
+                    .trim()
+                    .parse()
+                    .unwrap_or(DEFAULT_SNAPCAST_PORT),
+            },
         };
         settings.output = Some(output.clone());
         settings.replay_gain_mode = self.replay_gain_mode;
@@ -116,8 +181,10 @@ fn non_empty(s: &str) -> Option<String> {
 #[derive(Debug, Clone)]
 pub enum Message {
     QualityChanged(AudioQuality),
+    OutputModeChanged(OutputMode),
     OutputDeviceChanged(String),
-    ExclusiveToggled(bool),
+    SnapcastHostChanged(String),
+    SnapcastPortChanged(String),
     ReplayGainChanged(ReplayGainMode),
     PlayReportingToggled(bool),
     ThemeChanged(ThemePreference),
@@ -152,13 +219,23 @@ impl State {
                 self.saved = false;
                 (Task::none(), None)
             }
+            Message::OutputModeChanged(mode) => {
+                self.output_mode = mode;
+                self.saved = false;
+                (Task::none(), None)
+            }
             Message::OutputDeviceChanged(v) => {
                 self.output_device = v;
                 self.saved = false;
                 (Task::none(), None)
             }
-            Message::ExclusiveToggled(v) => {
-                self.exclusive = v;
+            Message::SnapcastHostChanged(v) => {
+                self.snapcast_host = v;
+                self.saved = false;
+                (Task::none(), None)
+            }
+            Message::SnapcastPortChanged(v) => {
+                self.snapcast_port = v;
                 self.saved = false;
                 (Task::none(), None)
             }
@@ -226,6 +303,48 @@ impl State {
         }
     }
 
+    /// The fields specific to the chosen [`OutputMode`]: a device string for
+    /// Shared/Exclusive, or a snapserver host/port plus the D-034
+    /// mutual-exclusivity note for Snapcast — never both at once, since the
+    /// two are different `OutputConfig` variants a user picks between, not
+    /// independent toggles.
+    fn output_fields<'a>(&'a self, tokens: Tokens) -> Element<'a, Message> {
+        match self.output_mode {
+            OutputMode::Shared | OutputMode::Exclusive => labelled(
+                tokens,
+                "Output device",
+                text_input(
+                    "e.g. hw:1,0 (leave blank for the default device)",
+                    &self.output_device,
+                )
+                .on_input(Message::OutputDeviceChanged),
+            ),
+            OutputMode::Snapcast => column![
+                labelled(
+                    tokens,
+                    "Snapserver host",
+                    text_input(DEFAULT_SNAPCAST_HOST, &self.snapcast_host)
+                        .on_input(Message::SnapcastHostChanged),
+                ),
+                labelled(
+                    tokens,
+                    "Snapserver port",
+                    text_input(&DEFAULT_SNAPCAST_PORT.to_string(), &self.snapcast_port)
+                        .on_input(Message::SnapcastPortChanged),
+                ),
+                text(
+                    "Snapcast resamples every track to a fixed 48000 Hz / 16-bit / stereo PCM \
+                     stream for snapserver to distribute; it is mutually exclusive with \
+                     bit-perfect output (D-034)."
+                )
+                .size(tokens.text_xs)
+                .color(tokens.muted),
+            ]
+            .spacing(tokens.space_sm)
+            .into(),
+        }
+    }
+
     pub fn view<'a>(&'a self, tokens: Tokens) -> Element<'a, Message> {
         let mut col = column![text("Settings").size(tokens.text_xl).color(tokens.text),]
             .spacing(tokens.space_lg)
@@ -265,16 +384,14 @@ impl State {
                 .color(tokens.muted),
                 labelled(
                     tokens,
-                    "Output device",
-                    text_input(
-                        "e.g. hw:1,0 (leave blank for the default device)",
-                        &self.output_device
-                    )
-                    .on_input(Message::OutputDeviceChanged),
+                    "Output mode",
+                    pick_list(
+                        OutputMode::ALL.to_vec(),
+                        Some(self.output_mode),
+                        Message::OutputModeChanged,
+                    ),
                 ),
-                checkbox(self.exclusive)
-                    .label("Exclusive (bit-perfect) output")
-                    .on_toggle(Message::ExclusiveToggled),
+                self.output_fields(tokens),
                 labelled(
                     tokens,
                     "ReplayGain",
@@ -519,7 +636,7 @@ mod tests {
         };
         let state = State::from_settings(&settings, "keyring".into());
         assert_eq!(state.quality_ceiling, AudioQuality::Lossless);
-        assert!(state.exclusive);
+        assert_eq!(state.output_mode, OutputMode::Exclusive);
         assert_eq!(state.output_device, "hw:1,0");
 
         let mut round_tripped = Settings::default();
@@ -534,8 +651,86 @@ mod tests {
     }
 
     #[test]
+    fn snapcast_output_round_trips_through_apply_to() {
+        let settings = Settings {
+            output: Some(OutputConfig::Snapcast {
+                host: "192.168.1.50".into(),
+                port: 4953,
+            }),
+            ..Settings::default()
+        };
+        let state = State::from_settings(&settings, "file".into());
+        assert_eq!(state.output_mode, OutputMode::Snapcast);
+        assert_eq!(state.snapcast_host, "192.168.1.50");
+        assert_eq!(state.snapcast_port, "4953");
+        // Snapcast carries no device string of its own.
+        assert_eq!(state.output_device, "");
+
+        let mut round_tripped = Settings::default();
+        let output = state.apply_to(&mut round_tripped);
+        assert_eq!(
+            output,
+            OutputConfig::Snapcast {
+                host: "192.168.1.50".into(),
+                port: 4953,
+            }
+        );
+        assert_eq!(round_tripped.output, Some(output));
+    }
+
+    #[test]
+    fn snapcast_output_falls_back_to_documented_defaults_when_blank() {
+        // A user who switches into Snapcast mode without editing the
+        // pre-filled fields, or clears them by hand, must still get
+        // README's documented default rather than an invalid host/port.
+        let mut state = State::from_settings(&Settings::default(), "file".into());
+        state.output_mode = OutputMode::Snapcast;
+        state.snapcast_host = "  ".into();
+        state.snapcast_port = "not a port".into();
+
+        let mut settings = Settings::default();
+        let output = state.apply_to(&mut settings);
+        assert_eq!(
+            output,
+            OutputConfig::Snapcast {
+                host: DEFAULT_SNAPCAST_HOST.into(),
+                port: DEFAULT_SNAPCAST_PORT,
+            }
+        );
+    }
+
+    #[test]
     fn play_reporting_defaults_to_enabled_per_d027() {
         let settings = Settings::default();
         assert!(settings.play_reporting);
+    }
+
+    mod view_tests {
+        use super::*;
+        use iced_test::simulator;
+
+        #[test]
+        fn snapcast_fields_render_only_in_snapcast_mode() {
+            let tokens = Tokens::dark();
+
+            let shared = State::from_settings(&Settings::default(), "file".into());
+            let mut ui = simulator(shared.view(tokens));
+            assert!(ui.find("Output device").is_ok());
+            assert!(ui.find("Snapserver host").is_err());
+            assert!(ui.find("Snapserver port").is_err());
+
+            let snapcast_settings = Settings {
+                output: Some(OutputConfig::Snapcast {
+                    host: "192.168.1.50".into(),
+                    port: 4953,
+                }),
+                ..Settings::default()
+            };
+            let snapcast = State::from_settings(&snapcast_settings, "file".into());
+            let mut ui = simulator(snapcast.view(tokens));
+            assert!(ui.find("Snapserver host").is_ok());
+            assert!(ui.find("Snapserver port").is_ok());
+            assert!(ui.find("Output device").is_err());
+        }
     }
 }

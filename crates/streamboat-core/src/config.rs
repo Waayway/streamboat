@@ -99,6 +99,13 @@ impl AppDirs {
     pub fn show_request_path(&self) -> PathBuf {
         self.runtime.join("show-request")
     }
+
+    /// A deep-link URL a second `streamboat <url>` invocation could not open
+    /// itself, handed to the running instance instead (D-010, D-024 — see
+    /// `crate::instance_lock::request_open`/`take_open_request`).
+    pub fn open_request_path(&self) -> PathBuf {
+        self.runtime.join("open-request")
+    }
 }
 
 /// Load the control API's bearer token, generating one on first use: 32
