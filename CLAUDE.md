@@ -4,16 +4,19 @@ An open-source TIDAL client — desktop (Linux/Windows/macOS) and headless/serve
 who already pay for TIDAL, built against the unofficial `api.tidal.com` API the way High Tide and
 Sone do.
 
-**Read `.claude/skills/streamboat-overview/SKILL.md` first, always**, before any task in this repo.
-It names the owner's decisions, carries the project glossary, and indexes the topic skills below —
-load only the ones the task actually touches, after the overview:
+**Read `.claude/skills/streamboat-overview/SKILL.md` first, always**, then
+`.claude/skills/streamboat-decisions/SKILL.md`, before any task in this repo. The overview carries
+the glossary and indexes the topic skills; the decisions skill is the owner-ratified stack and
+scope, which beats any research recommendation in the topic skills. Load only the topic skills the
+task actually touches, after those two:
 
 - `tidal-client-features` — what to build (product/feature scope, MVP tiering).
 - `tidal-api` — the TIDAL API wire format (unofficial + official).
 - `tidal-oss-landscape` — precedent from other open-source TIDAL clients.
 - `audio-pipeline` — manifest → decode → bit-perfect output engineering.
 - `headless-and-tidal-connect` — daemon/CLI mode, control protocols, TIDAL Connect verdict.
-- `tech-stack-evaluation` — language/toolkit/engine choice (not yet owner-ratified).
+- `tech-stack-evaluation` — the stack research and scoring; the owner's actual choices differ in
+  places (see `streamboat-decisions`).
 - `streamboat-engineering-baseline` — CI, secrets, packaging, licensing, i18n/a11y.
 
 ## Owner decisions (fixed — do not re-litigate)
@@ -25,12 +28,17 @@ load only the ones the task actually touches, after the overview:
   subscription. streamboat is a player for subscribers, not a downloader/ripper.
 - Document legal/ToS risk honestly, including how High Tide and Sone position themselves — never
   hide or soften it.
+- Stack and scope, decided 2026-09-08/09 through the decision tree: Rust workspace, iced UI (no
+  webview), GStreamer on Linux and libmpv on Windows/macOS behind one engine trait, two binaries
+  (`streamboat`, `streamboatd`) over one core, GPL-3.0-only apps over an Apache-2.0 core, full client
+  at first release with all four quality tiers. Full list: `docs/DECISIONS.md`.
 
 ## Repo conventions
 
 - Research reports: `docs/research/*.md` (+ `decision-tree.json`), source of truth for the skills.
 - Distilled knowledge: `.claude/skills/<topic>/SKILL.md` + `references/*.md`, load-on-demand.
-- Decisions: `docs/DECISIONS.md` (to be created) + a `streamboat-decisions` skill (to be created).
+- Decisions: `docs/DECISIONS.md` (dated log, `D-001` onward) distilled into the `streamboat-decisions`
+  skill. A decision beats a research recommendation; only the owner changes one.
 - Cite facts as URLs or `ref:<project>/<path>` (read-only reference checkouts used in research).
 - Keep skills in sync with their report and with `docs/DECISIONS.md` when either changes.
 - Never run `git commit`/`push`/`checkout`/`stash`/`reset`/`clean` unless a human explicitly asks.
@@ -51,6 +59,6 @@ load only the ones the task actually touches, after the overview:
   change (and vice versa) — they must not drift apart.
 - Do not present a topic skill's "research conclusion" or "strong recommendation" as an owner
   decision — check `streamboat-overview`'s Owner decisions section, which is the only fixed list.
-- Do not pick the audio engine or write engine-selection code without resolving the open
-  GStreamer-vs-libmpv conflict flagged in `audio-pipeline` and `tech-stack-evaluation` — surface it
-  to the owner first.
+- Do not re-open the audio engine choice: it is decided (D-016: GStreamer on Linux, libmpv on
+  Windows and macOS, behind one trait). If a task seems to require departing from any `D-` entry,
+  surface the conflict to the owner instead of deviating.

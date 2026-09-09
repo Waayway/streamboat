@@ -141,6 +141,10 @@ the full comparison table.
 
 ## Open decisions
 
+> **Resolved by the owner on 2026-09-08/09.** The items below were the inputs to the decision tree; the
+> outcomes are recorded in `docs/DECISIONS.md` and distilled in the `streamboat-decisions` skill, which
+> takes precedence over any recommendation here. Treat this list as history, not as open questions.
+
 These feed the project's decision tree — only the owner can settle them (full text with sources:
 `references/decisions-and-sequencing.md` §5):
 

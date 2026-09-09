@@ -1,9 +1,16 @@
 ---
 name: tech-stack-evaluation
-description: The researched, fact-checked answer to "what should streamboat be built in" — language, UI toolkit, audio engine, and process architecture. Tauri 2 + Rust + React is the recommendation, scored against 14 candidate stacks on a weighted matrix. Use this whenever choosing or reconsidering the stack; writing or reviewing `Cargo.toml`, `package.json`, `tauri.conf.json`, `src-tauri/capabilities/*.json`, a CI workflow, or a packaging script; adding a Tauri plugin, deciding a CSP, or wiring the OAuth redirect; picking an audio engine (GStreamer, libmpv, cpal, symphonia, FFmpeg); or checking whether a dependency blocks headless/server/CLI, cross-platform parity, or the future mobile path — or whenever a file mentions Tauri, WebView2, WebKitGTK, bit-perfect, exclusive mode, a UI-toolkit name, scoring matrix, MVP estimate, or "which stack"/"what language" for streamboat. Do not answer from general framework knowledge — fact-checked against 20+ reference projects to prevent plausible-but-wrong claims.
+description: The researched, fact-checked answer to "what should streamboat be built in" — language, UI toolkit, audio engine, and process architecture. Tauri 2 + Rust + React was the research recommendation, scored against 14 candidate stacks on a weighted matrix; the owner then decided on iced (no webview) with GStreamer on Linux and libmpv on Windows/macOS — see the streamboat-decisions skill, which wins over this one wherever they differ. Use this whenever choosing or reconsidering the stack; writing or reviewing `Cargo.toml`, `package.json`, `tauri.conf.json`, `src-tauri/capabilities/*.json`, a CI workflow, or a packaging script; adding a Tauri plugin, deciding a CSP, or wiring the OAuth redirect; picking an audio engine (GStreamer, libmpv, cpal, symphonia, FFmpeg); or checking whether a dependency blocks headless/server/CLI, cross-platform parity, or the future mobile path — or whenever a file mentions Tauri, WebView2, WebKitGTK, bit-perfect, exclusive mode, a UI-toolkit name, scoring matrix, MVP estimate, or "which stack"/"what language" for streamboat. Do not answer from general framework knowledge — fact-checked against 20+ reference projects to prevent plausible-but-wrong claims.
 ---
 
 # Tech stack evaluation for streamboat
+
+> **Owner decision recorded (2026-09-08, `docs/DECISIONS.md` D-008, D-013, D-016, D-045):** the stack is
+> Rust with **iced** as the desktop toolkit (no webview shell), **GStreamer on Linux and libmpv on
+> Windows/macOS** behind one engine trait, and two binaries (`streamboat`, `streamboatd`) over one
+> core. This differs from the research recommendation below (Tauri 2 + React, GStreamer everywhere).
+> Use this skill for the underlying facts (toolkit and engine properties, packaging, mobile path,
+> scoring); use `streamboat-decisions` for what to build.
 
 Source of truth: `docs/research/tech-stack.md` (the full research report — fact-checked and
 corrected against **three rounds** of independent passes, ~2,000 lines). This skill is the
@@ -159,6 +166,10 @@ no dedicated section anywhere in this skill:
   component files makes the frontend `Transport`-interface decision expensive (§4).
 
 ## Open decisions
+
+> **Resolved by the owner on 2026-09-08/09.** The items below were the inputs to the decision tree; the
+> outcomes are recorded in `docs/DECISIONS.md` and distilled in the `streamboat-decisions` skill, which
+> takes precedence over any recommendation here. Treat this list as history, not as open questions.
 
 Only the owner can decide these — do not assume an answer when writing code or docs:
 

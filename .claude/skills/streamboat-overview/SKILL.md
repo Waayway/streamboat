@@ -38,9 +38,15 @@ single place to check.
   it now, not staged. **Mobile (Android/iOS) is future scope**: nothing mobile-specific ships today,
   but no architecture choice may preclude it later (this is why, e.g., the core must not depend on a
   UI toolkit, and why licence choice is weighed against future App Store distribution).
-- **"Something simple but beautiful," otherwise open.** The owner deliberately did not pick a
-  language, UI toolkit, or audio engine — that's research-and-recommend territory, not an assumption
-  to make. See `tech-stack-evaluation` for the current recommendation and its open sub-decisions.
+- **"Something simple but beautiful" — and, since 2026-09-08, a decided stack.** The owner worked
+  through the decision tree: Rust workspace, **iced** desktop toolkit (no webview), **GStreamer on
+  Linux and libmpv on Windows/macOS** behind one engine trait, two binaries (`streamboat`,
+  `streamboatd`) over one core, GPL-3.0-only apps over an Apache-2.0 core, a full client with all
+  four quality tiers at first release, exclusive/bit-perfect output on all three OSes. The complete
+  list with rationale is `docs/DECISIONS.md` (`D-001` to `D-047`), distilled in the
+  `streamboat-decisions` skill — load that skill right after this one. Where a topic skill's
+  research recommendation differs (Tauri, Slint, GStreamer-everywhere, core-player MVP, no offline
+  cache, play reporting off), the decision wins.
 - **TIDAL API approach**: do what High Tide and Sone do — stream through the unofficial
   `api.tidal.com` API that `python-tidal` also uses, which requires the user's own paid subscription.
   This is a considered choice, not a shortcut: it's the only path that gives a third-party client
@@ -77,9 +83,10 @@ single place to check.
   topic skill is a distillation of a much longer, fact-checked report in `docs/research/`. The skills
   carry the pitfalls and quick answers; the reports carry the full evidence, citations, and "why."
 - **Conflicts between skills are flagged, not hidden — resolve them with the owner, don't silently
-  pick a side.** As of this writing, `audio-pipeline` and `tech-stack-evaluation` disagree on
-  engine order (libmpv-first vs. GStreamer-first); both skills carry a CRITICAL callout saying so.
-  Don't write engine-selection code from either skill alone — see Status below.
+  pick a side.** The one such conflict the research left open (`audio-pipeline` vs.
+  `tech-stack-evaluation` on engine order) was resolved by the owner as D-016: GStreamer on Linux,
+  libmpv on Windows and macOS, one trait. Where the two skills still carry their CRITICAL callouts,
+  read them as history. Raise any new conflict to the owner rather than picking a side.
 - **Cite evidence, keep evidence tiers visible.** The topic skills tag claims `[verified-source]`,
   `[verified-web]`, `[inferred]`, `[unverified]`/`[uncertain]` (exact tag vocabulary varies slightly
   per skill — each skill defines its own at the top). Don't flatten an `[unverified]` claim into
@@ -182,6 +189,10 @@ Load the topic skill(s) the task actually touches — not all of them, and not f
 skill is itself a distillation of a much longer fact-checked report in `docs/research/`; go one level
 deeper (the skill's own reference files, then the report) only when the task needs that depth.
 
+- **`streamboat-decisions`** — the owner-ratified stack, scope and rules, distilled from
+  `docs/DECISIONS.md`. Load it for every task right after this skill and before any topic skill: it
+  is what to build; the topic skills are how and why. It also lists where the owner departed from
+  the research recommendations so you do not "correct" the code back toward them.
 - **`tidal-client-features`** — product knowledge: what TIDAL's native apps (desktop/web/mobile/TV/
   Connect) actually do, what the unofficial API can reach, and the MVP/v1/later/out-of-scope tier for
   every feature. Load whenever you touch playback/quality/queue logic, browse/home-page rendering,
@@ -210,10 +221,10 @@ deeper (the skill's own reference files, then the report) only when the task nee
   scope). Load for any daemon/server/headless subcommand, control surface, discovery/pairing code, or
   multiroom/Connect question.
 - **`tech-stack-evaluation`** — the researched answer to "what should streamboat be built in":
-  language, UI toolkit, audio engine, process architecture. Current recommendation: Tauri 2 + Rust +
-  React, scored against 14 candidate stacks. Load whenever choosing or reconsidering the stack,
-  writing `Cargo.toml`/`package.json`/`tauri.conf.json`/CI/packaging scripts, or picking an audio
-  engine. **Not yet owner-ratified — see Status below.**
+  language, UI toolkit, audio engine, process architecture, scored against 14 candidate stacks. The
+  research recommended Tauri 2 + React; the owner decided on iced with a split engine (see
+  `streamboat-decisions`). Load it for the underlying facts about toolkits, engines, packaging and
+  the mobile path when writing `Cargo.toml`, CI or packaging scripts.
 - **`streamboat-engineering-baseline`** — stack-agnostic engineering conventions: how to test an
   unofficial-API client without live credentials in CI, secret/token storage per OS, config/cache/log
   layout, licensing (GPL/LGPL/Apache split and compatibility), packaging and distribution per channel
@@ -224,31 +235,27 @@ deeper (the skill's own reference files, then the report) only when the task nee
 For streaming wire-format depth, start at `tidal-api`. For DSP/output engineering depth, start at
 `audio-pipeline`. For "what should streamboat build," start at `tidal-client-features`. For "how do I
 build it," start at `tech-stack-evaluation` and `streamboat-engineering-baseline`. For "what did
-other TIDAL clients do here," start at `tidal-oss-landscape`.
+other TIDAL clients do here," start at `tidal-oss-landscape`. For "what did we decide," start at
+`streamboat-decisions`.
 
 ## Status
 
-**The tech stack and overall architecture are not decided.** They are pending the owner's decision
-tree: `docs/research/decision-tree.json` holds 13 rounds of scoped questions (product scope and
-platform commitments through packaging/distribution and release process), each with researched
-options, a recommendation, and its rationale and grounding in the reports above. The owner has not
-yet worked through it.
+**The tech stack, architecture and first-release scope are decided** (2026-09-08/09). The owner
+worked through all twelve rounds of the decision tree in `docs/research/decision-tree.json`; every
+answer, with alternatives, rationale and consequences, is in `docs/DECISIONS.md` (`D-001` to
+`D-047`, plus "the decided stack at a glance"), and the `streamboat-decisions` skill is its
+load-on-demand distillation.
 
-Decisions the owner makes, from that tree or otherwise, will be recorded in two places going
-forward:
+No code exists yet. The first milestone (D-044) is a playable CLI spike: log in, resolve a
+manifest, play one track to the end through the same Command/Event types the GUI will use, with
+the engine behind its trait on all three OSes and gapless-plus-exclusive prototyped. Then the iced
+shell.
 
-- **`docs/DECISIONS.md`** (to be created) — the running, dated log of what was decided and why,
-  written for a human and an agent to check quickly ("is X settled? what did we decide and when?").
-- **A `streamboat-decisions` skill** (to be created) — the load-on-demand distillation of
-  `docs/DECISIONS.md`, in the same style as the seven topic skills, so an agent can load "what's
-  actually decided" without re-reading the whole log.
-
-Until both exist, treat every "recommendation" or "research conclusion" in a topic skill as exactly
-that — informative, not binding — and check this skill's Owner decisions section (which is fixed)
-against anything a topic skill labels as still open. Known unresolved conflicts between the research
-documents themselves (e.g. `audio-pipeline` vs. `tech-stack-evaluation` on GStreamer-vs-libmpv engine
-order) are flagged inline in both skills with a CRITICAL callout — do not silently pick a side; raise
-it to the owner instead.
+Topic skills still carry their pre-decision "Open decisions" sections, each now headed by a note
+pointing at the decision log; read them as the inputs that were considered, not as open questions.
+Implementation-time calls that remain genuinely open (universal macOS builds, deb/rpm GStreamer
+vendoring, the v1 `pages/home` fallback, sandboxed exclusive ALSA, GStreamer HLS for video) are
+listed at the end of `streamboat-decisions`.
 
 ## Working conventions
 
@@ -257,9 +264,9 @@ it to the owner instead.
 - **Distilled, load-on-demand knowledge lives in `.claude/skills/`** — one skill per research topic,
   each a `SKILL.md` plus `references/*.md` files, kept in sync with its report. This skill
   (`streamboat-overview`) is the index and entry point for all of them.
-- **Decisions live in `docs/DECISIONS.md`** (to be created) once the owner starts working through
-  the decision tree, distilled into a `streamboat-decisions` skill (to be created) — see Status
-  above.
+- **Decisions live in `docs/DECISIONS.md`**, a dated, append-only log (`D-NNN` entries; a change
+  is a new entry that supersedes the old one), distilled into the `streamboat-decisions` skill. A
+  decision beats a research recommendation; only the owner changes one.
 - **Keep skills updated when facts change.** If a research report is corrected, or a decision
   resolves something a skill lists as open, update the skill's pitfall table, "Owner decisions," or
   "Open decisions" section in the same change — don't let the skill drift out of sync with the report
