@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/streamboat-core",
+    "crates/streamboat-player",
+    "crates/streamboat-server",
+    "crates/streamboat-desktop",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.85"
+repository = "https://github.com/Waayway/streamboat"
+homepage = "https://github.com/Waayway/streamboat"
+
+[workspace.dependencies]
+streamboat-core = { path = "crates/streamboat-core" }
+streamboat-player = { path = "crates/streamboat-player" }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "io-std", "io-util", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip", "http2"] }
+url = "2"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+directories = "6"
+aes-gcm = "0.10"
+rand = "0.9"
+zeroize = { version = "1", features = ["derive"] }
+dash-mpd = { version = "0.18", default-features = false }
+clap = { version = "4", features = ["derive", "env"] }
+gstreamer = "0.24"
+gstreamer-audio = "0.24"
+wiremock = "0.6"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
